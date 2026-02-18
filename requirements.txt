@@ -1,0 +1,8 @@
+py4j==0.10.9.9
+pyspark==4.1.1
+
+# Dask (data cleaning)
+dask[array]
+numpy
+pandas
+pyarrow
