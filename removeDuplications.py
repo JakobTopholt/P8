@@ -1,4 +1,4 @@
-def remove_duplications(df):
+def deduplicate_and_filter(df):
     df = df.dropDuplicates()
     df = df.drop("Navigational status", "Heading", "ROT", "IMO", "Callsign", 
             "Name", "Cargo type", "Width", "Length", "Draught", "Destination", "ETA", 
