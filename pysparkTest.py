@@ -1,5 +1,10 @@
 from pyspark.sql import SparkSession
 import time
+import os
+
+# Set HADOOP_HOME environment - so windows can run Spark without errors
+os.environ['HADOOP_HOME'] = r'C:\hadoop'
+os.environ['PATH'] = r'C:\hadoop\bin;' + os.environ.get('PATH', '')
 
 start_time = time.time()
 
