@@ -1,5 +1,4 @@
-def remove_duplications(spark, input_file):
-    df = spark.read.format("csv").load(input_file, header=True, inferSchema=True)
+def remove_duplications(df):
     df = df.dropDuplicates()
     df = df.drop("Navigational status", "Heading", "ROT", "IMO", "Callsign", 
             "Name", "Cargo type", "Width", "Length", "Draught", "Destination", "ETA", 
