@@ -1,0 +1,91 @@
+.dashboard {
+  text-align: left;
+}
+
+.info-section,
+.steps-section,
+.status-section {
+  margin-bottom: 2rem;
+}
+
+.info-section h2,
+.steps-section h2,
+.status-section h2 {
+  font-size: 1.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.info-section p {
+  color: #aaa;
+  line-height: 1.6;
+}
+
+.steps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.step-card {
+  background-color: #1e1e2e;
+  border: 1px solid #333;
+  border-radius: 10px;
+  padding: 1.25rem;
+  cursor: pointer;
+  transition: border-color 0.2s, transform 0.2s;
+}
+
+.step-card:hover {
+  border-color: #646cff;
+  transform: translateY(-2px);
+}
+
+.step-card.selected {
+  border-color: #646cff;
+  background-color: #252540;
+}
+
+.step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background-color: #646cff;
+  border-radius: 50%;
+  font-weight: bold;
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+
+.step-card h3 {
+  margin: 0.5rem 0;
+  font-size: 1.1rem;
+}
+
+.step-card p {
+  color: #999;
+  font-size: 0.9rem;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.status-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  background-color: #1e1e2e;
+  border: 1px solid #333;
+  border-radius: 10px;
+  padding: 1rem 1.5rem;
+}
+
+.status-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.status-indicator.ready {
+  background-color: #4caf50;
+}
