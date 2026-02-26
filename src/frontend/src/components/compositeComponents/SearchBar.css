@@ -1,0 +1,10 @@
+.search-bar-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Make sure child components have proper styling */
+.search-bar-container > * {
+  background: transparent;
+}
