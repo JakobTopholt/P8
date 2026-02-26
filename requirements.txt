@@ -1,8 +1,7 @@
+numpy==2.4.2
+pandas==3.0.1
 py4j==0.10.9.9
+pyarrow==23.0.1
 pyspark==4.1.1
-
-# Dask (data cleaning)
-dask[array]
-numpy
-pandas
-pyarrow
+python-dateutil==2.9.0.post0
+six==1.17.0
