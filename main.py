@@ -5,6 +5,7 @@ import os
 import removeDuplications
 import removeShiptypes
 import trimStationary
+import removeOutliers
 
 input_file = "AISDATA/aisdk-2026-02-05.csv"
 output_path = "AISDATA/aisdk-2026-02-05.cleaned.csv"
@@ -25,6 +26,7 @@ df = df.withColumn(timestamp_col, F.to_timestamp(F.col(timestamp_col), "dd/MM/yy
 df = removeDuplications.deduplicate_and_filter(df)
 df = trimStationary.trim_stationary(df)
 df = removeShiptypes.remove_shiptypes(df)
+df = removeOutliers.remove_gps_outliers(df)
 
 df.coalesce(1).write.format("csv").option("header", "true").mode("overwrite").save(output_path)
 
