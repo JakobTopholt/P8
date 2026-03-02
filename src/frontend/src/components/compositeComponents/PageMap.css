@@ -1,0 +1,70 @@
+.page-map-container {
+  position: relative;
+  width: 100%;
+  height: 100vh;
+}
+
+.map-container {
+  width: 100%;
+  height: 100vh;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+}
+
+/* Ensure Leaflet tiles load properly */
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+}
+
+.search-bar-overlay {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  width: 90%;
+  max-width: 600px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  padding: 10px;
+}
+
+.randomizer-overlay {
+  position: absolute;
+  top: 20px;
+  left: calc(50% + 310px);
+  z-index: 1000;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  padding: 10px;
+}
+
+/* Ensure the search bar and randomizer are responsive */
+@media (max-width: 1024px) {
+  .randomizer-overlay {
+    left: 50%;
+    transform: translateX(-100px);
+  }
+}
+
+@media (max-width: 768px) {
+  .search-bar-overlay {
+    width: 95%;
+    max-width: none;
+    top: 10px;
+  }
+
+  .randomizer-overlay {
+    top: auto;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 95%;
+    max-width: none;
+  }
+}
