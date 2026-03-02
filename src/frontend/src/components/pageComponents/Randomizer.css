@@ -28,6 +28,18 @@
   background: #e6ebf0;
 }
 
+.randomizer-button.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: #f0f0f0;
+  border-color: #d0d0d0;
+}
+
+.randomizer-button.disabled:hover {
+  background: #f0f0f0;
+  border-color: #d0d0d0;
+}
+
 .randomizer-dropdown {
   position: absolute;
   top: calc(100% + 8px);

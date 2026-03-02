@@ -1,14 +1,15 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { MapContainer, TileLayer, CircleMarker, Popup, Polyline } from 'react-leaflet'
 import SearchBar from './SearchBar'
 import Randomizer from '../pageComponents/Randomizer'
 import type { SearchMode } from '../pageComponents/Search'
+import { getDataPointsByMMSIs } from '../../utils/api'
 import 'leaflet/dist/leaflet.css'
 import './PageMap.css'
 
 interface DataPoint {
   id: number
-  mmsi: number
+  mmsi: string
   position: [number, number]
   name: string
   location: string
@@ -25,113 +26,96 @@ export default function PageMap() {
     [85.051129, 180]
   ]
 
-  // Sample data points - replace with actual data
-  const [dataPoints] = useState<DataPoint[]>([
-    {
-      id: 1,
-      mmsi: 211456780,
-      position: [55.6761, 12.5683],
-      name: 'Point 1',
-      location: 'Copenhagen',
-      timestamp: '2026-02-26T08:30:00Z',
-      description: 'Sample data point 1'
-    },
-    {
-      id: 2,
-      mmsi: 211456780,
-      position: [55.6861, 12.5783],
-      name: 'Point 2',
-      location: 'Copenhagen',
-      timestamp: '2026-02-26T09:45:00Z',
-      description: 'Sample data point 2'
-    },
-    {
-      id: 3,
-      mmsi: 219023456,
-      position: [55.6661, 12.5583],
-      name: 'Point 3',
-      location: 'Copenhagen',
-      timestamp: '2026-02-26T10:15:00Z',
-      description: 'Sample data point 3'
-    },
-  ])
-  const [rawDataPoints] = useState<DataPoint[]>([
-    {
-      id: 4,
-      mmsi: 211456780,
-      position: [55.6861, 12.6083],
-      name: 'Point 4',
-      location: 'Copenhagen Harbor',
-      timestamp: '2026-02-26T08:10:00Z',
-      description: 'Sample data point 1'
-    },
-    {
-      id: 5,
-      mmsi: 230451234,
-      position: [55.6961, 12.5983],
-      name: 'Point 5',
-      location: 'Copenhagen Harbor',
-      timestamp: '2026-02-26T09:20:00Z',
-      description: 'Sample data point 2'
-    },
-    {
-      id: 6,
-      mmsi: 219023456,
-      position: [55.6761, 12.5883],
-      name: 'Point 6',
-      location: 'Copenhagen Harbor',
-      timestamp: '2026-02-26T10:05:00Z',
-      description: 'Sample data point 3'
-    },
-  ])
+  // All data comes from backend; no local sample data
+  const [dataPoints] = useState<DataPoint[]>([])
+  const [filteredDataPoints, setFilteredDataPoints] = useState<DataPoint[]>([])
+  const [bigDataPoints] = useState<DataPoint[]>([])
+  const [selectedMMSIs, setSelectedMMSIs] = useState<string[]>([])
+  const [isLoadingMMSIData, setIsLoadingMMSIData] = useState(false)
 
-  const [filteredDataPoints, setFilteredDataPoints] = useState<DataPoint[]>(dataPoints)
-  const [bigDataPoints] = useState<DataPoint[]>(rawDataPoints)
+  // Fetch datapoints when MMSIs are selected
+  useEffect(() => {
+    console.log('selectedMMSIs updated:', selectedMMSIs)
+    if (selectedMMSIs.length === 0) {
+      console.log('No MMSIs selected, clearing map')
+      setFilteredDataPoints([])
+      return
+    }
+
+    console.log('Fetching datapoints for MMSIs:', selectedMMSIs)
+    setIsLoadingMMSIData(true)
+    getDataPointsByMMSIs(selectedMMSIs)
+      .then((fetchedPoints) => {
+        console.log('Fetched datapoints from API:', fetchedPoints)
+        if (fetchedPoints.length > 0) {
+          // Convert fetched points to DataPoint format
+          const mappedPoints = fetchedPoints.map((p, idx) => ({
+            id: idx,
+            mmsi: p.mmsi,
+            position: [p.lat, p.lon] as [number, number],
+            name: `Point ${idx + 1}`,
+            location: 'Database',
+            timestamp: p.timestamp,
+            description: `MMSI: ${p.mmsi}`,
+          }))
+          console.log('Mapped points for display:', mappedPoints)
+          setFilteredDataPoints(mappedPoints)
+        } else {
+          console.log('No data returned from backend for MMSIs:', selectedMMSIs)
+          setFilteredDataPoints([])
+        }
+      })
+      .catch((err) => {
+        console.error('Error fetching datapoints:', err)
+        setFilteredDataPoints([])
+      })
+      .finally(() => {
+        setIsLoadingMMSIData(false)
+      })
+  }, [selectedMMSIs])
 
   const handleRandomizer = (mmsis: number[]) => {
     if (mmsis.length === 0) {
       setFilteredDataPoints(dataPoints)
       return
     }
-    setFilteredDataPoints(
-      dataPoints.filter((point) => mmsis.includes(point.mmsi))
-    )
+    const mmsiStrings = mmsis.map((m) => m.toString())
+    setSelectedMMSIs(mmsiStrings)
   }
 
   const handleSearch = (query: string, mode: SearchMode) => {
     const trimmed = query.trim()
 
     if (trimmed === '') {
-      setFilteredDataPoints(dataPoints)
+      setFilteredDataPoints([])
+      setSelectedMMSIs([])
       return
     }
 
     if (mode === 'ID') {
-      const id = Number.parseInt(trimmed, 10)
-      if (Number.isNaN(id)) {
-        setFilteredDataPoints([])
-        return
-      }
-      setFilteredDataPoints(dataPoints.filter((point) => point.id === id))
+      // For ID mode, wait for MMSI selection via dropdown
       return
     }
 
     if (mode === 'Time') {
-      const queryTime = Date.parse(trimmed)
-      if (Number.isNaN(queryTime)) {
-        setFilteredDataPoints([])
-        return
-      }
-      setFilteredDataPoints(
-        dataPoints.filter((point) => Date.parse(point.timestamp) === queryTime)
-      )
+      // Time and Location search would need to query the backend
+      // For now, just clear the display
+      console.log('Time/Location search not yet implemented')
+      setFilteredDataPoints([])
       return
     }
 
-    const lowerQuery = trimmed.toLowerCase()
-    setFilteredDataPoints(
-      dataPoints.filter((point) => point.location.toLowerCase().includes(lowerQuery))
-    )
+    if (mode === 'Location') {
+      // Location search would need to query the backend
+      console.log('Location search not yet implemented')
+      setFilteredDataPoints([])
+      return
+    }
+  }
+
+  const handleMMSISelect = (mmsis: string[]) => {
+    console.log('handleMMSISelect called with:', mmsis)
+    setSelectedMMSIs(mmsis)
   }
 
   // Build an array of positions for the polyline from bigDataPoints
@@ -197,11 +181,12 @@ export default function PageMap() {
         )}
       </MapContainer>
       <div className="search-bar-overlay">
-        <SearchBar onSearch={handleSearch} />
+        <SearchBar onSearch={handleSearch} onMMSISelect={handleMMSISelect} />
       </div>
       <div className="randomizer-overlay">
         <Randomizer allDataPoints={dataPoints} onRandomize={handleRandomizer} />
       </div>
+      {isLoadingMMSIData && <div className="loading-indicator">Loading datapoints...</div>}
     </div>
   )
 }

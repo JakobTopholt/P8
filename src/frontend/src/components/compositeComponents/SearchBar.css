@@ -13,12 +13,16 @@
 
 .search-bar-input {
   flex: 1;
+  position: relative;
+  overflow: visible;
 }
 
 .search-input {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  position: relative;
+  overflow: visible;
 }
 
 .search-input-field {

@@ -4,7 +4,7 @@ import CasinoIcon from '@mui/icons-material/Casino';
 
 interface DataPoint {
   id: number
-  mmsi: number
+  mmsi: string | number
   position: [number, number]
   name: string
   location: string
@@ -22,10 +22,18 @@ export default function Randomizer({ allDataPoints, onRandomize }: RandomizerPro
   const [inputValue, setInputValue] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  // Get unique MMSIs from all data points
-  const uniqueMMSIs = Array.from(new Set(allDataPoints.map((p) => p.mmsi)))
+  // Get unique MMSIs from all data points (convert to strings for consistency)
+  const uniqueMMSIs = Array.from(new Set(allDataPoints.map((p) => String(p.mmsi))))
+    .map((mmsi) => Number(mmsi))
+
+  const hasData = uniqueMMSIs.length > 0
 
   const handleRandomize = () => {
+    if (!hasData) {
+      setError('No data available. Search for MMSIs first.')
+      return
+    }
+
     const trimmed = inputValue.trim()
     if (trimmed === '') {
       setError('Enter a number')
@@ -64,10 +72,12 @@ export default function Randomizer({ allDataPoints, onRandomize }: RandomizerPro
     <div className={`randomizer-container${isOpen ? ' is-open' : ''}`}>
       <button
         type="button"
-        className="randomizer-button"
-        onClick={() => setIsOpen((prev) => !prev)}
+        className={`randomizer-button${!hasData ? ' disabled' : ''}`}
+        onClick={() => hasData && setIsOpen((prev) => !prev)}
         aria-label="Randomizer"
         aria-expanded={isOpen}
+        disabled={!hasData}
+        title={!hasData ? 'Search for MMSIs first' : 'Randomly select ships'}
       >
         <CasinoIcon className="randomizer-icon" />
       </button>
@@ -81,11 +91,11 @@ export default function Randomizer({ allDataPoints, onRandomize }: RandomizerPro
               id="randomizer-input"
               type="number"
               min="1"
-              max={uniqueMMSIs.length}
+              max={uniqueMMSIs.length || 1}
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={`1-${uniqueMMSIs.length}`}
+              placeholder={uniqueMMSIs.length > 0 ? `1-${uniqueMMSIs.length}` : '0'}
               className="randomizer-input"
             />
             {error && <div className="randomizer-error">{error}</div>}

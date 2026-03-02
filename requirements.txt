@@ -6,3 +6,7 @@ dask[array]
 numpy
 pandas
 pyarrow
+
+# Backend API
+fastapi
+uvicorn[standard]
