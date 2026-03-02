@@ -17,7 +17,7 @@ interface DataPoint {
 }
 
 export default function PageMap() {
-  // Default center position (you can change this to your preferred location)
+  // Default center position
   const defaultCenter: [number, number] = [55.6761, 12.5683] // Copenhagen, Denmark
   const defaultZoom = 13
   const maxBounds: [[number, number], [number, number]] = [
@@ -25,7 +25,7 @@ export default function PageMap() {
     [85.051129, 180]
   ]
 
-  // Sample data points - replace with your actual data
+  // Sample data points - replace with actual data
   const [dataPoints] = useState<DataPoint[]>([
     {
       id: 1,
