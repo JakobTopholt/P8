@@ -1,0 +1,93 @@
+.search-bar-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.search-bar-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.search-bar-input {
+  flex: 1;
+}
+
+.search-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.search-input-field {
+  width: 100%;
+  height: 40px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #111827;
+  padding: 0 12px;
+  font-size: 0.95rem;
+}
+
+.search-input-field:focus {
+  outline: none;
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2);
+}
+
+.search-input-error {
+  font-size: 0.8rem;
+  color: #b42318;
+}
+
+.settings-tab-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #f6f8fa;
+  color: #24292f;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.settings-tab-button:hover {
+  background: #eef1f4;
+  border-color: #c9d1d9;
+}
+
+.settings-tab-button:active {
+  background: #e6ebf0;
+}
+
+.search-settings {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.search-settings-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.search-settings-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: #111827;
+}
+
+/* Make sure child components have proper styling */
+.search-bar-container > * {
+  background: transparent;
+}
