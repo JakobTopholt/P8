@@ -7,7 +7,7 @@ def trim_moving(
     df: DataFrame,
     time_threshold_seconds: int = 3600,
     distance_factor: float = 0.1,
-    degree_threshold: float = 30.0,
+    degree_threshold: float = 10.0,
 ):
     """
     Trim moving-vessel AIS data with a greedy per-MMSI algorithm.
