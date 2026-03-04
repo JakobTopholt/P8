@@ -13,7 +13,7 @@ def expected_distance(sog1, sog2, ts1, ts2):
     time_hours = (ts2 - ts1) / 3600
     return avg_speed_kmh * time_hours
 
-def remove_gps_outliers(df, speed_margin=2.0, median_max_km=150):
+def remove_gps_outliers(df, speed_margin=2.0, median_max_km=1500):
     df = df.withColumn("Latitude", F.col("Latitude").cast("double")) \
            .withColumn("Longitude", F.col("Longitude").cast("double")) \
            .withColumn("SOG", F.col("SOG").cast("double"))
