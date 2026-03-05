@@ -1,74 +1,76 @@
-from pyspark.sql import Window
 from pyspark.sql import functions as F
+from math import radians, sin, cos, sqrt, atan2
 
-def haversine(lat1, lon1, lat2, lon2):
+
+def _haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
-    dlat = F.radians(lat2 - lat1)
-    dlon = F.radians(lon2 - lon1)
-    a = F.sin(dlat / 2) ** 2 + F.cos(F.radians(lat1)) * F.cos(F.radians(lat2)) * F.sin(dlon / 2) ** 2
-    return R * 2 * F.atan2(F.sqrt(a), F.sqrt(1 - a))
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+    return R * 2 * atan2(sqrt(a), sqrt(1 - a))
 
-def expected_distance(sog1, sog2, ts1, ts2):
-    avg_speed_kmh = ((sog1 + sog2) / 2) * 1.852
-    time_hours = (ts2 - ts1) / 3600
-    return avg_speed_kmh * time_hours
 
-def remove_gps_outliers(df, speed_margin=2.0, median_max_km=1500):
-    df = df.withColumn("Latitude", F.col("Latitude").cast("double")) \
-           .withColumn("Longitude", F.col("Longitude").cast("double")) \
-           .withColumn("SOG", F.col("SOG").cast("double"))
+def remove_gps_outliers(df, base_margin=1.2, time_scale=0.3):
+    
+    df = (df
+          .withColumn("Latitude",  F.col("Latitude").cast("double"))
+          .withColumn("Longitude", F.col("Longitude").cast("double"))
+          .withColumn("SOG",       F.col("SOG").cast("double")))
 
-    cols = df.columns
-    df = df.withColumn("_ts", F.unix_timestamp(F.col("# Timestamp")))
+    output_cols = df.columns
+    schema = df.schema
 
-    # Step 1: Median filter — removes wild GPS glitches (wrong hemisphere, etc.)
-    for _ in range(2):
-        medians = df.groupBy("MMSI").agg(
-            F.percentile_approx("Latitude", 0.5).alias("_med_lat"),
-            F.percentile_approx("Longitude", 0.5).alias("_med_lon")
-        )
-        df = df.join(F.broadcast(medians), "MMSI")
-        df = df.withColumn("_med_dist",
-            haversine(F.col("Latitude"), F.col("Longitude"), F.col("_med_lat"), F.col("_med_lon"))
-        )
-        df = df.filter(F.col("_med_dist") <= median_max_km).select(cols + ["_ts"])
+    def _process_mmsi(pdf):
+        pdf = pdf.sort_values("# Timestamp").reset_index(drop=True)
+        if pdf.empty:
+            return pdf[output_cols]
 
-    # Step 2: Speed check — removes subtle outliers using bilateral prev+next
-    w = Window.partitionBy("MMSI").orderBy("_ts")
-    for _ in range(3):
-        df = df.withColumn("_prev_lat", F.lag("Latitude").over(w)) \
-               .withColumn("_prev_lon", F.lag("Longitude").over(w)) \
-               .withColumn("_prev_sog", F.lag("SOG").over(w)) \
-               .withColumn("_prev_ts", F.lag("_ts").over(w)) \
-               .withColumn("_next_lat", F.lead("Latitude").over(w)) \
-               .withColumn("_next_lon", F.lead("Longitude").over(w)) \
-               .withColumn("_next_sog", F.lead("SOG").over(w)) \
-               .withColumn("_next_ts", F.lead("_ts").over(w))
+        latitudes  = pdf["Latitude"].values
+        longitudes = pdf["Longitude"].values
+        speeds     = pdf["SOG"].values
+        timestamps = pdf["# Timestamp"].astype("int64").values // 10**9
+        row_count  = len(pdf)
 
-        df = df.withColumn("_actual_prev",
-            haversine(F.col("_prev_lat"), F.col("_prev_lon"), F.col("Latitude"), F.col("Longitude"))
-        ).withColumn("_actual_next",
-            haversine(F.col("Latitude"), F.col("Longitude"), F.col("_next_lat"), F.col("_next_lon"))
-        )
+        keep = [False] * row_count
+        init_count = min(5, row_count)
 
-        df = df.withColumn("_expect_prev",
-            expected_distance(F.col("_prev_sog"), F.col("SOG"), F.col("_prev_ts"), F.col("_ts"))
-        ).withColumn("_expect_next",
-            expected_distance(F.col("SOG"), F.col("_next_sog"), F.col("_ts"), F.col("_next_ts"))
-        )
+        # ── Phase 1: cross-validate first 5 rows ──
+        for i in range(init_count):
+            is_valid = True
+            for j in range(init_count):
+                if i == j:
+                    continue
+                distance = _haversine(latitudes[i], longitudes[i], latitudes[j], longitudes[j])
+                time_hours = abs(float(timestamps[j]) - float(timestamps[i])) / 3600.0
+                speed_kmh = float(speeds[j]) * 1.852
+                expected_distance = speed_kmh * time_hours
+                margin = base_margin * (1.0 + time_scale * time_hours)
+                if distance > expected_distance * margin:
+                    is_valid = False
+                    break
+            if is_valid:
+                keep[i] = True
 
-        prev_fail = F.col("_actual_prev") > F.col("_expect_prev") * speed_margin
-        next_fail = F.col("_actual_next") > F.col("_expect_next") * speed_margin
-        has_prev = F.col("_prev_lat").isNotNull()
-        has_next = F.col("_next_lat").isNotNull()
+        # Guarantee at least one approved anchor
+        if not any(keep[:init_count]):
+            keep[0] = True
 
-        is_outlier = (
-            (has_prev & has_next & prev_fail & next_fail) |
-            (has_prev & ~has_next & prev_fail) |
-            (~has_prev & has_next & next_fail)
-        )
+        # Last approved index so far
+        last_approved = max(i for i in range(init_count) if keep[i])
 
-        df = df.filter(~is_outlier).select(cols + ["_ts"])
+        # ── Phase 2: sequential scan ──
+        for i in range(init_count, row_count):
+            distance = _haversine(latitudes[last_approved], longitudes[last_approved], latitudes[i], longitudes[i])
+            time_hours = (float(timestamps[i]) - float(timestamps[last_approved])) / 3600.0
+            prev_speed_kmh = float(speeds[last_approved]) * 1.852
+            expected_distance = prev_speed_kmh * time_hours
+            margin = base_margin * (1.0 + time_scale * time_hours)
 
-    df = df.select(cols)
-    return df
+            if distance <= expected_distance * margin:
+                keep[i] = True
+                last_approved = i
+
+        return pdf.loc[keep, output_cols]
+
+    result = df.groupby("MMSI").applyInPandas(_process_mmsi, schema=schema)
+    return result
