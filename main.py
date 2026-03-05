@@ -35,9 +35,9 @@ df = trimStationary.trim_stationary(df)
 df = ship_type.fill_ship_type(df)
 df = ship_type.remove_undefined_ship_type(df)
 df = removeShiptypes.remove_shiptypes(df)
-
+#df = removeOutliers.remove_gps_outliers(df)
 df = trim_moving.trim_moving(df)
-df = removeOutliers.remove_gps_outliers(df)
+
 
 df.coalesce(1).write.format("csv").option("header", "true").mode("overwrite").save(output_path)
 
