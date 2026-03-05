@@ -8,16 +8,28 @@ import trimStationary
 import ship_type
 import trim_moving
 import sys
+import removeOutliers
+import platform
 
 input_file = "AISDATA/aisdk-2026-02-05.csv"
 output_path = "AISDATA/aisdk-2026-02-05.cleaned.csv"
 
-os.environ['HADOOP_HOME'] = r'C:\hadoop'
-os.environ['PATH'] = r'C:\hadoop\bin;' + os.environ.get('PATH', '')
+if platform.system() == "Windows":
+    os.environ['HADOOP_HOME'] = r'C:\hadoop'
+    os.environ['PATH'] = r'C:\hadoop\bin;' + os.environ.get('PATH', '')
 
 # Ensure Spark workers use the same Python interpreter (with pandas/pyarrow)
-os.environ['PYSPARK_PYTHON'] = sys.executable
-os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
+# On Windows, paths with spaces break PySpark worker launches, so use the
+# short (8.3) path which contains no spaces.
+python_exec = sys.executable
+if platform.system() == "Windows":
+    import ctypes
+    buf = ctypes.create_unicode_buffer(260)
+    if ctypes.windll.kernel32.GetShortPathNameW(python_exec, buf, 260):
+        python_exec = buf.value
+
+os.environ['PYSPARK_PYTHON'] = python_exec
+os.environ['PYSPARK_DRIVER_PYTHON'] = python_exec
 
 start_time = time.time()
 
@@ -34,8 +46,9 @@ df = trimStationary.trim_stationary(df)
 df = ship_type.fill_ship_type(df)
 df = ship_type.remove_undefined_ship_type(df)
 df = removeShiptypes.remove_shiptypes(df)
-
+#df = removeOutliers.remove_gps_outliers(df)
 df = trim_moving.trim_moving(df)
+
 
 df.coalesce(1).write.format("csv").option("header", "true").mode("overwrite").save(output_path)
 
