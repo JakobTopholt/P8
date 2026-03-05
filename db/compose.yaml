@@ -1,0 +1,18 @@
+services:
+  postgis:
+    image: docker.io/postgis/postgis:18-3.6
+    container_name: ais-postgis
+    environment:
+      POSTGRES_DB: ais
+      POSTGRES_USER: ais
+      POSTGRES_PASSWORD: aisdev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./schema.sql:/docker-entrypoint-initdb.d/10_schema.sql:ro
+    restart: unless-stopped
+
+volumes:
+  pgdata:
