@@ -5,6 +5,9 @@ import os
 import removeDuplications
 import removeShiptypes
 import trimStationary
+import ship_type
+import trim_moving
+import sys
 import removeOutliers
 
 input_file = "AISDATA/aisdk-2026-02-05.csv"
@@ -12,6 +15,10 @@ output_path = "AISDATA/aisdk-2026-02-05.cleaned.csv"
 
 os.environ['HADOOP_HOME'] = r'C:\hadoop'
 os.environ['PATH'] = r'C:\hadoop\bin;' + os.environ.get('PATH', '')
+
+# Ensure Spark workers use the same Python interpreter (with pandas/pyarrow)
+os.environ['PYSPARK_PYTHON'] = sys.executable
+os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
 
 start_time = time.time()
 
@@ -25,7 +32,11 @@ df = df.withColumn(timestamp_col, F.to_timestamp(F.col(timestamp_col), "dd/MM/yy
 
 df = removeDuplications.deduplicate_and_filter(df)
 df = trimStationary.trim_stationary(df)
+df = ship_type.fill_ship_type(df)
+df = ship_type.remove_undefined_ship_type(df)
 df = removeShiptypes.remove_shiptypes(df)
+
+df = trim_moving.trim_moving(df)
 df = removeOutliers.remove_gps_outliers(df)
 
 df.coalesce(1).write.format("csv").option("header", "true").mode("overwrite").save(output_path)
@@ -33,6 +44,6 @@ df.coalesce(1).write.format("csv").option("header", "true").mode("overwrite").sa
 elapsed_time = time.time() - start_time
 
 print("elapsed_time:", elapsed_time)
-print("Count of rows after processing:", df.count())
+# print("Count of rows after processing:", df.count())
 
 spark.stop()
