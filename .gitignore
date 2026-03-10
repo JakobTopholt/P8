@@ -2,6 +2,7 @@ AISDATA/
 *.cleaned.csv/
 *.csv
 spark_temp
+package-lock.json
 .DS_Store
 
 
