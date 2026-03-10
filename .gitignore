@@ -1,7 +1,7 @@
 AISDATA/
 *.cleaned.csv/
 *.csv
-
+spark_temp
 .DS_Store
 
 
