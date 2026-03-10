@@ -1,76 +1,47 @@
 from pyspark.sql import functions as F
-from math import radians, sin, cos, sqrt, atan2
+from pyspark.sql.window import Window
+
+EARTH_RADIUS_KM = 6371.0
+KNOTS_TO_KMH = 1.852
 
 
-def _haversine(lat1, lon1, lat2, lon2):
-    R = 6371.0
-    dlat = radians(lat2 - lat1)
-    dlon = radians(lon2 - lon1)
-    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
-    return R * 2 * atan2(sqrt(a), sqrt(1 - a))
+def _haversine_km(lat1, lon1, lat2, lon2):
+    """Haversine distance between two points as a Spark Column (km)."""
+    d_lat = F.radians(lat2 - lat1)
+    d_lon = F.radians(lon2 - lon1)
+    a = (F.sin(d_lat / 2) ** 2
+         + F.cos(F.radians(lat1)) * F.cos(F.radians(lat2))
+         * F.sin(d_lon / 2) ** 2)
+    return EARTH_RADIUS_KM * 2 * F.atan2(F.sqrt(a), F.sqrt(F.lit(1.0) - a))
+
+
+def _filter_outlier_pass(df, mmsi_window, base_margin, time_scale):
+    """One pass: compare each row to its predecessor and drop outliers."""
+    prev_lat = F.lag("Latitude").over(mmsi_window)
+    prev_lon = F.lag("Longitude").over(mmsi_window)
+    prev_sog = F.lag("SOG").over(mmsi_window)
+    prev_ts  = F.lag("# Timestamp").over(mmsi_window)
+
+    time_diff_hours = (F.col("# Timestamp").cast("long") - prev_ts.cast("long")) / 3600.0
+    distance_km     = _haversine_km(prev_lat, prev_lon, F.col("Latitude"), F.col("Longitude"))
+    expected_km     = prev_sog * KNOTS_TO_KMH * time_diff_hours
+    margin          = base_margin * (1.0 + time_scale * time_diff_hours)
+
+    is_first_in_group = prev_ts.isNull()
+    is_within_range   = distance_km <= expected_km * margin
+
+    return (df
+            .withColumn("_keep", is_first_in_group | is_within_range)
+            .filter(F.col("_keep"))
+            .drop("_keep"))
 
 
 def remove_gps_outliers(df, base_margin=1.2, time_scale=0.3):
-    
     df = (df
           .withColumn("Latitude",  F.col("Latitude").cast("double"))
           .withColumn("Longitude", F.col("Longitude").cast("double"))
           .withColumn("SOG",       F.col("SOG").cast("double")))
 
-    output_cols = df.columns
-    schema = df.schema
-
-    def _process_mmsi(pdf):
-        pdf = pdf.sort_values("# Timestamp").reset_index(drop=True)
-        if pdf.empty:
-            return pdf[output_cols]
-
-        latitudes  = pdf["Latitude"].values
-        longitudes = pdf["Longitude"].values
-        speeds     = pdf["SOG"].values
-        timestamps = pdf["# Timestamp"].astype("int64").values // 10**9
-        row_count  = len(pdf)
-
-        keep = [False] * row_count
-        init_count = min(5, row_count)
-
-        # ── Phase 1: cross-validate first 5 rows ──
-        for i in range(init_count):
-            is_valid = True
-            for j in range(init_count):
-                if i == j:
-                    continue
-                distance = _haversine(latitudes[i], longitudes[i], latitudes[j], longitudes[j])
-                time_hours = abs(float(timestamps[j]) - float(timestamps[i])) / 3600.0
-                speed_kmh = float(speeds[j]) * 1.852
-                expected_distance = speed_kmh * time_hours
-                margin = base_margin * (1.0 + time_scale * time_hours)
-                if distance > expected_distance * margin:
-                    is_valid = False
-                    break
-            if is_valid:
-                keep[i] = True
-
-        # Guarantee at least one approved anchor
-        if not any(keep[:init_count]):
-            keep[0] = True
-
-        # Last approved index so far
-        last_approved = max(i for i in range(init_count) if keep[i])
-
-        # ── Phase 2: sequential scan ──
-        for i in range(init_count, row_count):
-            distance = _haversine(latitudes[last_approved], longitudes[last_approved], latitudes[i], longitudes[i])
-            time_hours = (float(timestamps[i]) - float(timestamps[last_approved])) / 3600.0
-            prev_speed_kmh = float(speeds[last_approved]) * 1.852
-            expected_distance = prev_speed_kmh * time_hours
-            margin = base_margin * (1.0 + time_scale * time_hours)
-
-            if distance <= expected_distance * margin:
-                keep[i] = True
-                last_approved = i
-
-        return pdf.loc[keep, output_cols]
-
-    result = df.groupby("MMSI").applyInPandas(_process_mmsi, schema=schema)
-    return result
+    mmsi_window = Window.partitionBy("MMSI").orderBy("# Timestamp")
+    df = _filter_outlier_pass(df, mmsi_window, base_margin, time_scale)
+    return df

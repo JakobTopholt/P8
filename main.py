@@ -33,7 +33,10 @@ os.environ['PYSPARK_DRIVER_PYTHON'] = python_exec
 
 start_time = time.time()
 
-spark = SparkSession.builder.getOrCreate()
+spark = (SparkSession.builder
+    .config("spark.local.dir", os.path.join(os.path.dirname(os.path.abspath(__file__)), "spark_temp"))
+    .config("spark.sql.shuffle.partitions", "4")
+    .getOrCreate())
 
 df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load(input_file)
 
@@ -46,8 +49,8 @@ df = trimStationary.trim_stationary(df)
 df = ship_type.fill_ship_type(df)
 df = ship_type.remove_undefined_ship_type(df)
 df = removeShiptypes.remove_shiptypes(df)
-#df = removeOutliers.remove_gps_outliers(df)
-df = trim_moving.trim_moving(df)
+df = removeOutliers.remove_gps_outliers(df)
+#df = trim_moving.trim_moving(df)
 
 
 df.coalesce(1).write.format("csv").option("header", "true").mode("overwrite").save(output_path)
