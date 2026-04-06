@@ -36,7 +36,7 @@ def _env_int(name: str, default: int, minimum: int) -> int:
 
 INPUT_FILE = Path(os.environ.get("AIS_INPUT_FILE", str(DEFAULT_INPUT_FILE))).expanduser()
 OUTPUT_PATH = Path(os.environ.get("AIS_OUTPUT_PATH", str(DEFAULT_OUTPUT_PATH))).expanduser()
-LOCAL_CORES = _env_int("SPARK_LOCAL_CORES", default=4, minimum=1)
+LOCAL_CORES = _env_int("SPARK_LOCAL_CORES", default=8, minimum=1)
 SHUFFLE_PARTITIONS = _env_int("SPARK_SHUFFLE_PARTITIONS", default=64, minimum=8)
 INPUT_PARTITION_MB = _env_int("SPARK_INPUT_PARTITION_MB", default=64, minimum=16)
 OUTPUT_PARTITIONS = _env_int("SPARK_OUTPUT_PARTITIONS", default=1, minimum=1)
@@ -92,7 +92,6 @@ df = ship_type.fill_ship_type(df)
 df = ship_type.remove_undefined_ship_type(df)
 df = removeShiptypes.remove_shiptypes(df)
 df = removeOutliers.remove_gps_outliers(df)
-df = trim_moving.trim_moving(df)
 df = df.select(*removeDuplications.OUTPUT_COLUMNS)
 
 df.coalesce(OUTPUT_PARTITIONS).write.format("csv").option("header", "true").mode("overwrite").save(str(OUTPUT_PATH))
