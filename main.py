@@ -91,7 +91,7 @@ df = trimStationary.trim_stationary(df)
 df = ship_type.fill_ship_type(df)
 df = ship_type.remove_undefined_ship_type(df)
 df = removeShiptypes.remove_shiptypes(df)
-df = removeOutliers.remove_gps_outliers(df)
+df = removeOutliers.outlier_detector(df)
 df = df.select(*removeDuplications.OUTPUT_COLUMNS)
 
 df.coalesce(OUTPUT_PARTITIONS).write.format("csv").option("header", "true").mode("overwrite").save(str(OUTPUT_PATH))
