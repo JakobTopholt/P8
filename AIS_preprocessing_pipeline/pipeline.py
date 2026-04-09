@@ -36,7 +36,7 @@ def _env_int(name: str, default: int, minimum: int) -> int:
 def run() -> None:
     input_file = Path(os.environ.get("AIS_INPUT_FILE", str(DEFAULT_INPUT_FILE))).expanduser()
     output_path = Path(os.environ.get("AIS_OUTPUT_PATH", str(DEFAULT_OUTPUT_PATH))).expanduser()
-    local_cores = _env_int("SPARK_LOCAL_CORES", default=4, minimum=1)
+    local_cores = _env_int("SPARK_LOCAL_CORES", default=16, minimum=1)
     shuffle_partitions = _env_int("SPARK_SHUFFLE_PARTITIONS", default=64, minimum=8)
     input_partition_mb = _env_int("SPARK_INPUT_PARTITION_MB", default=64, minimum=16)
     output_partitions = _env_int("SPARK_OUTPUT_PARTITIONS", default=1, minimum=1)
