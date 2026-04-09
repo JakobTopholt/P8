@@ -596,34 +596,6 @@ If you cannot explain the last point, the project is not done.
 
 ---
 
-# Weekly operating rhythm
-
-Use this every week:
-
-**Monday**
-
-* pick 1 P0 coding ticket
-* pick 1 validation ticket
-
-**Midweek**
-
-* run on dev subset only
-* inspect 10 to 20 trajectories manually
-
-**Friday**
-
-* write 5 lines:
-
-  * what changed
-  * what broke
-  * what metric moved
-  * one representative success
-  * one representative failure
-
-That keeps you honest.
-
----
-
 # The 3 biggest traps
 
 ## Trap 1
