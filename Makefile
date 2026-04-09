@@ -5,7 +5,7 @@ CSV ?= AISDATA/aisdk-2026-02-05.cleaned.csv
 QUERY_ARGS ?= --help
 FRONTEND_DIR ?= frontend
 
-.PHONY: help setup install pipeline db-up db-down db-reset db-logs db-smoke db-import db-query frontend-install frontend-dev frontend-build
+.PHONY: help setup install pipeline db-up db-down db-reset db-logs db-smoke db-import db-query db-api frontend-install frontend-dev frontend-build
 
 help:
 	@echo "Targets:"
@@ -19,6 +19,7 @@ help:
 	@echo "  db-smoke         Run DB smoke test"
 	@echo "  db-import        Import cleaned AIS CSV (override with CSV=...)"
 	@echo "  db-query         Run range query script (override with QUERY_ARGS=...)"
+	@echo "  db-api           Start DataPoints HTTP API"
 	@echo "  frontend-install Install frontend dependencies"
 	@echo "  frontend-dev     Start frontend dev server"
 	@echo "  frontend-build   Build frontend"
@@ -54,6 +55,9 @@ db-import:
 
 db-query:
 	$(PYTHON) db/run_range_query.py $(QUERY_ARGS)
+
+db-api:
+	$(PYTHON) db/api_server.py
 
 frontend-install:
 	cd $(FRONTEND_DIR) && npm install

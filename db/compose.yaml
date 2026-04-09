@@ -1,6 +1,7 @@
 services:
   postgis:
     image: docker.io/postgis/postgis:18-3.6
+    platform: linux/amd64
     container_name: ais-postgis
     environment:
       POSTGRES_DB: ais

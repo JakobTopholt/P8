@@ -50,6 +50,8 @@ python -m ais_pipeline
 ## Frontend Quick Start
 
 ```bash
+python db/api_server.py
+
 cd frontend
 npm install
 npm run dev
