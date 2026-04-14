@@ -44,7 +44,7 @@ export default function PageMap() {
       setIsLoading(true);
       setLoadError(null);
       try {
-        const res = await fetch(`${apiBase}/api/datapoints?limit=1000000`, {
+        const res = await fetch(`${apiBase}/api/datapoints?limit=200`, {
           signal: controller.signal,
         });
 
@@ -53,6 +53,7 @@ export default function PageMap() {
         }
 
         const payload = (await res.json()) as DataPoint[];
+        console.log(`Loaded ${payload.length} data points`);
         setDataPoints(payload);
         setFilteredDataPoints(payload);
       } catch (error) {
@@ -96,13 +97,15 @@ export default function PageMap() {
         return;
       }
 
-      if (mode === "ID") {
-        const id = Number.parseInt(trimmed, 10);
-        if (Number.isNaN(id)) {
+      if (mode === "MMSI") {
+        const mmsi = Number.parseInt(trimmed, 10);
+        if (Number.isNaN(mmsi)) {
           setFilteredDataPoints([]);
           return;
         }
-        setFilteredDataPoints(dataPoints.filter((point) => point.id === id));
+        setFilteredDataPoints(
+          dataPoints.filter((point) => point.mmsi === mmsi),
+        );
         return;
       }
 
@@ -136,7 +139,7 @@ export default function PageMap() {
       { position: [number, number]; time: number }[]
     >();
 
-    for (const point of dataPoints) {
+    for (const point of filteredDataPoints) {
       const time = Date.parse(point.timestamp);
       const list = grouped.get(point.mmsi) ?? [];
       list.push({
@@ -151,7 +154,7 @@ export default function PageMap() {
         points.sort((a, b) => a.time - b.time).map((entry) => entry.position),
       )
       .filter((positions) => positions.length > 1);
-  }, [dataPoints]);
+  }, [filteredDataPoints]);
 
   return (
     <div className="page-map-container">
@@ -184,27 +187,7 @@ export default function PageMap() {
             <Popup>
               <div>
                 <h3>{point.name}</h3>
-                {point.description && <p>{point.description}</p>}
-              </div>
-            </Popup>
-          </CircleMarker>
-        ))}
-        {dataPoints.map((point) => (
-          <CircleMarker
-            key={point.id}
-            center={point.position}
-            radius={6}
-            pathOptions={{
-              color: "#676767",
-              fillColor: "#676767",
-              fillOpacity: 0.8,
-              weight: 3,
-              stroke: true,
-            }}
-          >
-            <Popup>
-              <div>
-                <h3>{point.name}</h3>
+                <p>MMSI: {point.mmsi}</p>
                 {point.description && <p>{point.description}</p>}
               </div>
             </Popup>

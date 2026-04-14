@@ -81,6 +81,34 @@ def parse_limit(params: dict[str, list[str]]) -> int:
     return min(limit, 20000)
 
 
+def build_datapoints_sql(where_clause: str) -> str:
+    return (
+        "WITH filtered AS (\n"
+        + SQL_BASE
+        + where_clause
+        + "\n),\n"
+        + "limited_mmsi AS (\n"
+        + "    SELECT DISTINCT mmsi\n"
+        + "    FROM filtered\n"
+        + "    ORDER BY mmsi ASC\n"
+        + "    LIMIT %s\n"
+        + ")\n"
+        + "SELECT\n"
+        + "    id,\n"
+        + "    mmsi,\n"
+        + "    lat,\n"
+        + "    lon,\n"
+        + "    ts,\n"
+        + "    mobile_type,\n"
+        + "    ship_type,\n"
+        + "    sog,\n"
+        + "    cog\n"
+        + "FROM filtered\n"
+        + "WHERE mmsi IN (SELECT mmsi FROM limited_mmsi)\n"
+        + "ORDER BY mmsi ASC, ts ASC"
+    )
+
+
 def row_to_datapoint(row: tuple[object, ...]) -> dict[str, object | None]:
     point_id, mmsi, lat, lon, ts, mobile_type, ship_type, sog, cog = row
     lat_f = float(lat)
@@ -146,11 +174,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
 
-        sql = (
-            SQL_BASE
-            + where_clause
-            + "\nORDER BY ts DESC\nLIMIT %s"
-        )
+        sql = build_datapoints_sql(where_clause)
         values.append(limit)
 
         try:

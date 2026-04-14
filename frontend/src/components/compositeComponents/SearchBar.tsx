@@ -1,18 +1,18 @@
-import { useState } from 'react'
+import { useState } from "react";
 import Search, { SearchMode } from "../pageComponents/Search";
 import SettingsTab from "../pageComponents/SettingsTab";
-import './SearchBar.css';
+import "./SearchBar.css";
 
 type SearchBarProps = {
-  onSearch: (query: string, mode: SearchMode) => void
-}
+  onSearch: (query: string, mode: SearchMode) => void;
+};
 
 export default function SearchBar({ onSearch }: SearchBarProps) {
-  const [isOpen, setIsOpen] = useState(false)
-  const [searchMode, setSearchMode] = useState<SearchMode>('ID')
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchMode, setSearchMode] = useState<SearchMode>("ID");
 
   return (
-    <div className={`search-bar-container${isOpen ? ' is-open' : ''}`}>
+    <div className={`search-bar-container${isOpen ? " is-open" : ""}`}>
       <div className="search-bar-header">
         <div className="search-bar-input">
           <Search searchMode={searchMode} onSearch={onSearch} />
@@ -23,15 +23,19 @@ export default function SearchBar({ onSearch }: SearchBarProps) {
         />
       </div>
       {isOpen && (
-        <div className="search-settings" role="group" aria-label="Search settings">
+        <div
+          className="search-settings"
+          role="group"
+          aria-label="Search settings"
+        >
           <p className="search-settings-title">Search by</p>
           <label className="search-settings-option">
             <input
               type="radio"
               name="search-mode"
               value="ID"
-              checked={searchMode === 'ID'}
-              onChange={() => setSearchMode('ID')}
+              checked={searchMode === "ID"}
+              onChange={() => setSearchMode("ID")}
             />
             ID
           </label>
@@ -39,9 +43,19 @@ export default function SearchBar({ onSearch }: SearchBarProps) {
             <input
               type="radio"
               name="search-mode"
+              value="MMSI"
+              checked={searchMode === "MMSI"}
+              onChange={() => setSearchMode("MMSI")}
+            />
+            MMSI
+          </label>
+          <label className="search-settings-option">
+            <input
+              type="radio"
+              name="search-mode"
               value="Time"
-              checked={searchMode === 'Time'}
-              onChange={() => setSearchMode('Time')}
+              checked={searchMode === "Time"}
+              onChange={() => setSearchMode("Time")}
             />
             Time
           </label>
@@ -50,13 +64,13 @@ export default function SearchBar({ onSearch }: SearchBarProps) {
               type="radio"
               name="search-mode"
               value="Location"
-              checked={searchMode === 'Location'}
-              onChange={() => setSearchMode('Location')}
+              checked={searchMode === "Location"}
+              onChange={() => setSearchMode("Location")}
             />
             Location
           </label>
         </div>
       )}
     </div>
-  )
+  );
 }

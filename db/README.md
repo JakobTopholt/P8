@@ -93,10 +93,12 @@ Endpoints:
 
 Optional query parameters for `/api/datapoints`:
 
-- `limit` (max 20000)
+- `limit` (max 20000 unique MMSI values)
 - `mmsi` (integer)
 - `t0` (ISO-8601 start timestamp)
 - `t1` (ISO-8601 end timestamp)
+
+`/api/datapoints` responses are ordered by `mmsi ASC, ts ASC`.
 
 The frontend Vite dev server proxies `/api/*` to this backend, so frontend code can call `/api/datapoints` directly during local development.
 
