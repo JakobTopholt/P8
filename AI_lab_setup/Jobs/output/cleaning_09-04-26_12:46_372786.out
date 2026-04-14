@@ -1,7 +1,0 @@
-Using system Java: /usr/lib/jvm/java-11-openjdk-amd64
-Warning: Hadoop environment was not found. Install Hadoop system-wide, set HADOOP_HOME, or add a portable build under '/ceph/project/P8-1/local_hadoop'.
-  Bidirectional: 4429091 rows (2411 removed)
-  Skip-neighbor 1: 4428047 rows (1044 removed)
-  Skip-neighbor 2: 4427821 rows (226 removed)
-  Skip-neighbor 3: 4427819 rows (2 removed)
-elapsed_time: 172.4188780784607
