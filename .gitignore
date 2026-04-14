@@ -9,6 +9,11 @@ local_java/
 spark_temp/
 
 # ---------------------------------
+# AI lab setup (Jobs output/error, Python runners, etc.)
+# ---------------------------------
+AI_lab_setup/*
+
+# ---------------------------------
 # Python: bytecode and extensions
 # ---------------------------------
 *$py.class

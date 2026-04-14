@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import glob
 import os
+import shutil
 import sys
 from dataclasses import replace
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
@@ -78,9 +81,80 @@ def _run_single_workload(config: ExperimentConfig) -> dict[str, MethodMetrics]:
     return run_single_workload(config)
 
 
+# Default project dir derived from code location: QDS/qds_project/src/experiments/ -> project root
+_CODE_PROJECT_DIR = str(Path(__file__).resolve().parent.parent.parent.parent.parent)
+_DEFAULT_DATE_TAG = "2026-02-05"
+
+
+def _resolve_project_dir() -> str:
+    return os.environ.get("AIS_PROJECT_DIR", _CODE_PROJECT_DIR)
+
+
+def _resolve_date_tag() -> str:
+    return os.environ.get("AIS_DATE_TAG", _DEFAULT_DATE_TAG)
+
+
+def _find_cleaned_csv() -> str | None:
+    """Find the cleaned CSV from env vars or standard project locations."""
+    # Explicit path from environment
+    csv_env = os.environ.get("AIS_CSV_PATH")
+    if csv_env and os.path.isfile(csv_env):
+        return csv_env
+
+    project_dir = _resolve_project_dir()
+    date_tag = _resolve_date_tag()
+    aisdata = os.path.join(project_dir, "AISDATA")
+
+    # Try Spark output directory
+    spark_dir = os.path.join(aisdata, f"aisdk-{date_tag}.cleaned.csv")
+    part_files = sorted(glob.glob(os.path.join(spark_dir, "part-*.csv")))
+    if part_files:
+        return part_files[0]
+
+    # Fallback to preprocessed folder
+    preprocessed = os.path.join(aisdata, "preprocessed_AIS_files", f"preprocessed_{date_tag}.csv")
+    if os.path.isfile(preprocessed):
+        return preprocessed
+
+    return None
+
+
+def _copy_ml_output(csv_path: str) -> None:
+    """Copy ML output CSV to ML_processed_AIS_files."""
+    project_dir = _resolve_project_dir()
+    date_tag = _resolve_date_tag()
+
+    ml_output = os.path.join(
+        os.path.dirname(csv_path),
+        f"MLClean-{os.path.basename(csv_path)}",
+    )
+    if not os.path.isfile(ml_output):
+        print(f"WARNING: ML output not found at {ml_output}", file=sys.stderr)
+        return
+
+    ml_dir = Path(project_dir) / "AISDATA" / "ML_processed_AIS_files"
+    ml_dir.mkdir(parents=True, exist_ok=True)
+    dest = ml_dir / f"ML_{date_tag}.csv"
+    shutil.copy2(ml_output, dest)
+    print(f"[ML] Copied to: {dest}")
+
+
 def main() -> None:
     """Command-line entry point for the AIS QDS experiment."""
-    run_ais_experiment(**parse_and_validate_experiment_args())
+    args = parse_and_validate_experiment_args()
+
+    # Auto-discover CSV if not provided via CLI
+    if args.get("csv_path") is None:
+        found = _find_cleaned_csv()
+        if found:
+            args["csv_path"] = found
+            print(f"[ML] Auto-discovered input: {found}")
+
+    run_ais_experiment(**args)
+
+    # Copy output to ML_processed_AIS_files
+    if args.get("csv_path"):
+        _copy_ml_output(args["csv_path"])
 
 
 if __name__ == "__main__":
