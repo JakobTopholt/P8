@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
-from typing import Mapping
+from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 
@@ -31,6 +31,22 @@ class QueryConfig:
     spatial_upper_quantile: float = 0.99
 
 
+@dataclass
+class TypedQueryWorkload:
+    """Holds both a range-query tensor (for training) and typed query list (for evaluation).
+
+    The ``range_queries`` tensor uses the standard [M, 6] format and is used
+    for importance-label computation and model training (which require the
+    tensor-based API).  The ``typed_queries`` list is used for the final
+    evaluation step and can contain any mix of query types.
+    """
+
+    range_queries: torch.Tensor
+    """[M, 6] range-query tensor derived from the same spatial parameters."""
+    typed_queries: list[dict[str, Any]]
+    """Typed query list for evaluation (may contain multiple query types)."""
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """Configuration for training and simplification."""
@@ -47,6 +63,9 @@ class ModelConfig:
     model_type: str = "baseline"
     turn_bias_weight: float = 0.1
     turn_score_method: str = "heading"
+    max_query_error: float | None = None
+    max_search_iterations: int = 20
+    error_tolerance: float = 1e-3
 
 
 @dataclass(frozen=True)
@@ -97,37 +116,82 @@ class ModelSimplificationResult:
     label: str
 
 
-_DATA_ALIASES = {"n_points_per_ship": "n_points"}
-_QUERY_ALIASES = {
-    "spatial_fraction": "query_spatial_fraction",
-    "temporal_fraction": "query_temporal_fraction",
-    "spatial_lower_quantile": "query_spatial_lower_quantile",
-    "spatial_upper_quantile": "query_spatial_upper_quantile",
-}
-
-
-def _section_kwargs(
-    flat_args: Mapping[str, object],
-    section_type: type[object],
-    *,
-    aliases: Mapping[str, str] | None = None,
-) -> dict[str, object]:
-    """Extract constructor kwargs for a config dataclass from flat arguments."""
-    alias_map = aliases or {}
-    section: dict[str, object] = {}
-    for f in fields(section_type):
-        source_key = alias_map.get(f.name, f.name)
-        if source_key in flat_args:
-            section[f.name] = flat_args[source_key]
-    return section
-
-
-def build_experiment_config(**flat_args: object) -> ExperimentConfig:
-    """Build a structured config object from flat argument names."""
+def build_experiment_config(
+    n_ships: int,
+    n_points: int,
+    n_queries: int,
+    epochs: int,
+    threshold: float,
+    target_ratio: float | None,
+    compression_ratio: float | None,
+    min_points_per_trajectory: int,
+    max_train_points: int | None,
+    model_max_points: int | None,
+    point_batch_size: int,
+    importance_chunk_size: int,
+    dp_max_points: int,
+    skip_baselines: bool,
+    skip_visualizations: bool,
+    max_visualization_points: int,
+    max_visualization_ships: int,
+    max_points_per_ship_plot: int,
+    csv_path: str | None,
+    save_csv: bool,
+    workload: str,
+    density_ratio: float,
+    query_spatial_fraction: float,
+    query_temporal_fraction: float,
+    query_spatial_lower_quantile: float,
+    query_spatial_upper_quantile: float,
+    model_type: str,
+    turn_bias_weight: float,
+    turn_score_method: str,
+    max_query_error: float | None = None,
+    max_search_iterations: int = 20,
+    error_tolerance: float = 1e-3,
+) -> ExperimentConfig:
+    """Build a single structured config from the flat argument list."""
     return ExperimentConfig(
-        data=DataConfig(**_section_kwargs(flat_args, DataConfig, aliases=_DATA_ALIASES)),
-        query=QueryConfig(**_section_kwargs(flat_args, QueryConfig, aliases=_QUERY_ALIASES)),
-        model=ModelConfig(**_section_kwargs(flat_args, ModelConfig)),
-        baselines=BaselineConfig(**_section_kwargs(flat_args, BaselineConfig)),
-        visualization=VisualizationConfig(**_section_kwargs(flat_args, VisualizationConfig)),
+        data=DataConfig(
+            n_ships=n_ships,
+            n_points_per_ship=n_points,
+            csv_path=csv_path,
+            save_csv=save_csv,
+        ),
+        query=QueryConfig(
+            workload=workload,
+            n_queries=n_queries,
+            density_ratio=density_ratio,
+            spatial_fraction=query_spatial_fraction,
+            temporal_fraction=query_temporal_fraction,
+            spatial_lower_quantile=query_spatial_lower_quantile,
+            spatial_upper_quantile=query_spatial_upper_quantile,
+        ),
+        model=ModelConfig(
+            epochs=epochs,
+            threshold=threshold,
+            target_ratio=target_ratio,
+            compression_ratio=compression_ratio,
+            min_points_per_trajectory=min_points_per_trajectory,
+            max_train_points=max_train_points,
+            model_max_points=model_max_points,
+            point_batch_size=point_batch_size,
+            importance_chunk_size=importance_chunk_size,
+            model_type=model_type,
+            turn_bias_weight=turn_bias_weight,
+            turn_score_method=turn_score_method,
+            max_query_error=max_query_error,
+            max_search_iterations=max_search_iterations,
+            error_tolerance=error_tolerance,
+        ),
+        baselines=BaselineConfig(
+            dp_max_points=dp_max_points,
+            skip_baselines=skip_baselines,
+        ),
+        visualization=VisualizationConfig(
+            skip_visualizations=skip_visualizations,
+            max_visualization_points=max_visualization_points,
+            max_visualization_ships=max_visualization_ships,
+            max_points_per_ship_plot=max_points_per_ship_plot,
+        ),
     )

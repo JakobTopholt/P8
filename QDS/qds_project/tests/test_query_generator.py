@@ -13,6 +13,10 @@ from src.queries.query_generator import (
     generate_density_biased_queries,
     generate_mixed_queries,
     generate_spatiotemporal_queries,
+    generate_intersection_queries,
+    generate_aggregation_queries,
+    generate_nearest_neighbor_queries,
+    generate_multi_type_workload,
 )
 
 
@@ -170,3 +174,97 @@ class TestGenerateSpatiotemporalQueriesBackwardCompat:
         assert (queries[:, 0] < queries[:, 1]).all()
         assert (queries[:, 2] < queries[:, 3]).all()
         assert (queries[:, 4] < queries[:, 5]).all()
+
+
+class TestGenerateIntersectionQueriesInGenerator:
+    """Integration tests for generate_intersection_queries in the generator module."""
+
+    def test_output_length(self):
+        trajs = _make_trajectories()
+        qs = generate_intersection_queries(trajs, n_queries=20)
+        assert len(qs) == 20
+
+    def test_type_field(self):
+        trajs = _make_trajectories()
+        qs = generate_intersection_queries(trajs, n_queries=10)
+        assert all(q["type"] == "intersection" for q in qs)
+
+    def test_min_less_than_max(self):
+        trajs = _make_trajectories()
+        qs = generate_intersection_queries(trajs, n_queries=30)
+        for q in qs:
+            p = q["params"]
+            assert p["lat_min"] < p["lat_max"]
+            assert p["lon_min"] < p["lon_max"]
+            assert p["time_start"] < p["time_end"]
+
+
+class TestGenerateAggregationQueriesInGenerator:
+    def test_output_length(self):
+        trajs = _make_trajectories()
+        qs = generate_aggregation_queries(trajs, n_queries=15)
+        assert len(qs) == 15
+
+    def test_type_field(self):
+        trajs = _make_trajectories()
+        qs = generate_aggregation_queries(trajs, n_queries=10)
+        assert all(q["type"] == "aggregation" for q in qs)
+
+
+class TestGenerateNearestNeighborQueriesInGenerator:
+    def test_output_length(self):
+        trajs = _make_trajectories()
+        qs = generate_nearest_neighbor_queries(trajs, n_queries=12)
+        assert len(qs) == 12
+
+    def test_type_field(self):
+        trajs = _make_trajectories()
+        qs = generate_nearest_neighbor_queries(trajs, n_queries=5)
+        assert all(q["type"] == "nearest" for q in qs)
+
+    def test_params_present(self):
+        trajs = _make_trajectories()
+        qs = generate_nearest_neighbor_queries(trajs, n_queries=5)
+        for q in qs:
+            assert {"query_lat", "query_lon", "query_time", "time_window", "k"} <= set(q["params"])
+
+    def test_default_k_is_1(self):
+        trajs = _make_trajectories()
+        qs = generate_nearest_neighbor_queries(trajs, n_queries=5)
+        assert all(q["params"]["k"] == 1 for q in qs)
+
+    def test_custom_k(self):
+        trajs = _make_trajectories()
+        qs = generate_nearest_neighbor_queries(trajs, n_queries=5, k=5)
+        assert all(q["params"]["k"] == 5 for q in qs)
+
+
+class TestGenerateMultiTypeWorkloadInGenerator:
+    def test_total_count(self):
+        trajs = _make_trajectories()
+        qs = generate_multi_type_workload(trajs, total_queries=80)
+        assert len(qs) == 80
+
+    def test_contains_all_four_types(self):
+        trajs = _make_trajectories()
+        qs = generate_multi_type_workload(trajs, total_queries=100)
+        types = {q["type"] for q in qs}
+        assert types == {"range", "intersection", "aggregation", "nearest"}
+
+    def test_custom_ratios_sum_to_one(self):
+        trajs = _make_trajectories()
+        ratios = {"range": 0.5, "aggregation": 0.5}
+        qs = generate_multi_type_workload(trajs, total_queries=20, ratios=ratios)
+        assert len(qs) == 20
+        types = {q["type"] for q in qs}
+        assert types <= {"range", "aggregation"}
+
+    def test_invalid_sum_raises(self):
+        trajs = _make_trajectories()
+        with pytest.raises(ValueError):
+            generate_multi_type_workload(trajs, total_queries=10, ratios={"range": 0.3, "nearest": 0.3})
+
+    def test_unknown_type_raises(self):
+        trajs = _make_trajectories()
+        with pytest.raises(ValueError):
+            generate_multi_type_workload(trajs, total_queries=10, ratios={"range": 0.5, "bogus": 0.5})

@@ -13,6 +13,9 @@ by a trained QDS model.
 Simplifies the full point cloud using model-predicted importance scores.
 Returns a tuple of `(simplified_points, retained_mask, importance_scores)`.
 
+When the model cannot score the full point cloud at once, points are processed
+in chunks using the same normalization statistics as the full pass.
+
 ---
 
 ## Simplification Modes
@@ -51,9 +54,12 @@ detect degenerate model outputs:
 
 - If the model score span is `< 1e-6` (all scores nearly identical), the
   query-driven scores are used as fallback.
-- If the top-1% of model-scored points do not have above-average query
-  importance, query-driven scores are used instead.
+- If the top-1% of model-scored points do not
+  have above-average query importance, query-driven scores are used.
 - Otherwise, model scores are used.
+
+If `model_max_points` is exceeded, chunked scoring is used instead of full-batch
+inference so large trajectories remain supported without changing the output.
 
 ---
 
@@ -82,15 +88,15 @@ new trajectory.
 
 ## Parameters
 
-| Parameter                  | Default | Description                                           |
-|----------------------------|---------|-------------------------------------------------------|
-| `points`                   | —       | `[N, 7]` or `[N, 8]` point cloud tensor              |
-| `model`                    | —       | Trained `TrajectoryQDSModel` or `TurnAwareQDSModel`   |
-| `queries`                  | —       | `[M, 6]` query workload tensor                        |
-| `threshold`                | 0.5     | Score threshold for global threshold mode             |
-| `compression_ratio`        | 0.2     | Per-trajectory fraction to retain; `None` → threshold |
-| `min_points_per_trajectory`| 3       | Minimum retained points per trajectory                |
-| `turn_bias_weight`         | 0.0     | Additive weight for `turn_score` bias                 |
-| `model_max_points`         | 300000  | Above this, query scores are used directly            |
-| `importance_chunk_size`    | 200000  | Chunk size for query score computation                |
-| `trajectory_boundaries`    | None    | Override inferred boundaries                          |
+| Parameter                  | Default | Description                                                                    |
+|----------------------------|---------|--------------------------------------------------------------------------------|
+| `points`                   | —       | `[N, 7]` or `[N, 8]` point cloud tensor                                         |
+| `model`                    | —       | Trained `TrajectoryQDSModel` or `TurnAwareQDSModel`                             |
+| `queries`                  | —       | `[M, 6]` query workload tensor                                                 |
+| `threshold`                | 0.5     | Score threshold for global threshold mode                                      |
+| `compression_ratio`        | 0.2     | Per-trajectory fraction to retain; `None` → threshold                          |
+| `min_points_per_trajectory`| 3       | Minimum retained points per trajectory                                         |
+| `turn_bias_weight`         | 0.0     | Additive weight for `turn_score` bias                                          |
+| `model_max_points`         | 300000  | Full-batch inference cap; above this, model scoring runs in chunks             |
+| `importance_chunk_size`    | 200000  | Chunk size for query score computation                                         |
+| `trajectory_boundaries`    | None    | Override inferred boundaries                                                   |

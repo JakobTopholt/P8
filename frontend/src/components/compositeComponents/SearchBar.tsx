@@ -8,7 +8,7 @@ type SearchBarProps = {
 }
 
 export default function SearchBar({ onSearch }: SearchBarProps) {
-  const [isOpen, setIsOpen] = useState(false)
+  const [isOpen, setIsOpen] = useState<boolean>(false)
   const [searchMode, setSearchMode] = useState<SearchMode>('ID')
 
   return (

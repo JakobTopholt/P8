@@ -1,6 +1,5 @@
 click==8.3.1
 cloudpickle==3.1.2
-dask==2026.1.2
 fsspec==2026.2.0
 locket==1.0.0
 numpy==2.4.2

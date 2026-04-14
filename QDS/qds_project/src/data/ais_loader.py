@@ -5,26 +5,13 @@ from __future__ import annotations
 import math
 
 import os
-from typing import TYPE_CHECKING, List, Optional
+from typing import List, Optional
 
 import torch
 from torch import Tensor
 
-if TYPE_CHECKING:
-    import numpy as np
-    import pandas as pd
 
-CSV_COLUMN_CANDIDATES: dict[str, list[str]] = {
-    "mmsi": ["mmsi"],
-    "lat": ["lat", "latitude"],
-    "lon": ["lon", "longitude"],
-    "speed": ["speed", "sog"],
-    "heading": ["heading", "cog"],
-    "timestamp": ["timestamp", "time", "datetime"],
-}
-
-
-def _make_endpoint_flags(t: int, start: bool) -> "np.ndarray":
+def _make_endpoint_flags(t: int, start: bool) -> "numpy.ndarray":
     """Return a [T, 1] float32 array with 1.0 at the start or end."""
     import numpy as np
     flags = np.zeros((t, 1), dtype="float32")
@@ -44,7 +31,7 @@ def _normalize_turn_score_method(method: str) -> str:
     return norm
 
 
-def _compute_turn_scores_geometry(lat_lon: "np.ndarray") -> "np.ndarray":
+def _compute_turn_scores_geometry(lat_lon: "numpy.ndarray") -> "numpy.ndarray":
     """Vectorized geometry-based turn score from [lat, lon] points."""
     import numpy as np
 
@@ -73,7 +60,7 @@ def _compute_turn_scores_geometry(lat_lon: "np.ndarray") -> "np.ndarray":
     return scores
 
 
-def _compute_turn_scores_heading(heading: "np.ndarray") -> "np.ndarray":
+def _compute_turn_scores_heading(heading: "numpy.ndarray") -> "numpy.ndarray":
     """Vectorized heading/COG-based turn score using wrapped angular deltas."""
     import numpy as np
 
@@ -91,10 +78,10 @@ def _compute_turn_scores_heading(heading: "np.ndarray") -> "np.ndarray":
 
 
 def _compute_turn_scores(
-    lat_lon: "np.ndarray",
-    heading: Optional["np.ndarray"] = None,
+    lat_lon: "numpy.ndarray",
+    heading: Optional["numpy.ndarray"] = None,
     method: str = "heading",
-) -> "np.ndarray":
+) -> "numpy.ndarray":
     """Compute per-point turn scores in [0, 1] using geometry or heading deltas."""
     method_norm = _normalize_turn_score_method(method)
     if method_norm == "geometry":
@@ -117,123 +104,6 @@ def _pick_column(columns: list[str], candidates: list[str]) -> Optional[str]:
     return None
 
 
-def _resolve_csv_columns(available_columns: list[str]) -> dict[str, Optional[str]]:
-    """Resolve normalized CSV column names to the expected semantic fields."""
-    resolved = {
-        key: _pick_column(available_columns, candidates)
-        for key, candidates in CSV_COLUMN_CANDIDATES.items()
-    }
-
-    required_missing: list[str] = []
-    if resolved["mmsi"] is None:
-        required_missing.append("mmsi")
-    if resolved["lat"] is None:
-        required_missing.append("lat/latitude")
-    if resolved["lon"] is None:
-        required_missing.append("lon/longitude")
-    if resolved["speed"] is None:
-        required_missing.append("speed/sog")
-    if required_missing:
-        raise ValueError(f"CSV is missing required columns: {set(required_missing)}")
-
-    return resolved
-
-
-def _coerce_numeric_columns(
-    df: "pd.DataFrame",
-    *,
-    mmsi_col: str,
-    lat_col: str,
-    lon_col: str,
-    speed_col: str,
-    heading_col: Optional[str],
-) -> str:
-    """Convert core numeric columns and ensure a usable heading column exists."""
-    import pandas as pd
-
-    df[mmsi_col] = pd.to_numeric(df[mmsi_col], errors="coerce")
-    df[lat_col] = pd.to_numeric(df[lat_col], errors="coerce")
-    df[lon_col] = pd.to_numeric(df[lon_col], errors="coerce")
-    df[speed_col] = pd.to_numeric(df[speed_col], errors="coerce").fillna(0.0)
-
-    if heading_col is not None:
-        df[heading_col] = pd.to_numeric(df[heading_col], errors="coerce").fillna(0.0)
-        return heading_col
-
-    synthetic_heading_col = "_synthetic_heading"
-    df[synthetic_heading_col] = 0.0
-    return synthetic_heading_col
-
-
-def _ensure_timestamp_column(
-    df: "pd.DataFrame",
-    *,
-    mmsi_col: str,
-    timestamp_col: Optional[str],
-) -> str:
-    """Return a valid timestamp column, synthesizing one when needed."""
-    import pandas as pd
-
-    if timestamp_col is not None:
-        df[timestamp_col] = pd.to_numeric(df[timestamp_col], errors="coerce")
-
-    has_valid_timestamp = (
-        timestamp_col is not None and bool(df[timestamp_col].notna().any())
-    )
-    if has_valid_timestamp:
-        seq = df.groupby(mmsi_col, sort=False).cumcount().astype(float)
-        vessel_base = df.groupby(mmsi_col, sort=False)[timestamp_col].transform("min")
-        missing_base = pd.Series(range(len(df)), index=df.index, dtype="float64") * 60.0
-        vessel_base = vessel_base.fillna(missing_base)
-        df[timestamp_col] = df[timestamp_col].fillna(vessel_base + seq * 60.0)
-        return timestamp_col
-
-    synthetic_timestamp_col = "_synthetic_timestamp"
-    df[synthetic_timestamp_col] = (
-        pd.Series(range(len(df)), index=df.index, dtype="float64") * 60.0
-    )
-    return synthetic_timestamp_col
-
-
-def _augment_values_with_flags_and_turn_scores(
-    values: "np.ndarray",
-    *,
-    method: str,
-) -> "np.ndarray":
-    """Append [is_start, is_end, turn_score] columns to base [T, 5] values."""
-    import numpy as np
-
-    n_points = values.shape[0]
-    is_start = _make_endpoint_flags(n_points, start=True)
-    is_end = _make_endpoint_flags(n_points, start=False)
-    turn_scores = _compute_turn_scores(
-        values[:, 1:3],
-        heading=values[:, 4],
-        method=method,
-    )
-    return np.concatenate([values, is_start, is_end, turn_scores], axis=1)
-
-
-def _group_to_trajectory_tensor(
-    group: "pd.DataFrame",
-    *,
-    timestamp_col: str,
-    lat_col: str,
-    lon_col: str,
-    speed_col: str,
-    heading_col: str,
-    method: str,
-) -> Tensor:
-    """Convert one vessel group to [T, 8] tensor with endpoint flags and turn scores."""
-    ordered_group = group.sort_values(timestamp_col, kind="mergesort")
-    values = ordered_group[
-        [timestamp_col, lat_col, lon_col, speed_col, heading_col]
-    ].to_numpy(dtype="float32", copy=True)
-    return torch.from_numpy(
-        _augment_values_with_flags_and_turn_scores(values, method=method)
-    )
-
-
 def load_ais_csv(
     filepath: str,
     turn_score_method: str = "heading",
@@ -246,61 +116,98 @@ def load_ais_csv(
     header = pd.read_csv(filepath, nrows=0)
     raw_columns = list(header.columns)
     norm_to_raw = {_normalize_column_name(col): col for col in raw_columns}
-    resolved = _resolve_csv_columns(list(norm_to_raw.keys()))
-    assert resolved["mmsi"] is not None
-    assert resolved["lat"] is not None
-    assert resolved["lon"] is not None
-    assert resolved["speed"] is not None
 
-    selected_norm = [
-        resolved["mmsi"],
-        resolved["lat"],
-        resolved["lon"],
-        resolved["speed"],
-    ]
-    if resolved["heading"] is not None:
-        selected_norm.append(resolved["heading"])
-    if resolved["timestamp"] is not None:
-        selected_norm.append(resolved["timestamp"])
+    available = list(norm_to_raw.keys())
+    mmsi_col_norm = _pick_column(available, ["mmsi"])
+    lat_col_norm = _pick_column(available, ["lat", "latitude"])
+    lon_col_norm = _pick_column(available, ["lon", "longitude"])
+    speed_col_norm = _pick_column(available, ["speed", "sog"])
+    heading_col_norm = _pick_column(available, ["heading", "cog"])
+    timestamp_col_norm = _pick_column(available, ["timestamp", "time", "datetime"])
+
+    required_missing: list[str] = []
+    if mmsi_col_norm is None:
+        required_missing.append("mmsi")
+    if lat_col_norm is None:
+        required_missing.append("lat/latitude")
+    if lon_col_norm is None:
+        required_missing.append("lon/longitude")
+    if speed_col_norm is None:
+        required_missing.append("speed/sog")
+    if required_missing:
+        raise ValueError(f"CSV is missing required columns: {set(required_missing)}")
+
+    selected_norm = [mmsi_col_norm, lat_col_norm, lon_col_norm, speed_col_norm]
+    if heading_col_norm is not None:
+        selected_norm.append(heading_col_norm)
+    if timestamp_col_norm is not None:
+        selected_norm.append(timestamp_col_norm)
 
     usecols = [norm_to_raw[n] for n in selected_norm]
     df = pd.read_csv(filepath, usecols=usecols, low_memory=False)
     df.columns = [_normalize_column_name(col) for col in df.columns]
 
-    mmsi_col = resolved["mmsi"]
-    lat_col = resolved["lat"]
-    lon_col = resolved["lon"]
-    speed_col = resolved["speed"]
-    heading_col = _coerce_numeric_columns(
-        df,
-        mmsi_col=mmsi_col,
-        lat_col=lat_col,
-        lon_col=lon_col,
-        speed_col=speed_col,
-        heading_col=resolved["heading"],
-    )
+    mmsi_col = mmsi_col_norm
+    lat_col = lat_col_norm
+    lon_col = lon_col_norm
+    speed_col = speed_col_norm
+    heading_col = heading_col_norm
+    timestamp_col = timestamp_col_norm
+
+    # Convert required numeric fields.
+    df[mmsi_col] = pd.to_numeric(df[mmsi_col], errors="coerce")
+    df[lat_col] = pd.to_numeric(df[lat_col], errors="coerce")
+    df[lon_col] = pd.to_numeric(df[lon_col], errors="coerce")
+    df[speed_col] = pd.to_numeric(df[speed_col], errors="coerce").fillna(0.0)
+
+    if heading_col is not None:
+        df[heading_col] = pd.to_numeric(df[heading_col], errors="coerce").fillna(0.0)
+    else:
+        heading_col = "_synthetic_heading"
+        df[heading_col] = 0.0
 
     # Remove rows with invalid vessel/position fields.
     df = df.dropna(subset=[mmsi_col, lat_col, lon_col])
-    timestamp_col = _ensure_timestamp_column(
-        df,
-        mmsi_col=mmsi_col,
-        timestamp_col=resolved["timestamp"],
+
+    # Build/clean timestamp column.
+    if timestamp_col is not None:
+        df[timestamp_col] = pd.to_numeric(df[timestamp_col], errors="coerce")
+
+    has_valid_timestamp = (
+        timestamp_col is not None and bool(df[timestamp_col].notna().any())
     )
 
+    if has_valid_timestamp:
+        # Fill remaining missing timestamps with per-vessel monotonic fallback.
+        seq = df.groupby(mmsi_col, sort=False).cumcount().astype(float)
+        vessel_base = df.groupby(mmsi_col, sort=False)[timestamp_col].transform("min")
+        missing_base = (pd.Series(range(len(df)), index=df.index, dtype="float64") * 60.0)
+        vessel_base = vessel_base.fillna(missing_base)
+        df[timestamp_col] = df[timestamp_col].fillna(vessel_base + seq * 60.0)
+    else:
+        # No timestamp information available: synthesize contiguous global timeline.
+        timestamp_col = "_synthetic_timestamp"
+        df[timestamp_col] = pd.Series(range(len(df)), index=df.index, dtype="float64") * 60.0
+
     trajectories: List[Tensor] = []
+    import numpy as np
     for _, group in df.groupby(mmsi_col, sort=False):
-        trajectories.append(
-            _group_to_trajectory_tensor(
-                group,
-                timestamp_col=timestamp_col,
-                lat_col=lat_col,
-                lon_col=lon_col,
-                speed_col=speed_col,
-                heading_col=heading_col,
-                method=method,
-            )
+        group = group.sort_values(timestamp_col, kind="mergesort")
+        # Keep only [time, lat, lon, speed, heading] — drop mmsi
+        values = group[[timestamp_col, lat_col, lon_col, speed_col, heading_col]].to_numpy(
+            dtype="float32",
+            copy=True,
         )
+        t = values.shape[0]
+        is_start = _make_endpoint_flags(t, start=True)
+        is_end = _make_endpoint_flags(t, start=False)
+        turn_scores = _compute_turn_scores(
+            values[:, 1:3],
+            heading=values[:, 4],
+            method=method,
+        )
+        values = np.concatenate([values, is_start, is_end, turn_scores], axis=1)
+        trajectories.append(torch.from_numpy(values))
 
     return trajectories
 
@@ -368,9 +275,21 @@ def generate_synthetic_ais_data(
                     }
                 )
 
-        values = torch.tensor(points, dtype=torch.float32).numpy()  # [T, 5]
-        augmented = _augment_values_with_flags_and_turn_scores(values, method=method)
-        trajectories.append(torch.from_numpy(augmented))  # [T, 8]
+        tensor = torch.tensor(points, dtype=torch.float32)  # [T, 5]
+        n_pts = tensor.shape[0]
+        is_start = torch.zeros(n_pts, 1, dtype=torch.float32)
+        is_end = torch.zeros(n_pts, 1, dtype=torch.float32)
+        if n_pts > 0:
+            is_start[0, 0] = 1.0
+            is_end[-1, 0] = 1.0
+        # Compute turn scores from either heading deltas or trajectory geometry.
+        import numpy as np
+        lat_lon_np = tensor[:, 1:3].numpy()
+        heading_np = tensor[:, 4].numpy()
+        turn_scores = torch.from_numpy(
+            _compute_turn_scores(lat_lon_np, heading=heading_np, method=method)
+        )  # [T, 1]
+        trajectories.append(torch.cat([tensor, is_start, is_end, turn_scores], dim=1))  # [T, 8]
 
     # Optionally persist to CSV
     if save_path is not None:

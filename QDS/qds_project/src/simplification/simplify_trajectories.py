@@ -97,6 +97,113 @@ def _simplify_per_trajectory(
             mask[traj_start + int(li.item())] = True
 
 
+def apply_threshold_simplification(
+    points: Tensor,
+    scores: Tensor,
+    threshold: float,
+    boundaries: List[Tuple[int, int]],
+    min_points_per_trajectory: int = 3,
+) -> tuple[Tensor, Tensor]:
+    """Apply threshold-based simplification and return the retained points and mask."""
+    mask: Tensor = scores >= threshold
+
+    # Ensure at least one point is always retained globally.
+    if mask.sum() == 0:
+        best_idx = scores.argmax()
+        mask = mask.clone()
+        mask[best_idx] = True
+
+    _enforce_trajectory_constraints(mask, scores, boundaries, min_points_per_trajectory)
+    return points[mask], mask
+
+
+def _build_model_points_chunk(
+    points_chunk: Tensor,
+    model: TrajectoryQDSModel | TurnAwareQDSModel,
+) -> Tensor:
+    """Build a model-specific feature chunk."""
+
+    if isinstance(model, TurnAwareQDSModel):
+        if points_chunk.shape[1] >= 8:
+            return points_chunk
+        return torch.cat(
+            [
+                points_chunk,
+                torch.zeros(
+                    points_chunk.shape[0],
+                    1,
+                    device=points_chunk.device,
+                    dtype=points_chunk.dtype,
+                ),
+            ],
+            dim=1,
+        )
+
+    return points_chunk[:, :7]
+
+
+def _normalize_model_chunk(
+    model_points_chunk: Tensor,
+    p_min: Tensor,
+    p_range: Tensor,
+) -> Tensor:
+    """Normalize first five model input features with precomputed global stats."""
+    norm_chunk = model_points_chunk.clone()
+    n_spatial_features = min(5, model_points_chunk.shape[1])
+    norm_chunk[:, :n_spatial_features] = (
+        (norm_chunk[:, :n_spatial_features] - p_min[:n_spatial_features]) / p_range[:n_spatial_features]
+    ).clamp(0.0, 1.0)
+    return norm_chunk
+
+
+def _normalize_queries_with_point_stats(
+    queries: Tensor,
+    p_min: Tensor,
+    p_range: Tensor,
+) -> Tensor:
+    """Normalize query tensor using point-derived global scaling statistics."""
+    norm_queries = queries.clone()
+    norm_queries[:, 0] = (norm_queries[:, 0] - p_min[1]) / p_range[1]
+    norm_queries[:, 1] = (norm_queries[:, 1] - p_min[1]) / p_range[1]
+    norm_queries[:, 2] = (norm_queries[:, 2] - p_min[2]) / p_range[2]
+    norm_queries[:, 3] = (norm_queries[:, 3] - p_min[2]) / p_range[2]
+    norm_queries[:, 4] = (norm_queries[:, 4] - p_min[0]) / p_range[0]
+    norm_queries[:, 5] = (norm_queries[:, 5] - p_min[0]) / p_range[0]
+    return norm_queries.clamp(0.0, 1.0)
+
+
+def _compute_model_scores_chunked(
+    points: Tensor,
+    model: TrajectoryQDSModel | TurnAwareQDSModel,
+    queries: Tensor,
+    chunk_size: int,
+) -> Tensor:
+    """Compute model scores over points in chunks to avoid skipping large datasets."""
+    eps = torch.tensor(1e-8, dtype=points.dtype, device=points.device)
+    p_min = points[:, :5].min(dim=0).values
+    p_max = points[:, :5].max(dim=0).values
+    p_range = torch.maximum(p_max - p_min, eps)
+
+    norm_queries = _normalize_queries_with_point_stats(queries, p_min, p_range)
+
+    _first_param = next(model.parameters(), None)
+    model_device = _first_param.device if _first_param is not None else torch.device("cpu")
+    norm_queries_device = norm_queries.to(model_device)
+
+    scores = torch.empty(points.shape[0], dtype=points.dtype, device=points.device)
+    model.eval()
+    with torch.no_grad():
+        for start in range(0, points.shape[0], chunk_size):
+            end = min(points.shape[0], start + chunk_size)
+            points_chunk = points[start:end]
+            model_points_chunk = _build_model_points_chunk(points_chunk, model)
+            norm_chunk = _normalize_model_chunk(model_points_chunk, p_min, p_range)
+            pred = model(norm_chunk.to(model_device), norm_queries_device)
+            scores[start:end] = pred.to(points.device)
+
+    return scores
+
+
 def simplify_trajectories(
     points: Tensor,
     model: TrajectoryQDSModel | TurnAwareQDSModel,
@@ -111,10 +218,10 @@ def simplify_trajectories(
     turn_bias_weight: float = 0.0,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Simplify AIS trajectory data using predicted per-point importance scores."""
-    run_model = model_max_points is None or points.shape[0] <= int(model_max_points)
+    run_full_model = model_max_points is None or points.shape[0] <= int(model_max_points)
 
     model_scores: Tensor | None = None
-    if run_model:
+    if run_full_model:
         if isinstance(model, TurnAwareQDSModel):
             model_points = points if points.shape[1] >= 8 else torch.cat(
                 [points, torch.zeros(points.shape[0], 1, device=points.device)], dim=1
@@ -129,6 +236,13 @@ def simplify_trajectories(
         model.eval()
         with torch.no_grad():
             model_scores = model(norm_points, norm_queries).to(points.device)
+    elif model_max_points is not None and int(model_max_points) > 0:
+        model_scores = _compute_model_scores_chunked(
+            points=points,
+            model=model,
+            queries=queries,
+            chunk_size=max(1, int(model_max_points)),
+        )
 
     if query_scores is None:
         query_scores = compute_importance(points, queries, chunk_size=importance_chunk_size)

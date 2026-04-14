@@ -16,7 +16,9 @@ Mean relative query error between the original and simplified point clouds.
 error = mean_q [ |result(original, q) - result(simplified, q)| / max(|result(original, q)|, ε) ]
 ```
 
-Lower values indicate better preservation of the query workload.
+The implementation clamps the denominator with `ε = 1e-8` so zero-result
+queries remain numerically stable. Lower values indicate better preservation of
+the query workload.
 
 **`compression_ratio(original_points, simplified_points)`**  
 Fraction of points retained after simplification: `K / N`. A value of 1.0
@@ -25,6 +27,16 @@ means no compression; smaller values indicate more aggressive compression.
 **`query_latency(points, queries)`**  
 Average wall-clock time per query in seconds, measured by running all queries
 against the point cloud once with `time.perf_counter`.
+
+**`compute_compression_metrics(original_points, simplified_points, trajectory_boundaries, retained_mask)`**  
+Returns a dictionary with the retained-point ratio, average points per
+trajectory before and after simplification, the number of trajectories that
+still have at least one retained point, and the total trajectory count.
+
+**`compute_typed_query_error(original_points, simplified_points, typed_queries, ...)`**  
+Supports mixed workloads by choosing the error metric per query type:
+`range`, `aggregation`, and `intersection` use relative error, while
+`nearest` uses absolute distance error.
 
 ---
 

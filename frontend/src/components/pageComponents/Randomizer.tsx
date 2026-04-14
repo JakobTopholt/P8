@@ -18,8 +18,8 @@ type RandomizerProps = {
 }
 
 export default function Randomizer({ allDataPoints, onRandomize }: RandomizerProps) {
-  const [isOpen, setIsOpen] = useState(false)
-  const [inputValue, setInputValue] = useState('')
+  const [isOpen, setIsOpen] = useState<boolean>(false)
+  const [inputValue, setInputValue] = useState<string>('')
   const [error, setError] = useState<string | null>(null)
 
   // Get unique MMSIs from all data points

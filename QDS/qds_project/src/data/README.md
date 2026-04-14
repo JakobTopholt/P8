@@ -72,9 +72,9 @@ available:
 **`TrajectoryDataset`** — PyTorch `Dataset` wrapper for a list of trajectory
 tensors.
 
-| Method                       | Description                                           |
-|------------------------------|-------------------------------------------------------|
-| `__len__()`                  | Number of trajectories                                |
-| `__getitem__(idx)`           | Trajectory tensor at index `idx`                      |
-| `get_all_points()`           | Flatten all trajectories into a single `[N, 8]` tensor|
+| Method                       | Description                                            |
+|------------------------------|--------------------------------------------------------|
+| `__len__()`                  | Number of trajectories                                 |
+| `__getitem__(idx)`           | Trajectory tensor at index `idx`                       |
+| `get_all_points()`           | Flatten all trajectories into a single `[N, 8]` tensor |
 | `get_trajectory_boundaries()`| `(start, end)` index pairs in the flattened point cloud|

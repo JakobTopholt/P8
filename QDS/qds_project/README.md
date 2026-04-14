@@ -37,7 +37,14 @@ expensive leave-one-out computation.
 ### Baseline — `TrajectoryQDSModel`
 
 - **Input**: 7-feature point vector — `[time, lat, lon, speed, heading, is_start, is_end]`
-- Standard cross-attention architecture
+- **Query-type awareness**: learned 16-dim embedding per query type (range /
+  intersection / aggregation / nearest) concatenated to the 6 numeric query
+  features before encoding, enabling type-specific importance signals.
+- **Point self-attention**: a lightweight self-attention layer lets each point
+  attend to its trajectory neighbours before cross-attention with queries,
+  capturing neighbourhood context (e.g. "this point precedes a sharp turn").
+- **LayerNorm**: applied after every attention block for stable training on
+  variable-length AIS trajectories.
 
 ### Turn-Aware — `TurnAwareQDSModel`
 
@@ -46,25 +53,27 @@ expensive leave-one-out computation.
   that trajectory bends carry structural importance independent of the query
   workload.
 
-See [`src/models/README.md`](src/models/README.md) for the full architecture diagram.
+See [`src/models/README.md`](src/models/README.md) for the full architecture diagram and helper function documentation.
 
 ---
 
 ## Model Architecture
 
 ```
-Points [N, F] ──► Point Encoder (F→64→64) ─────────────────────────────────► (+) ──► Importance Predictor (64→32→1→σ) ──► scores [N]
-                                                                               ▲
-Queries [M, 6] ─► Query Encoder (6→64→64) ──► Cross-Attention (Q attends K,V) ┘
-                                              (weighted mean over M queries)
+Points [N, F] ──► Point Encoder (F→64→64) ──► Point Self-Attn + Norm ─────────────────────────────────► (+) ──► Importance Predictor (64→32→1→σ) ──► scores [N]
+                                                                                                           ▲
+Queries [M, 6] ─► cat(<type_embed>) ─► Query Encoder (6+16→64→64) ──► Cross-Attention (Q attends K,V) + Norm ┘
+Query Types [M] ─► Type Embedding (→16) ┘
 ```
 
-| Component            | Architecture                               |
-|----------------------|--------------------------------------------|
-| Point Encoder        | Linear(F→64) → ReLU → Linear(64→64)        |
-| Query Encoder        | Linear(6→64) → ReLU → Linear(64→64)        |
-| Cross-Attention      | MultiheadAttention(embed=64, heads=4)      |
-| Importance Predictor | Linear(64→32) → ReLU → Linear(32→1) → σ    |
+| Component            | Architecture                                            |
+|----------------------|---------------------------------------------------------|
+| Point Encoder        | Linear(F→64) → ReLU → Linear(64→64)                     |
+| Point Self-Attention | MultiheadAttention(embed=64, heads=4) + LayerNorm       |
+| Query Type Embedding | Embedding(4, 16)                                        |
+| Query Encoder        | Linear(6+16→64) → ReLU → Linear(64→64)                  |
+| Cross-Attention      | MultiheadAttention(embed=64, heads=4) + LayerNorm       |
+| Importance Predictor | Linear(64→32) → ReLU → Linear(32→1) → σ                 |
 
 Query result: SUM of speed for all points inside the query rectangle.
 
@@ -76,7 +85,6 @@ Query result: SUM of speed for all points inside the query rectangle.
 qds_project/
 ├── requirements.txt
 ├── src/
-│   ├── README.md           # Source package index
 │   ├── data/               # AIS data loading and synthetic generation
 │   │   ├── README.md
 │   │   ├── ais_loader.py
@@ -85,12 +93,12 @@ qds_project/
 │   │   ├── README.md
 │   │   ├── query_generator.py
 │   │   ├── query_executor.py
-│   │   └── query_masks.py
+│   │   └── query_types.py
 │   ├── models/             # Neural network model definitions
 │   │   ├── README.md
-│   │   ├── attention_qds_model_base.py
 │   │   ├── trajectory_qds_model.py
-│   │   └── turn_aware_qds_model.py
+│   │   ├── turn_aware_qds_model.py
+│   │   └── __init__.py
 │   ├── training/           # Importance labels and training loop
 │   │   ├── README.md
 │   │   ├── importance_labels.py
@@ -108,16 +116,12 @@ qds_project/
 │   │   └── importance_visualizer.py
 │   └── experiments/        # End-to-end experiment pipeline
 │       ├── README.md
-│       ├── experiment_cli.py
-│       ├── experiment_config.py
-│       ├── experiment_pipeline_helpers.py
-│       ├── workload_runner.py
 │       └── run_ais_experiment.py
 └── tests/
-    ├── README.md           # Test categories and run modes
     ├── test_data.py
     ├── test_query_executor.py
     ├── test_query_generator.py
+    ├── test_query_types.py
     ├── test_model.py
     ├── test_metrics.py
     ├── test_baselines.py
@@ -156,15 +160,23 @@ python -m src.experiments.run_ais_experiment \
     --n_ships 50 \
     --n_points 150 \
     --n_queries 150 \
-    --target_ratio 0.10 \
-    --compression_ratio 0
+    --target_ratio 0.10
 ```
 
-Choose query workload type (`uniform`, `density`, `mixed`, or `all`):
+Choose query workload type (`uniform`, `density`, `mixed`, `intersection`, `aggregation`, `nearest`, `multi`, or `all`):
 
 ```bash
 cd qds_project
 python -m src.experiments.run_ais_experiment --workload density --n_queries 100
+
+# Typed workloads
+python -m src.experiments.run_ais_experiment --workload intersection --n_queries 100
+python -m src.experiments.run_ais_experiment --workload aggregation  --n_queries 100
+python -m src.experiments.run_ais_experiment --workload nearest      --n_queries 100
+python -m src.experiments.run_ais_experiment --workload multi        --n_queries 100
+
+# Run all workloads and compare
+python -m src.experiments.run_ais_experiment --workload all --n_queries 100
 ```
 
 ### Use real AIS data (CSV)
@@ -204,54 +216,27 @@ cd qds_project
 python -m pytest tests/ -v
 ```
 
-Test categories are organized with pytest markers:
-
-- `unit`: fast isolated tests (default for uncategorized tests)
-- `integration`: cross-module control-flow/orchestration tests
-- `slow`: higher-cost tests (for example training paths)
-
-Default run order is enforced as:
-
-1. `unit`
-2. `integration`
-3. `slow`
-
-Common commands:
-
-```bash
-# Fast local feedback (recommended on older hardware)
-python -m pytest tests/ -m "not slow" -q
-
-# Unit-only tests
-python -m pytest tests/ -m unit -q
-
-# Integration tests
-python -m pytest tests/ -m integration -q
-
-# Full suite
-python -m pytest tests/ -q
-```
-
 ---
 
 ## Configuration
 
 All scripts accept command-line arguments. Key parameters:
 
-| Parameter            | Default  | Description                                        |
-|----------------------|----------|----------------------------------------------------|
-| `--n_ships`          | 10       | Number of synthetic vessels                        |
-| `--n_points`         | 100      | Points per vessel trajectory                       |
-| `--n_queries`        | 100      | Number of spatiotemporal queries                   |
-| `--epochs`           | 50       | Training epochs                                    |
-| `--lr`               | 1e-3     | Learning rate                                      |
-| `--threshold`        | 0.5      | Importance threshold for simplification            |
-| `--target_ratio`     | None     | Auto-select threshold to retain this fraction      |
-| `--workload`         | density  | `uniform`, `density`, `mixed`, or `all`            |
-| `--density_ratio`    | 0.7      | Fraction of density-biased queries (mixed mode)    |
-| `--turn_score_method`| heading  | Turn score method: `heading` or `geometry`         |
-| `--csv_path`         | None     | Path to real AIS CSV file                          |
-| `--max_train_points` | None     | Cap training points (for large datasets)           |
+| Parameter            | Default  | Description                                                                                |
+|----------------------|----------|--------------------------------------------------------------------------------------------|
+| `--n_ships`          | 10       | Number of synthetic vessels                                                                |
+| `--n_points`         | 100      | Points per vessel trajectory                                                               |
+| `--n_queries`        | 100      | Number of spatiotemporal queries                                                           |
+| `--epochs`           | 50       | Training epochs                                                                            |
+| `--lr`               | 1e-3     | Learning rate                                                                              |
+| `--threshold`        | 0.5      | Importance threshold for simplification                                                    |
+| `--target_ratio`     | None     | Auto-select threshold to retain this fraction                                              |
+| `--workload`         | density  | `uniform`, `density`, `mixed`, `intersection`, `aggregation`, `nearest`, `multi`, or `all` |
+| `--density_ratio`    | 0.7      | Fraction of density-biased queries (mixed mode)                                            |
+| `--model_type`       | baseline | `baseline`, `turn_aware`, or `all`                                                         |
+| `--turn_score_method`| heading  | Turn score method: `heading` or `geometry`                                                 |
+| `--csv_path`         | None     | Path to real AIS CSV file                                                                  |
+| `--max_train_points` | None     | Cap training points (for large datasets)                                                   |
 
 ---
 
@@ -346,3 +331,4 @@ simplified, mask, scores = simplify_trajectories(
 print(f"Query error:       {query_error(points[:, :5], simplified[:, :5], queries):.4f}")
 print(f"Compression ratio: {compression_ratio(points, simplified):.4f}")
 ```
+

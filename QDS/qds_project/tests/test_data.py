@@ -6,7 +6,6 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.data.ais_loader import generate_synthetic_ais_data, _compute_turn_scores
-from src.data.ais_loader import load_ais_csv
 from src.data.trajectory_dataset import TrajectoryDataset
 
 class TestGenerateSyntheticAISData:
@@ -162,58 +161,3 @@ class TestTrajectoryDataset:
         ends = [b[1] for b in boundaries]
         assert starts == [0, 20, 40]
         assert ends == [20, 40, 60]
-
-
-@pytest.mark.integration
-class TestLoadAISCSV:
-    def test_missing_required_column_raises(self, tmp_path):
-        csv_path = tmp_path / "missing_speed.csv"
-        csv_path.write_text(
-            "mmsi,lat,lon,heading,timestamp\n"
-            "111000111,55.0,10.0,90.0,1000\n",
-            encoding="utf-8",
-        )
-
-        with pytest.raises(ValueError, match="missing required columns"):
-            load_ais_csv(str(csv_path))
-
-    def test_synthesizes_heading_and_timestamp_when_missing(self, tmp_path):
-        csv_path = tmp_path / "minimal.csv"
-        csv_path.write_text(
-            "mmsi,lat,lon,speed\n"
-            "111000111,55.0,10.0,12.0\n"
-            "111000111,55.1,10.1,12.5\n"
-            "222000222,56.0,11.0,9.0\n"
-            "222000222,56.1,11.1,9.5\n",
-            encoding="utf-8",
-        )
-
-        trajectories = load_ais_csv(str(csv_path))
-        assert len(trajectories) == 2
-
-        for traj in trajectories:
-            assert traj.shape == (2, 8)
-            assert torch.allclose(traj[:, 4], torch.zeros(2, dtype=traj.dtype))
-            assert traj[0, 5].item() == pytest.approx(1.0)
-            assert traj[-1, 6].item() == pytest.approx(1.0)
-            time_delta = traj[1:, 0] - traj[:-1, 0]
-            assert torch.allclose(time_delta, torch.full_like(time_delta, 60.0))
-
-    def test_column_aliases_and_partial_timestamps(self, tmp_path):
-        csv_path = tmp_path / "aliases.csv"
-        csv_path.write_text(
-            "MMSI,Latitude,Longitude,SOG,COG,Time\n"
-            "123456789,55.00,10.00,12.0,90.0,1000\n"
-            "123456789,55.10,10.10,12.5,92.0,\n"
-            "123456789,55.20,10.20,13.0,94.0,1120\n",
-            encoding="utf-8",
-        )
-
-        trajectories = load_ais_csv(str(csv_path))
-        assert len(trajectories) == 1
-        traj = trajectories[0]
-
-        assert traj.shape == (3, 8)
-        assert traj[0, 0].item() == pytest.approx(1000.0)
-        assert traj[1, 0].item() == pytest.approx(1060.0)
-        assert traj[2, 0].item() == pytest.approx(1120.0)

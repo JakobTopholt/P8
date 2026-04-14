@@ -31,7 +31,7 @@ const validateInput = (value: string, mode: SearchMode): string | null => {
 }
 
 export default function Search({ searchMode, onSearch }: SearchProps) {
-  const [inputValue, setInputValue] = useState('')
+  const [inputValue, setInputValue] = useState<string>('')
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {

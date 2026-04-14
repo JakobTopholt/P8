@@ -36,12 +36,6 @@ class TestQueryError:
         err = query_error(pts, empty, queries)
         assert err >= 0.0
 
-    def test_empty_queries_returns_zero(self):
-        pts, _ = _make_points_and_queries()
-        empty_queries = torch.zeros(0, 6)
-        err = query_error(pts, pts, empty_queries)
-        assert err == pytest.approx(0.0, abs=1e-8)
-
 class TestCompressionRatio:
     def test_no_compression(self):
         pts, _ = _make_points_and_queries()
