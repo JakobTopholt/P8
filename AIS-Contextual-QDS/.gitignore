@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local env
+.env
+.venv/
+
+# Local data artifacts (keep folder structure only)
+data/raw/*
+data/interim/*
+data/processed/*
+data/context/*
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!data/context/.gitkeep
+
+# Generated results
+results/metrics/*
+results/figures/*
+results/logs/*
+!results/metrics/.gitkeep
+!results/figures/.gitkeep
+!results/logs/.gitkeep
+
+# Notebooks
+.ipynb_checkpoints/

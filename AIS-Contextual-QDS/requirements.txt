@@ -1,0 +1,2 @@
+# Shared dependencies (for example psycopg, PyYAML) are defined in /requirements.txt.
+pyshp==3.0.3
