@@ -72,7 +72,7 @@ def main():
     parser.add_argument(
         "--input",
         default=str(AISDATA_DIR / "aisdk-2026-02-05.cleaned.csv"),
-        help="Path to cleaned CSV (Spark output directory)",
+        help="Path to cleaned CSV file or Spark output directory",
     )
     parser.add_argument(
         "--top", type=int, default=1000,

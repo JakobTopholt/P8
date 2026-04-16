@@ -10,6 +10,25 @@ This package contains the root Spark-based AIS cleaning pipeline code.
 
 Both run the same `run()` function.
 
+## Output Naming
+
+By default, the pipeline writes one cleaned CSV file next to the input file.
+For an input file named:
+
+```text
+AISDATA/aisdk-2026-01-01.csv
+```
+
+the cleaned output is:
+
+```text
+AISDATA/aisdk-2026-01-01.cleaned.csv
+```
+
+Override the location with `AIS_OUTPUT_PATH` if needed. Set
+`AIS_OUTPUT_AS_DIRECTORY=1` only when you intentionally want Spark's raw
+multi-part output directory.
+
 ## Package Layout
 
 - `pipeline.py`: orchestrates Spark session setup, environment bootstrapping, and step execution.

@@ -24,11 +24,12 @@ running the root AIS cleaning pipeline (`main.py` -> `ais_pipeline/pipeline.py`)
 Used by the AIS cleaning pipeline:
 
 - `AIS_INPUT_FILE` (default `AISDATA/aisdk-2026-02-05.csv`)
-- `AIS_OUTPUT_PATH` (default `AISDATA/aisdk-2026-02-05.cleaned.csv`)
+- `AIS_OUTPUT_PATH` (default is derived from `AIS_INPUT_FILE`, e.g. `AISDATA/aisdk-2026-02-05.cleaned.csv`)
+- `AIS_OUTPUT_AS_DIRECTORY` (`1` keeps Spark's raw multi-part output directory; default writes one CSV file)
 - `SPARK_LOCAL_CORES` (default `4`)
 - `SPARK_SHUFFLE_PARTITIONS` (default `64`)
 - `SPARK_INPUT_PARTITION_MB` (default `64`)
-- `SPARK_OUTPUT_PARTITIONS` (default `1`)
+- `SPARK_OUTPUT_PARTITIONS` (default `1`; only used when `AIS_OUTPUT_AS_DIRECTORY=1`)
 - `PRINT_ROW_COUNT` (`1` enables final row count print)
 
 Example:

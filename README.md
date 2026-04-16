@@ -41,6 +41,10 @@ pip install -r requirements.txt
 python main.py
 ```
 
+The cleaning pipeline writes a single cleaned CSV next to the input file by
+default, e.g. `AISDATA/aisdk-2026-01-01.csv` becomes
+`AISDATA/aisdk-2026-01-01.cleaned.csv`.
+
 Direct module entrypoint (equivalent):
 
 ```bash
