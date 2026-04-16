@@ -1,0 +1,29 @@
+{
+  "type": "FeatureCollection",
+  "name": "ais_qds_context_corridor",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "corridor_main_transit_lane",
+        "label": "Great Belt Route T-inspired MVP centerline",
+        "role": "corridor_membership_target",
+        "recommended_buffer_meters": 700,
+        "source_note": "Hand-drawn centerline following the main Great Belt transit direction for MVP query testing, informed by DMA descriptions of the Great Belt transit route and Route T / Great Belt TSS context. Buffer before loading. Not official routeing geometry."
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [10.78, 54.72],
+          [10.88, 54.92],
+          [10.94, 55.12],
+          [10.98, 55.32],
+          [10.94, 55.50],
+          [10.84, 55.72],
+          [10.72, 55.94],
+          [10.66, 56.10]
+        ]
+      }
+    }
+  ]
+}

@@ -16,6 +16,10 @@ data/context/*
 !data/interim/.gitkeep
 !data/processed/.gitkeep
 !data/context/.gitkeep
+!data/context/README.md
+!data/context/study_region.geojson
+!data/context/zones.geojson
+!data/context/corridor.geojson
 
 # Generated results
 results/metrics/*

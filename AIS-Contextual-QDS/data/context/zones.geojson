@@ -1,0 +1,69 @@
+{
+  "type": "FeatureCollection",
+  "name": "ais_qds_context_zones",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "zone_port_approach",
+        "label": "Nyborg port approach MVP zone",
+        "role": "zone_entry_target",
+        "source_note": "Hand-drawn port-approach-like zone west of the Great Belt fixed link for MVP query testing. Not an official port limit."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [10.62, 55.23],
+            [10.88, 55.23],
+            [10.90, 55.39],
+            [10.66, 55.42],
+            [10.62, 55.23]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "zone_anchor_or_waiting_area",
+        "label": "Southern Great Belt waiting-area MVP zone",
+        "role": "zone_entry_target",
+        "source_note": "Hand-drawn waiting/holding-area-like zone south of the bridge corridor for MVP query testing. It should be refined after AIS density and low-speed clusters are inspected."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [10.74, 55.02],
+            [11.08, 55.02],
+            [11.08, 55.21],
+            [10.76, 55.23],
+            [10.74, 55.02]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "zone_narrow_passage_control",
+        "label": "Korsoer-Sprogoe narrow passage MVP zone",
+        "role": "zone_entry_target",
+        "source_note": "Hand-drawn zone around the constrained Korsor-Sprogoe / Great Belt fixed-link passage, informed by DMA references to the Great Belt TSS area. Not an official TSS polygon."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [10.88, 55.29],
+            [11.20, 55.29],
+            [11.20, 55.44],
+            [10.88, 55.44],
+            [10.88, 55.29]
+          ]
+        ]
+      }
+    }
+  ]
+}

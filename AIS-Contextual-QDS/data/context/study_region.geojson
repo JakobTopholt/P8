@@ -1,0 +1,30 @@
+{
+  "type": "FeatureCollection",
+  "name": "ais_qds_study_region",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "great_belt_study_area",
+        "label": "Great Belt / Storebaelt MVP study area",
+        "role": "study_region",
+        "source_note": "Hand-drawn MVP polygon around the Great Belt transit area, informed by DMA descriptions of the Great Belt transit route and Great Belt traffic separation context. Not an official nautical chart boundary."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [10.32, 54.68],
+            [11.32, 54.68],
+            [11.92, 55.12],
+            [11.88, 55.78],
+            [11.24, 56.14],
+            [10.44, 56.12],
+            [10.18, 55.48],
+            [10.32, 54.68]
+          ]
+        ]
+      }
+    }
+  ]
+}
