@@ -30,6 +30,16 @@ def test_load_default_config() -> None:
     assert config.baselines.default_split == "dev"
 
 
+def test_load_iteration1_10day_config() -> None:
+    config = load_config(PROJECT_ROOT / "configs" / "iteration1_10days.example.yaml")
+
+    assert config.project.name == "geofence-aware-query-driven-simplification-iteration1-10days"
+    assert config.scope.window_start == "2026-01-01T00:00:00+00:00"
+    assert config.scope.window_end == "2026-01-11T00:00:00+00:00"
+    assert config.subsets.subset_name == "great_belt_iter1_10days"
+    assert config.queries.retained_point_budgets == [0.10, 0.20, 0.30, 0.40, 0.50]
+
+
 def test_invalid_budget_raises(tmp_path: Path) -> None:
     config_path = PROJECT_ROOT / "configs" / "mvp.example.yaml"
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))

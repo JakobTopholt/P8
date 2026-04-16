@@ -80,10 +80,20 @@ pip install -r requirements.txt
 cd AIS-Contextual-QDS
 ```
 
+For the first iteration, use the 10-day config:
+
+```bash
+CONFIG=configs/iteration1_10days.example.yaml
+```
+
+That config targets cargo trajectories from `2026-01-01T00:00:00+00:00`
+through `2026-01-10T23:59:59...+00:00`; the configured `window_end` is the
+exclusive timestamp `2026-01-11T00:00:00+00:00`.
+
 5. Bootstrap schema and tables:
 
 ```bash
-python -m src.cli --config configs/mvp.example.yaml bootstrap
+python -m src.cli --config "$CONFIG" bootstrap
 ```
 
 6. Load context geometry into the new schema (`ais_qds` by default):
@@ -93,7 +103,7 @@ python -m src.cli --config configs/mvp.example.yaml bootstrap
 - 1 corridor polygon in `ais_qds.context_corridors`
 
 ```bash
-python -m src.cli --config configs/mvp.example.yaml load-context \
+python -m src.cli --config "$CONFIG" load-context \
   --study-region-file data/context/study_region.geojson \
   --zones-file data/context/zones.geojson \
   --corridor-file data/context/corridor.geojson
@@ -102,7 +112,7 @@ python -m src.cli --config configs/mvp.example.yaml load-context \
 For line-based corridor inputs, provide a buffer distance in meters:
 
 ```bash
-python -m src.cli --config configs/mvp.example.yaml load-context \
+python -m src.cli --config "$CONFIG" load-context \
   --study-region-file data/context/study_region.geojson \
   --zones-file data/context/zones.geojson \
   --corridor-file data/context/corridor_centerline.geojson \
@@ -114,25 +124,25 @@ python -m src.cli --config configs/mvp.example.yaml load-context \
 7. Run Sprint 1 data build pipeline:
 
 ```bash
-python -m src.cli --config configs/mvp.example.yaml sprint1
+python -m src.cli --config "$CONFIG" sprint1
 ```
 
 8. Inspect table counts:
 
 ```bash
-python -m src.cli --config configs/mvp.example.yaml status
+python -m src.cli --config "$CONFIG" status
 ```
 
 9. Run Sprint 2 baselines (on dev split by default):
 
 ```bash
-python -m src.cli --config configs/mvp.example.yaml run-baselines --overwrite
+python -m src.cli --config "$CONFIG" run-baselines --overwrite
 ```
 
 10. Export summary artifacts for latest run:
 
 ```bash
-python -m src.cli --config configs/mvp.example.yaml summarize-baselines
+python -m src.cli --config "$CONFIG" summarize-baselines
 ```
 
 11. Export a visual inspection HTML report:
@@ -140,13 +150,13 @@ python -m src.cli --config configs/mvp.example.yaml summarize-baselines
 Raw trajectories + context only:
 
 ```bash
-python -m src.cli --config configs/mvp.example.yaml export-visual-inspection
+python -m src.cli --config "$CONFIG" export-visual-inspection
 ```
 
 Compare a simplification run against raw trajectories:
 
 ```bash
-python -m src.cli --config configs/mvp.example.yaml export-visual-inspection \
+python -m src.cli --config "$CONFIG" export-visual-inspection \
   --method uniform \
   --budget 0.10
 ```
@@ -154,7 +164,7 @@ python -m src.cli --config configs/mvp.example.yaml export-visual-inspection \
 Inspect specific trajectories:
 
 ```bash
-python -m src.cli --config configs/mvp.example.yaml export-visual-inspection \
+python -m src.cli --config "$CONFIG" export-visual-inspection \
   --trajectory-ids 101,205,309 \
   --limit 3
 ```
@@ -166,13 +176,13 @@ The command writes a standalone HTML file under `results/figures/` by default.
 Raw trajectories + context only:
 
 ```bash
-python -m src.cli --config configs/mvp.example.yaml export-qgis-inspection
+python -m src.cli --config "$CONFIG" export-qgis-inspection
 ```
 
 Compare a simplification run against raw trajectories:
 
 ```bash
-python -m src.cli --config configs/mvp.example.yaml export-qgis-inspection \
+python -m src.cli --config "$CONFIG" export-qgis-inspection \
   --method uniform \
   --budget 0.10
 ```
@@ -194,6 +204,14 @@ make summarize-baselines
 make export-visual-inspection
 make export-qgis-inspection
 make status
+```
+
+For `make`, pass the first-iteration config explicitly:
+
+```bash
+make sprint1 CONFIG=configs/iteration1_10days.example.yaml
+make run-baselines CONFIG=configs/iteration1_10days.example.yaml
+make export-qgis-inspection CONFIG=configs/iteration1_10days.example.yaml
 ```
 
 ## Command Map to Sprint Tasks

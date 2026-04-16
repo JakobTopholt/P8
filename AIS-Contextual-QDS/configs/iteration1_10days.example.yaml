@@ -1,0 +1,59 @@
+project:
+  name: geofence-aware-query-driven-simplification-iteration1-10days
+  description: First AIS-QDS iteration using Great Belt cargo data from days 1-10 only.
+
+database:
+  url_env: DATABASE_URL
+  schema: ais_qds
+  source_points_table: public.ais_points_cleaned
+  source_ts_column: ts
+  source_ship_type_column: ship_type
+
+scope:
+  region_name: great_belt_study_area
+  vessel_class_pattern: "%cargo%"
+  # First iteration: days 1-10 inclusive. The end timestamp is exclusive.
+  window_start: "2026-01-01T00:00:00+00:00"
+  window_end: "2026-01-11T00:00:00+00:00"
+
+context:
+  zone_names:
+    - zone_port_approach
+    - zone_anchor_or_waiting_area
+    - zone_narrow_passage_control
+  corridor_name: corridor_main_transit_lane
+
+trajectory:
+  max_gap_minutes: 30
+  max_implied_speed_knots: 60.0
+  min_points: 20
+
+queries:
+  retained_point_budgets:
+    - 0.10
+    - 0.20
+    - 0.30
+    - 0.40
+    - 0.50
+  min_corridor_overlap_meters: 1.0
+
+subsets:
+  subset_name: great_belt_iter1_10days
+  dev_size: 300
+  eval_size: 300
+  random_seed: 42
+
+paths:
+  schema_sql_file: sql/001_ais_qds_schema.sql
+  logs_dir: results/logs
+  metrics_dir: results/metrics
+  figures_dir: results/figures
+  log_level: INFO
+
+baselines:
+  methods:
+    - uniform
+    - dp
+  default_split: dev
+  dp_search_iterations: 24
+  insert_batch_size: 10000
