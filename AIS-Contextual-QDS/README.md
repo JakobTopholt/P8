@@ -100,23 +100,24 @@ python -m src.cli --config "$CONFIG" bootstrap
 
 - one active study region in `ais_qds.study_region`
 - 3 zones in `ais_qds.context_zones` (matched by `name` property by default)
-- 1 corridor polygon in `ais_qds.context_corridors`
+- 1 corridor polygon in `ais_qds.context_corridors` after buffering the stored corridor centerline
 
 ```bash
 python -m src.cli --config "$CONFIG" load-context \
   --study-region-file data/context/study_region.geojson \
   --zones-file data/context/zones.geojson \
-  --corridor-file data/context/corridor.geojson
+  --corridor-file data/context/corridor.geojson \
+  --corridor-buffer-meters 700
 ```
 
-For line-based corridor inputs, provide a buffer distance in meters:
+If you later replace `corridor.geojson` with an already-buffered polygon file,
+omit `--corridor-buffer-meters`:
 
 ```bash
 python -m src.cli --config "$CONFIG" load-context \
   --study-region-file data/context/study_region.geojson \
   --zones-file data/context/zones.geojson \
-  --corridor-file data/context/corridor_centerline.geojson \
-  --corridor-buffer-meters 300
+  --corridor-file data/context/corridor_polygon.geojson
 ```
 
 `sql/010_seed_context_template.sql` remains available as a manual SQL fallback.
@@ -195,7 +196,7 @@ You can run equivalent commands via `make`:
 
 ```bash
 make bootstrap
-make load-context STUDY_REGION_FILE=data/context/study_region.geojson ZONES_FILE=data/context/zones.geojson CORRIDOR_FILE=data/context/corridor.geojson
+make load-context STUDY_REGION_FILE=data/context/study_region.geojson ZONES_FILE=data/context/zones.geojson CORRIDOR_FILE=data/context/corridor.geojson CORRIDOR_BUFFER_METERS=700
 make build-trajectories
 make compute-labels
 make create-dev-subset
