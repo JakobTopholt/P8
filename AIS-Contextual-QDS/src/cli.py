@@ -12,7 +12,7 @@ from .config import load_config, read_database_url
 from .db import get_connection
 from .logging_utils import configure_logging
 from .paths import resolve_project_path
-from .pipelines import baselines, bootstrap, context_loader, labels, reports, status, subsets, trajectories
+from .pipelines import baselines, bootstrap, context_loader, labels, qgis_export, reports, status, subsets, trajectories, visual_inspection
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +30,13 @@ def _parse_csv_floats(raw_value: str | None) -> list[float] | None:
     if values is None:
         return None
     return [float(value) for value in values]
+
+
+def _parse_csv_ints(raw_value: str | None) -> list[int] | None:
+    values = _parse_csv_list(raw_value)
+    if values is None:
+        return None
+    return [int(value) for value in values]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -191,6 +198,125 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional comma-separated method filter, e.g. 'uniform,dp'.",
     )
 
+    inspect_parser = subparsers.add_parser(
+        "export-visual-inspection",
+        help="Export a self-contained HTML report for raw/context/simplified trajectory inspection.",
+    )
+    inspect_parser.add_argument(
+        "--output",
+        default=None,
+        help="Output HTML path. Defaults to results/figures/inspection_*.html.",
+    )
+    inspect_parser.add_argument(
+        "--run-id",
+        type=int,
+        default=None,
+        help="Optional simplification run_id to compare against raw trajectories.",
+    )
+    inspect_parser.add_argument(
+        "--run-tag",
+        default=None,
+        help="Optional run_tag filter for selecting a simplification run.",
+    )
+    inspect_parser.add_argument(
+        "--method",
+        default=None,
+        help="Optional method filter for selecting a simplification run, e.g. uniform or dp.",
+    )
+    inspect_parser.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        help="Optional budget filter for selecting a simplification run, e.g. 0.1.",
+    )
+    inspect_parser.add_argument(
+        "--split",
+        choices=["all", "dev", "eval"],
+        default="dev",
+        help="Subset split to sample when --trajectory-ids is not provided.",
+    )
+    inspect_parser.add_argument(
+        "--subset-name",
+        default=None,
+        help="Subset name override.",
+    )
+    inspect_parser.add_argument(
+        "--trajectory-ids",
+        default=None,
+        help="Comma-separated trajectory IDs to inspect.",
+    )
+    inspect_parser.add_argument(
+        "--limit",
+        type=int,
+        default=12,
+        help="Maximum number of trajectories to export.",
+    )
+    inspect_parser.add_argument(
+        "--max-points-per-line",
+        type=int,
+        default=1500,
+        help="Maximum points rendered per raw/simplified SVG line for readability.",
+    )
+
+    qgis_parser = subparsers.add_parser(
+        "export-qgis-inspection",
+        help="Export GeoJSON layers and a QGIS project for trajectory/context inspection.",
+    )
+    qgis_parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Output folder. Defaults to results/figures/qgis_inspection_*.",
+    )
+    qgis_parser.add_argument(
+        "--run-id",
+        type=int,
+        default=None,
+        help="Optional simplification run_id to compare against raw trajectories.",
+    )
+    qgis_parser.add_argument(
+        "--run-tag",
+        default=None,
+        help="Optional run_tag filter for selecting a simplification run.",
+    )
+    qgis_parser.add_argument(
+        "--method",
+        default=None,
+        help="Optional method filter for selecting a simplification run, e.g. uniform or dp.",
+    )
+    qgis_parser.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        help="Optional budget filter for selecting a simplification run, e.g. 0.1.",
+    )
+    qgis_parser.add_argument(
+        "--split",
+        choices=["all", "dev", "eval"],
+        default="dev",
+        help="Subset split to sample when --trajectory-ids is not provided.",
+    )
+    qgis_parser.add_argument(
+        "--subset-name",
+        default=None,
+        help="Subset name override.",
+    )
+    qgis_parser.add_argument(
+        "--trajectory-ids",
+        default=None,
+        help="Comma-separated trajectory IDs to inspect.",
+    )
+    qgis_parser.add_argument(
+        "--limit",
+        type=int,
+        default=12,
+        help="Maximum number of trajectories to export.",
+    )
+    qgis_parser.add_argument(
+        "--no-points",
+        action="store_true",
+        help="Skip raw/simplified point layers and export trajectory lines only.",
+    )
+
     return parser
 
 
@@ -288,6 +414,42 @@ def main(argv: Sequence[str] | None = None) -> int:
                 config,
                 run_tag=args.run_tag,
                 methods=_parse_csv_list(args.methods),
+            )
+            _print_json(summary)
+            return 0
+
+        if args.command == "export-visual-inspection":
+            summary = visual_inspection.run(
+                conn,
+                config,
+                output_path=Path(args.output) if args.output else None,
+                run_id=args.run_id,
+                run_tag=args.run_tag,
+                method=args.method,
+                budget=args.budget,
+                split=args.split,
+                subset_name=args.subset_name,
+                trajectory_ids=_parse_csv_ints(args.trajectory_ids),
+                limit=args.limit,
+                max_points_per_line=args.max_points_per_line,
+            )
+            _print_json(summary)
+            return 0
+
+        if args.command == "export-qgis-inspection":
+            summary = qgis_export.run(
+                conn,
+                config,
+                output_dir=Path(args.output_dir) if args.output_dir else None,
+                run_id=args.run_id,
+                run_tag=args.run_tag,
+                method=args.method,
+                budget=args.budget,
+                split=args.split,
+                subset_name=args.subset_name,
+                trajectory_ids=_parse_csv_ints(args.trajectory_ids),
+                limit=args.limit,
+                include_points=not args.no_points,
             )
             _print_json(summary)
             return 0

@@ -26,6 +26,9 @@ Geofence-aware query-driven simplification for Danish AIS, scoped to the MVP you
 - Runnable Sprint 2 baseline benchmarking:
   - `run-baselines` (uniform + DP, budget sweep, metric persistence)
   - `summarize-baselines` (CSV/JSON/Markdown table + SVG plot export)
+- Visual inspection export:
+  - `export-visual-inspection` (self-contained HTML maps for raw/context/simplified comparison)
+  - `export-qgis-inspection` (GeoJSON layers + QGIS project for desktop GIS inspection)
 - Reproducible folder structure for data/results/tests/notebooks
 
 ## Project Structure
@@ -132,6 +135,52 @@ python -m src.cli --config configs/mvp.example.yaml run-baselines --overwrite
 python -m src.cli --config configs/mvp.example.yaml summarize-baselines
 ```
 
+11. Export a visual inspection HTML report:
+
+Raw trajectories + context only:
+
+```bash
+python -m src.cli --config configs/mvp.example.yaml export-visual-inspection
+```
+
+Compare a simplification run against raw trajectories:
+
+```bash
+python -m src.cli --config configs/mvp.example.yaml export-visual-inspection \
+  --method uniform \
+  --budget 0.10
+```
+
+Inspect specific trajectories:
+
+```bash
+python -m src.cli --config configs/mvp.example.yaml export-visual-inspection \
+  --trajectory-ids 101,205,309 \
+  --limit 3
+```
+
+The command writes a standalone HTML file under `results/figures/` by default.
+
+12. Export a QGIS-ready inspection package:
+
+Raw trajectories + context only:
+
+```bash
+python -m src.cli --config configs/mvp.example.yaml export-qgis-inspection
+```
+
+Compare a simplification run against raw trajectories:
+
+```bash
+python -m src.cli --config configs/mvp.example.yaml export-qgis-inspection \
+  --method uniform \
+  --budget 0.10
+```
+
+The command writes a folder under `results/figures/` containing GeoJSON layers
+and `ais_qds_inspection.qgs`. Open the `.qgs` file in QGIS, or add the GeoJSON
+layers manually.
+
 You can run equivalent commands via `make`:
 
 ```bash
@@ -142,6 +191,8 @@ make compute-labels
 make create-dev-subset
 make run-baselines
 make summarize-baselines
+make export-visual-inspection
+make export-qgis-inspection
 make status
 ```
 
@@ -151,6 +202,7 @@ make status
 - T5: `compute-labels`
 - T6: `create-dev-subset`
 - T7/T8/T9/T10/T12 skeleton: `run-baselines`
+- T11: `export-visual-inspection` and `export-qgis-inspection`
 - T1/T4 are represented in config + `load-context` + context tables (scope and layer setup)
 
 ## Notes

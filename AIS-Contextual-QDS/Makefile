@@ -5,7 +5,7 @@ ZONES_FILE ?=
 CORRIDOR_FILE ?=
 CORRIDOR_BUFFER_METERS ?=
 
-.PHONY: bootstrap load-context build-trajectories compute-labels create-dev-subset sprint1 run-baselines summarize-baselines status test
+.PHONY: bootstrap load-context build-trajectories compute-labels create-dev-subset sprint1 run-baselines summarize-baselines export-visual-inspection export-qgis-inspection status test
 
 bootstrap:
 	$(PYTHON) -m src.cli --config $(CONFIG) bootstrap
@@ -30,6 +30,12 @@ run-baselines:
 
 summarize-baselines:
 	$(PYTHON) -m src.cli --config $(CONFIG) summarize-baselines
+
+export-visual-inspection:
+	$(PYTHON) -m src.cli --config $(CONFIG) export-visual-inspection
+
+export-qgis-inspection:
+	$(PYTHON) -m src.cli --config $(CONFIG) export-qgis-inspection
 
 status:
 	$(PYTHON) -m src.cli --config $(CONFIG) status
