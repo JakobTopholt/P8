@@ -6,7 +6,7 @@ This folder contains the local PostGIS service definition and initialization SQL
 - `init.sql`: PostGIS extensions.
 - `schema.sql`: AIS tables and indexes.
 - `smoke_test_db.py`: DB connectivity/PostGIS sanity check.
-- `import_ais_csv.py`: cleaned AIS CSV import utility.
+- `import_ais_csv.py`: cleaned AIS CSV file/directory import utility.
 - `run_range_query.py`: range query validation utility.
 
 ## Database Lifecycle
@@ -50,6 +50,13 @@ Example URL:
 
 ```bash
 export DATABASE_URL="postgresql://ais:aisdev@localhost:5433/ais"
+```
+
+Import one file or an entire folder:
+
+```bash
+python db/import_ais_csv.py AISDATA/cleaned/aisdk-2026-01-01.cleaned.csv
+python db/import_ais_csv.py AISDATA/cleaned
 ```
 
 ## SQL Helpers

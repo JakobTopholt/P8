@@ -272,16 +272,240 @@ def fetch_progress(cur, source_path: str):
     }
 
 
+def iter_source_paths(csv_path_arg: str, aisdata_dir: str) -> list[str]:
+    source_path = resolve_csv_path(csv_path_arg, aisdata_dir)
+    if not os.path.exists(source_path):
+        raise RuntimeError(
+            f"CSV path not found: {csv_path_arg}. "
+            f"Tried direct path and {os.path.abspath(os.path.join(aisdata_dir, csv_path_arg))}."
+        )
+
+    if os.path.isdir(source_path):
+        csv_paths = sorted(
+            str(path.resolve())
+            for path in Path(source_path).iterdir()
+            if path.is_file() and path.suffix.lower() == ".csv"
+        )
+        if not csv_paths:
+            raise RuntimeError(f"No CSV files found in directory: {source_path}")
+        return csv_paths
+
+    return [os.path.abspath(source_path)]
+
+
+def import_csv_file(conn, source_path: str, args) -> tuple[int, int, int]:
+    source_stat = os.stat(source_path)
+    source_size = source_stat.st_size
+    source_mtime_ns = source_stat.st_mtime_ns
+
+    rows_read = 0
+    inserted = 0
+    skipped = 0
+    skip_missing_ts = 0
+    skip_missing_core = 0
+    skip_bad_coords = 0
+    stored_delimiter = None
+
+    if args.reset_progress:
+        with conn.cursor() as cur:
+            cur.execute(DELETE_PROGRESS_SQL, (source_path,))
+        conn.commit()
+        print("Reset import progress for:", source_path)
+
+    if not args.no_resume:
+        with conn.cursor() as cur:
+            progress = fetch_progress(cur, source_path)
+        if progress:
+            if (
+                progress["source_size"] != source_size
+                or progress["source_mtime_ns"] != source_mtime_ns
+            ):
+                raise RuntimeError(
+                    "Stored progress exists for this path but file metadata changed. "
+                    "Use --reset-progress to discard old checkpoint or --no-resume to start from row 0."
+                )
+            rows_read = progress["rows_read"]
+            inserted = progress["inserted"]
+            skipped = progress["skipped"]
+            skip_missing_ts = progress["skip_missing_ts"]
+            skip_missing_core = progress["skip_missing_core"]
+            skip_bad_coords = progress["skip_bad_coords"]
+            stored_delimiter = progress["delimiter"]
+    else:
+        print("Resume disabled via --no-resume; starting from row 0.")
+
+    copy_sql = """
+        COPY ais_points_cleaned
+            (mmsi, ts, lat, lon, sog, cog, mobile_type, ship_type, geom)
+        FROM STDIN WITH (FORMAT CSV)
+    """
+
+    processed_this_run = 0
+
+    print(f"Importing: {source_path}")
+
+    with open(source_path, newline="", encoding="utf-8") as f:
+        sample = f.read(65536)
+        f.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        except csv.Error:
+            dialect = csv.get_dialect("excel")
+
+        print("Using delimiter:", repr(dialect.delimiter))
+        if stored_delimiter and stored_delimiter != dialect.delimiter:
+            raise RuntimeError(
+                "Stored delimiter does not match current CSV delimiter. "
+                "Use --reset-progress or --no-resume."
+            )
+
+        reader = csv.reader(f, dialect=dialect)
+        raw_headers = next(reader, None)
+        if raw_headers is None:
+            raise RuntimeError("CSV has no header / no columns detected")
+        print("Raw headers:", raw_headers)
+
+        header_index = {
+            normalize_header(name): idx for idx, name in enumerate(raw_headers)
+        }
+        print("Normalized headers:", sorted(header_index.keys()))
+
+        missing_headers = [h for h in REQUIRED_HEADERS if h not in header_index]
+        if missing_headers:
+            raise RuntimeError(
+                "CSV missing required headers: " + ", ".join(missing_headers)
+            )
+
+        idx_mmsi = header_index["MMSI"]
+        idx_ts = header_index["Timestamp"]
+        idx_mobile = header_index["Type of mobile"]
+        idx_lat = header_index["Latitude"]
+        idx_lon = header_index["Longitude"]
+        idx_sog = header_index["SOG"]
+        idx_cog = header_index["COG"]
+        idx_ship = header_index["Ship type"]
+
+        if rows_read:
+            print(f"Resuming at data row {rows_read:,}")
+            skipped_for_resume = 0
+            while skipped_for_resume < rows_read:
+                try:
+                    next(reader)
+                except StopIteration:
+                    raise RuntimeError(
+                        "Stored progress points past end of file. Use --reset-progress."
+                    ) from None
+                skipped_for_resume += 1
+                if skipped_for_resume % 500000 == 0:
+                    print(f"resume-skip {skipped_for_resume:,}/{rows_read:,}")
+        else:
+            print("Starting from first data row.")
+
+        executor = (
+            ProcessPoolExecutor(max_workers=args.workers)
+            if args.workers > 1
+            else None
+        )
+        try:
+            while True:
+                raw_chunk: list[tuple[str | None, ...]] = []
+                while len(raw_chunk) < args.chunk_rows:
+                    if args.limit and processed_this_run >= args.limit:
+                        break
+                    try:
+                        row = next(reader)
+                    except StopIteration:
+                        break
+
+                    raw_chunk.append(
+                        (
+                            safe_get(row, idx_mmsi),
+                            safe_get(row, idx_ts),
+                            safe_get(row, idx_mobile),
+                            safe_get(row, idx_lat),
+                            safe_get(row, idx_lon),
+                            safe_get(row, idx_sog),
+                            safe_get(row, idx_cog),
+                            safe_get(row, idx_ship),
+                        )
+                    )
+                    processed_this_run += 1
+
+                if not raw_chunk:
+                    break
+
+                valid_rows, chunk_missing_ts, chunk_missing_core, chunk_bad_coords = process_chunk(
+                    raw_rows=raw_chunk,
+                    workers=args.workers,
+                    executor=executor,
+                )
+
+                chunk_inserted = len(valid_rows)
+                chunk_skipped = chunk_missing_ts + chunk_missing_core + chunk_bad_coords
+
+                with conn.cursor() as cur:
+                    if valid_rows:
+                        with cur.copy(copy_sql) as copy:
+                            write_rows_to_copy(copy, valid_rows, args.copy_buffer_rows)
+
+                    rows_read += len(raw_chunk)
+                    inserted += chunk_inserted
+                    skipped += chunk_skipped
+                    skip_missing_ts += chunk_missing_ts
+                    skip_missing_core += chunk_missing_core
+                    skip_bad_coords += chunk_bad_coords
+
+                    cur.execute(
+                        UPSERT_PROGRESS_SQL,
+                        (
+                            source_path,
+                            source_size,
+                            source_mtime_ns,
+                            dialect.delimiter,
+                            rows_read,
+                            inserted,
+                            skipped,
+                            skip_missing_ts,
+                            skip_missing_core,
+                            skip_bad_coords,
+                        ),
+                    )
+
+                conn.commit()
+                print(
+                    f"progress rows_read={rows_read:,} inserted={inserted:,} "
+                    f"skipped={skipped:,} chunk_rows={len(raw_chunk):,}"
+                )
+
+                if args.limit and processed_this_run >= args.limit:
+                    break
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True)
+
+    print(f"DONE inserted={inserted:,} skipped={skipped:,} rows_read={rows_read:,}")
+    print(
+        "Skip breakdown:",
+        f"missing_ts={skip_missing_ts:,}",
+        f"missing_core={skip_missing_core:,}",
+        f"bad_coords={skip_bad_coords:,}",
+    )
+    return rows_read, inserted, skipped
+
+
 def main():
     project_root = Path(__file__).resolve().parents[1]
     default_aisdata_dir = str(project_root / "AISDATA")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("csv_path", help="CSV file path or filename inside AISDATA/")
+    parser.add_argument(
+        "csv_path",
+        help="CSV file path, directory path, or filename inside AISDATA/",
+    )
     parser.add_argument(
         "--aisdata-dir",
         default=default_aisdata_dir,
-        help="Fallback directory when csv_path is a filename (default: <repo>/AISDATA)",
+        help="Fallback directory when csv_path is relative (default: <repo>/AISDATA)",
     )
     parser.add_argument("--limit", type=int, default=0, help="0 = no limit")
     parser.add_argument("--chunk-rows", type=int, default=100000, help="Rows per transaction chunk")
@@ -293,7 +517,11 @@ def main():
         help="Parallel parser worker processes (1 disables multi-core parsing)",
     )
     parser.add_argument("--no-resume", action="store_true", help="Ignore stored checkpoint and start from row 0")
-    parser.add_argument("--reset-progress", action="store_true", help="Delete stored progress for this file before run")
+    parser.add_argument(
+        "--reset-progress",
+        action="store_true",
+        help="Delete stored progress for each selected file before run",
+    )
     args = parser.parse_args()
 
     if args.chunk_rows <= 0:
@@ -303,26 +531,10 @@ def main():
     if args.workers <= 0:
         raise RuntimeError("--workers must be > 0")
 
-    source_path = resolve_csv_path(args.csv_path, args.aisdata_dir)
-    if not os.path.exists(source_path):
-        raise RuntimeError(
-            f"CSV file not found: {args.csv_path}. "
-            f"Tried direct path and {os.path.abspath(os.path.join(args.aisdata_dir, args.csv_path))}."
-        )
-    source_stat = os.stat(source_path)
-    source_size = source_stat.st_size
-    source_mtime_ns = source_stat.st_mtime_ns
+    source_paths = iter_source_paths(args.csv_path, args.aisdata_dir)
 
     load_dotenv()
     db_url = os.environ["DATABASE_URL"]
-
-    rows_read = 0
-    inserted = 0
-    skipped = 0
-    skip_missing_ts = 0
-    skip_missing_core = 0
-    skip_bad_coords = 0
-    stored_delimiter = None
 
     conn = psycopg.connect(db_url, autocommit=False)
     try:
@@ -331,193 +543,25 @@ def main():
             cur.execute(CREATE_PROGRESS_TABLE_SQL)
         conn.commit()
 
-        if args.reset_progress:
-            with conn.cursor() as cur:
-                cur.execute(DELETE_PROGRESS_SQL, (source_path,))
-            conn.commit()
-            print("Reset import progress for:", source_path)
+        total_rows_read = 0
+        total_inserted = 0
+        total_skipped = 0
 
-        if not args.no_resume:
-            with conn.cursor() as cur:
-                progress = fetch_progress(cur, source_path)
-            if progress:
-                if (
-                    progress["source_size"] != source_size
-                    or progress["source_mtime_ns"] != source_mtime_ns
-                ):
-                    raise RuntimeError(
-                        "Stored progress exists for this path but file metadata changed. "
-                        "Use --reset-progress to discard old checkpoint or --no-resume to start from row 0."
-                    )
-                rows_read = progress["rows_read"]
-                inserted = progress["inserted"]
-                skipped = progress["skipped"]
-                skip_missing_ts = progress["skip_missing_ts"]
-                skip_missing_core = progress["skip_missing_core"]
-                skip_bad_coords = progress["skip_bad_coords"]
-                stored_delimiter = progress["delimiter"]
-        else:
-            print("Resume disabled via --no-resume; starting from row 0.")
-
-        copy_sql = """
-            COPY ais_points_cleaned
-                (mmsi, ts, lat, lon, sog, cog, mobile_type, ship_type, geom)
-            FROM STDIN WITH (FORMAT CSV)
-        """
-
-        processed_this_run = 0
-
-        with open(source_path, newline="", encoding="utf-8") as f:
-            sample = f.read(65536)
-            f.seek(0)
-            try:
-                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-            except csv.Error:
-                dialect = csv.get_dialect("excel")
-
-            print("Using delimiter:", repr(dialect.delimiter))
-            if stored_delimiter and stored_delimiter != dialect.delimiter:
-                raise RuntimeError(
-                    "Stored delimiter does not match current CSV delimiter. "
-                    "Use --reset-progress or --no-resume."
-                )
-
-            reader = csv.reader(f, dialect=dialect)
-            raw_headers = next(reader, None)
-            if raw_headers is None:
-                raise RuntimeError("CSV has no header / no columns detected")
-            print("Raw headers:", raw_headers)
-
-            header_index = {
-                normalize_header(name): idx for idx, name in enumerate(raw_headers)
-            }
-            print("Normalized headers:", sorted(header_index.keys()))
-
-            missing_headers = [h for h in REQUIRED_HEADERS if h not in header_index]
-            if missing_headers:
-                raise RuntimeError(
-                    "CSV missing required headers: " + ", ".join(missing_headers)
-                )
-
-            idx_mmsi = header_index["MMSI"]
-            idx_ts = header_index["Timestamp"]
-            idx_mobile = header_index["Type of mobile"]
-            idx_lat = header_index["Latitude"]
-            idx_lon = header_index["Longitude"]
-            idx_sog = header_index["SOG"]
-            idx_cog = header_index["COG"]
-            idx_ship = header_index["Ship type"]
-
-            if rows_read:
-                print(f"Resuming at data row {rows_read:,}")
-                skipped_for_resume = 0
-                while skipped_for_resume < rows_read:
-                    try:
-                        next(reader)
-                    except StopIteration:
-                        raise RuntimeError(
-                            "Stored progress points past end of file. Use --reset-progress."
-                        ) from None
-                    skipped_for_resume += 1
-                    if skipped_for_resume % 500000 == 0:
-                        print(f"resume-skip {skipped_for_resume:,}/{rows_read:,}")
-            else:
-                print("Starting from first data row.")
-
-            executor = (
-                ProcessPoolExecutor(max_workers=args.workers)
-                if args.workers > 1
-                else None
-            )
-            try:
-                while True:
-                    raw_chunk: list[tuple[str | None, ...]] = []
-                    while len(raw_chunk) < args.chunk_rows:
-                        if args.limit and processed_this_run >= args.limit:
-                            break
-                        try:
-                            row = next(reader)
-                        except StopIteration:
-                            break
-
-                        raw_chunk.append(
-                            (
-                                safe_get(row, idx_mmsi),
-                                safe_get(row, idx_ts),
-                                safe_get(row, idx_mobile),
-                                safe_get(row, idx_lat),
-                                safe_get(row, idx_lon),
-                                safe_get(row, idx_sog),
-                                safe_get(row, idx_cog),
-                                safe_get(row, idx_ship),
-                            )
-                        )
-                        processed_this_run += 1
-
-                    if not raw_chunk:
-                        break
-
-                    valid_rows, chunk_missing_ts, chunk_missing_core, chunk_bad_coords = process_chunk(
-                        raw_rows=raw_chunk,
-                        workers=args.workers,
-                        executor=executor,
-                    )
-
-                    chunk_inserted = len(valid_rows)
-                    chunk_skipped = chunk_missing_ts + chunk_missing_core + chunk_bad_coords
-
-                    with conn.cursor() as cur:
-                        if valid_rows:
-                            with cur.copy(copy_sql) as copy:
-                                write_rows_to_copy(copy, valid_rows, args.copy_buffer_rows)
-
-                        rows_read += len(raw_chunk)
-                        inserted += chunk_inserted
-                        skipped += chunk_skipped
-                        skip_missing_ts += chunk_missing_ts
-                        skip_missing_core += chunk_missing_core
-                        skip_bad_coords += chunk_bad_coords
-
-                        cur.execute(
-                            UPSERT_PROGRESS_SQL,
-                            (
-                                source_path,
-                                source_size,
-                                source_mtime_ns,
-                                dialect.delimiter,
-                                rows_read,
-                                inserted,
-                                skipped,
-                                skip_missing_ts,
-                                skip_missing_core,
-                                skip_bad_coords,
-                            ),
-                        )
-
-                    conn.commit()
-                    print(
-                        f"progress rows_read={rows_read:,} inserted={inserted:,} "
-                        f"skipped={skipped:,} chunk_rows={len(raw_chunk):,}"
-                    )
-
-                    if args.limit and processed_this_run >= args.limit:
-                        break
-            finally:
-                if executor is not None:
-                    executor.shutdown(wait=True)
+        for source_path in source_paths:
+            rows_read, inserted, skipped = import_csv_file(conn, source_path, args)
+            total_rows_read += rows_read
+            total_inserted += inserted
+            total_skipped += skipped
 
         with conn.cursor() as cur:
             cur.execute("ANALYZE ais_points_cleaned;")
         conn.commit()
 
-        print(f"DONE inserted={inserted:,} skipped={skipped:,} rows_read={rows_read:,}")
-        print(
-            "Skip breakdown:",
-            f"missing_ts={skip_missing_ts:,}",
-            f"missing_core={skip_missing_core:,}",
-            f"bad_coords={skip_bad_coords:,}",
-        )
-
+        if len(source_paths) > 1:
+            print(
+                f"ALL DONE files={len(source_paths)} rows_read={total_rows_read:,} "
+                f"inserted={total_inserted:,} skipped={total_skipped:,}"
+            )
     except Exception:
         conn.rollback()
         raise

@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 
 PYTHON ?= python
-CSV ?= AISDATA/aisdk-2026-02-05.cleaned.csv
+CSV ?= AISDATA/cleaned
 QUERY_ARGS ?= --help
 FRONTEND_DIR ?= frontend
 
@@ -17,7 +17,7 @@ help:
 	@echo "  db-reset         Recreate PostGIS volume and schema"
 	@echo "  db-logs          Tail PostGIS logs"
 	@echo "  db-smoke         Run DB smoke test"
-	@echo "  db-import        Import cleaned AIS CSV (override with CSV=...)"
+	@echo "  db-import        Import cleaned AIS CSV file or directory (override with CSV=...)"
 	@echo "  db-query         Run range query script (override with QUERY_ARGS=...)"
 	@echo "  frontend-install Install frontend dependencies"
 	@echo "  frontend-dev     Start frontend dev server"
