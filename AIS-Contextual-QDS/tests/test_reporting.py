@@ -31,12 +31,16 @@ def _sample_rows() -> list[dict[str, object]]:
             "zone_entry_tp": 8.0,
             "zone_entry_fp": 2.0,
             "zone_entry_fn": 3.0,
+            "zone_point_membership_macro_f1": 0.667,
+            "zone_entry_event_count_macro_exact_rate": 0.833,
             "corridor_membership_precision": 0.9,
             "corridor_membership_recall": 0.7,
             "corridor_membership_f1": 0.788,
             "corridor_membership_tp": 9.0,
             "corridor_membership_fp": 1.0,
             "corridor_membership_fn": 4.0,
+            "corridor_point_membership_f1": 0.714,
+            "corridor_entry_event_count_exact_rate": 0.875,
             "zone_entry_zone_anchor_or_waiting_area_tp": 4.0,
             "retained_point_ratio": 0.1,
             "simplification_runtime_seconds": 0.02,
@@ -91,6 +95,8 @@ def test_summary_exports(tmp_path: Path) -> None:
 
     csv_text = csv_path.read_text(encoding="utf-8")
     assert "zone_entry_f1" in csv_text
+    assert "zone_point_membership_macro_f1" in csv_text
+    assert "corridor_entry_event_count_exact_rate" in csv_text
     assert "corridor_membership_f1" in csv_text
     assert "zone_entry_zone_anchor_or_waiting_area_tp" in csv_text
 
@@ -100,6 +106,12 @@ def test_summary_exports(tmp_path: Path) -> None:
 
     markdown_text = markdown_path.read_text(encoding="utf-8")
     assert "| method | budget | eval_mode | truth_mode |" in markdown_text
+    assert "zone_point_f1" in markdown_text
+    assert "zone_event_exact" in markdown_text
+    assert "corridor_point_f1" in markdown_text
+    assert "corridor_event_exact" in markdown_text
+    assert "0.6670" in markdown_text
+    assert "0.8750" in markdown_text
 
     svg_text = svg_path.read_text(encoding="utf-8")
     assert "Baseline Query Fidelity" in svg_text

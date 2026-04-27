@@ -17,15 +17,17 @@ The broader 4-week MVP config still exists as `configs/mvp.example.yaml`, but it
 
 ## Workflow
 
-The project is easiest to understand as four layers:
+The project is easiest to understand as five layers:
 
 1. Context and scope
    Load the study region, zones, corridor, and configuration.
 2. Dataset preparation
    Build trajectories, compute truth labels, and create the dev/eval subset.
-3. Benchmarking
+3. Feature preparation
+   Compute reusable per-point context and local-shape features for contextual methods.
+4. Benchmarking
    Run simplification baselines and persist metrics.
-4. Inspection
+5. Inspection
    Export HTML or QGIS artifacts for manual review.
 
 The recommended command flow reflects that structure:
@@ -40,6 +42,7 @@ python -m src.cli load-context \
 python -m src.cli prepare-data
 python -m src.cli label-balance
 python -m src.cli create-hardcase-subset
+python -m src.cli compute-features
 python -m src.cli benchmark --overwrite
 python -m src.cli summarize-baselines
 python -m src.cli inspect-html --method uniform --budget 0.10
@@ -127,6 +130,8 @@ That applies the repository’s safe local tuning profile. Some settings, such a
   Create the deterministic dev/eval split.
 - `create-hardcase-subset`
   Create a deterministic query-balanced subset, defaulting to `<subset_name>_hardcase`.
+- `compute-features`
+  Compute reusable point-level context features: zone/corridor state, nearest zone, boundary distances, transitions, local turn angle, and local deviation.
 - `prepare-data`
   Run bootstrap, trajectory build, labels, subset creation, and status in sequence.
 
@@ -135,7 +140,7 @@ That applies the repository’s safe local tuning profile. Some settings, such a
 - `label-balance`
   Report overall and split-level positives for each zone and the corridor.
 - `benchmark`
-  Run the baseline simplifiers across one or more retained-point budgets.
+  Run simplification benchmarks across one or more retained-point budgets.
 - `summarize-baselines`
   Export CSV, JSON, Markdown, and SVG summaries from stored benchmark metrics.
 - `compare-label-modes`
@@ -180,6 +185,7 @@ make create-hardcase-subset
 make benchmark
 make doctor
 make compute-labels MODE=segment_exact
+make compute-features
 make compare-label-modes
 make benchmark EVALUATION_MODE=segment_exact TRUTH_LABEL_MODE=segment_exact RUN_TAG=truth_audit
 make inspect-html RUN_TAG=truth_audit TRUTH_LABEL_MODE=segment_exact
@@ -223,18 +229,19 @@ What is already in place:
 - Truth labeling for zone entry and corridor membership
 - Deterministic dev/eval subset creation
 - Uniform and Douglas-Peucker baseline benchmarking
+- Reusable point-context features for the next contextual method stage
 - Summary export to CSV, JSON, Markdown, and SVG
 - HTML and QGIS inspection exports
 - `optimized` and `segment_exact` semantics modes
 - Label-balance diagnostics and hard-case subset creation
 - Benchmark diagnostic counts, including TP/FP/FN/TN and per-zone zone-entry counts
+- Strict point-membership and event-count metrics that catch errors hidden by trajectory-level labels
 
 What is not yet in place:
 
 - The contextual scorer beyond the current baseline stage
-- Boundary-distance and transition features from later planning milestones
 - Final thesis-grade audit comparisons between `optimized` and `segment_exact`
-- A query workload that reliably produces baseline failures under the current optimized semantics
+- A query workload that reliably produces zone-entry baseline failures under the current optimized semantics
 
 ## Notes
 
@@ -243,3 +250,4 @@ What is not yet in place:
 - The current default path is intentionally narrow and reproducible so iteration stays fast.
 - Full `segment_exact` label generation can be slow on the older laptop and is best treated as a stronger-hardware audit step.
 - If `label-balance` reports very low zone positives, run `create-hardcase-subset` and benchmark with `SUBSET_NAME=<configured>_hardcase`.
+- The headline benchmark F1 values are trajectory-level labels. Use the strict point and event metrics in summary exports when judging whether a simplifier is preserving boundary behavior.

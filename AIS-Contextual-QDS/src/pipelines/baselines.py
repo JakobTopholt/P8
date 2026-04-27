@@ -14,6 +14,7 @@ from psycopg import Connection, sql
 from ..config import AppConfig
 from ..db import fetch_one
 from ..evaluation.metrics import classification_metrics
+from ..evaluation.strict_metrics import compute_strict_point_event_metrics
 from ..query_semantics import build_run_prediction_ctes_sql, normalize_query_mode
 from ..simplification import simplify_douglas_peucker_indices, simplify_uniform_indices
 
@@ -691,6 +692,7 @@ def run(
                 "n_simplified_points": retention["simplified_points"],
                 "n_raw_points": retention["raw_points"],
             }
+            line_zone_metric_values: list[dict[str, float]] = []
             for zone_name in config.context.zone_names:
                 per_zone_counts = counts["zone_entry"].get(zone_name, _empty_confusion_counts())
                 per_zone_metrics = classification_metrics(
@@ -698,6 +700,7 @@ def run(
                     per_zone_counts["fp"],
                     per_zone_counts["fn"],
                 )
+                line_zone_metric_values.append(per_zone_metrics)
                 zone_key = _safe_metric_key(zone_name)
                 metric_payload.update(
                     {
@@ -713,6 +716,17 @@ def run(
                         f"zone_entry_{zone_key}_predicted_positive": float(per_zone_counts["predicted_positive"]),
                     }
                 )
+            if line_zone_metric_values:
+                metric_payload["zone_entry_macro_precision"] = sum(
+                    item["precision"] for item in line_zone_metric_values
+                ) / len(line_zone_metric_values)
+                metric_payload["zone_entry_macro_recall"] = sum(
+                    item["recall"] for item in line_zone_metric_values
+                ) / len(line_zone_metric_values)
+                metric_payload["zone_entry_macro_f1"] = sum(
+                    item["f1"] for item in line_zone_metric_values
+                ) / len(line_zone_metric_values)
+            metric_payload.update(compute_strict_point_event_metrics(conn, config, run_id))
             _store_metrics(conn, schema, run_id, metric_payload)
 
             result_row: dict[str, float | int | str] = {

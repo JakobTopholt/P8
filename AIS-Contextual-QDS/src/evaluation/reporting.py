@@ -26,6 +26,17 @@ SUMMARY_COLUMNS = [
     "zone_entry_support",
     "zone_entry_true_positive",
     "zone_entry_predicted_positive",
+    "zone_entry_macro_f1",
+    "zone_point_membership_precision",
+    "zone_point_membership_recall",
+    "zone_point_membership_f1",
+    "zone_point_membership_macro_precision",
+    "zone_point_membership_macro_recall",
+    "zone_point_membership_macro_f1",
+    "zone_entry_event_count_exact_rate",
+    "zone_entry_event_count_macro_exact_rate",
+    "zone_entry_event_count_mae",
+    "zone_entry_event_count_macro_mae",
     "corridor_membership_precision",
     "corridor_membership_recall",
     "corridor_membership_f1",
@@ -36,6 +47,11 @@ SUMMARY_COLUMNS = [
     "corridor_membership_support",
     "corridor_membership_true_positive",
     "corridor_membership_predicted_positive",
+    "corridor_point_membership_precision",
+    "corridor_point_membership_recall",
+    "corridor_point_membership_f1",
+    "corridor_entry_event_count_exact_rate",
+    "corridor_entry_event_count_mae",
     "retained_point_ratio",
     "simplification_runtime_seconds",
     "n_query_pairs",
@@ -104,8 +120,12 @@ def write_summary_markdown(rows: list[dict[str, object]], output_path: Path) -> 
         "truth_mode",
         "zone_entry_f1",
         "zone_tp/fp/fn",
+        "zone_point_f1",
+        "zone_event_exact",
         "corridor_membership_f1",
         "corridor_tp/fp/fn",
+        "corridor_point_f1",
+        "corridor_event_exact",
         "retained_point_ratio",
         "runtime_s",
     ]
@@ -127,12 +147,16 @@ def write_summary_markdown(rows: list[dict[str, object]], output_path: Path) -> 
                 f"{int(float(row.get('zone_entry_fp', 0.0)))}/"
                 f"{int(float(row.get('zone_entry_fn', 0.0)))}"
             ),
+            f"{float(row.get('zone_point_membership_macro_f1', row.get('zone_point_membership_f1', 0.0))):.4f}",
+            f"{float(row.get('zone_entry_event_count_macro_exact_rate', row.get('zone_entry_event_count_exact_rate', 0.0))):.4f}",
             f"{float(row.get('corridor_membership_f1', 0.0)):.4f}",
             (
                 f"{int(float(row.get('corridor_membership_tp', 0.0)))}/"
                 f"{int(float(row.get('corridor_membership_fp', 0.0)))}/"
                 f"{int(float(row.get('corridor_membership_fn', 0.0)))}"
             ),
+            f"{float(row.get('corridor_point_membership_f1', 0.0)):.4f}",
+            f"{float(row.get('corridor_entry_event_count_exact_rate', 0.0)):.4f}",
             f"{float(row.get('retained_point_ratio', 0.0)):.4f}",
             f"{float(row.get('simplification_runtime_seconds', 0.0)):.3f}",
         ]

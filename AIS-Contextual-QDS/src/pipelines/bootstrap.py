@@ -21,9 +21,12 @@ def ensure_schema_compatibility(conn: Connection, schema: str) -> None:
 
     labels_table = f"{schema}.trajectory_query_labels"
     runs_table = f"{schema}.simplification_runs"
+    points_table = f"{schema}.trajectory_points_raw"
+    point_features_table = f"{schema}.trajectory_point_context_features"
 
     labels_exists = bool(fetch_one(conn, "SELECT to_regclass(%(table)s) IS NOT NULL;", {"table": labels_table}))
     runs_exists = bool(fetch_one(conn, "SELECT to_regclass(%(table)s) IS NOT NULL;", {"table": runs_table}))
+    points_exists = bool(fetch_one(conn, "SELECT to_regclass(%(table)s) IS NOT NULL;", {"table": points_table}))
 
     if labels_exists:
         execute_sql(
@@ -73,6 +76,35 @@ CREATE INDEX IF NOT EXISTS idx_{schema}_trajectory_query_labels_mode_zone
     ON {labels_table} (label_mode, zone_name, zone_entry);
 CREATE INDEX IF NOT EXISTS idx_{schema}_trajectory_query_labels_mode_corridor
     ON {labels_table} (label_mode, corridor_name, corridor_membership);
+            """,
+        )
+
+    if points_exists:
+        execute_sql(
+            conn,
+            f"""
+CREATE TABLE IF NOT EXISTS {point_features_table} (
+    trajectory_id BIGINT NOT NULL,
+    point_seq INTEGER NOT NULL,
+    inside_zone_name TEXT,
+    nearest_zone_name TEXT,
+    inside_corridor BOOLEAN NOT NULL DEFAULT FALSE,
+    distance_to_nearest_zone_boundary_m DOUBLE PRECISION,
+    distance_to_corridor_boundary_m DOUBLE PRECISION,
+    zone_transition BOOLEAN NOT NULL DEFAULT FALSE,
+    corridor_transition BOOLEAN NOT NULL DEFAULT FALSE,
+    local_turn_degrees DOUBLE PRECISION,
+    local_deviation_m DOUBLE PRECISION,
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (trajectory_id, point_seq),
+    FOREIGN KEY (trajectory_id, point_seq) REFERENCES {schema}.trajectory_points_raw (trajectory_id, point_seq) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_{schema}_trajectory_point_context_features_zone
+    ON {point_features_table} (inside_zone_name, zone_transition);
+
+CREATE INDEX IF NOT EXISTS idx_{schema}_trajectory_point_context_features_corridor
+    ON {point_features_table} (inside_corridor, corridor_transition);
 """,
         )
 

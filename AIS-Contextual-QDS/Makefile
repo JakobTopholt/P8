@@ -24,7 +24,7 @@ MIN_CORRIDOR_POSITIVES ?=
 
 CLI = $(PYTHON) -m src.cli --config $(CONFIG)
 
-.PHONY: help bootstrap load-context build-trajectories compute-labels create-dev-subset create-hardcase-subset label-balance compare-label-modes prepare-data benchmark summarize-baselines inspect-html inspect-qgis tune-postgres doctor status test sprint1 run-baselines export-visual-inspection export-qgis-inspection subset preflight audit-label-modes
+.PHONY: help bootstrap load-context build-trajectories compute-labels compute-features create-dev-subset create-hardcase-subset label-balance compare-label-modes prepare-data benchmark summarize-baselines inspect-html inspect-qgis tune-postgres doctor status test sprint1 run-baselines export-visual-inspection export-qgis-inspection subset preflight audit-label-modes
 
 help:
 	@printf "AIS-Contextual-QDS Make Targets\n\n"
@@ -34,6 +34,7 @@ help:
 	@printf "  make load-context STUDY_REGION_FILE=... ZONES_FILE=... CORRIDOR_FILE=... [CORRIDOR_BUFFER_METERS=700]\n"
 	@printf "  make build-trajectories\n"
 	@printf "  make compute-labels [MODE=optimized|segment_exact]\n"
+	@printf "  make compute-features\n"
 	@printf "  make create-dev-subset\n"
 	@printf "  make create-hardcase-subset [SUBSET_NAME=...] [MODE=optimized|segment_exact] [DEV_SIZE=...] [EVAL_SIZE=...]\n"
 	@printf "  make prepare-data [MODE=optimized|segment_exact]\n\n"
@@ -60,6 +61,9 @@ build-trajectories:
 
 compute-labels:
 	$(CLI) compute-labels $(if $(MODE),--mode $(MODE),)
+
+compute-features:
+	$(CLI) compute-features
 
 create-dev-subset:
 	$(CLI) create-dev-subset

@@ -34,8 +34,12 @@ The source tree is organized by responsibility rather than by sprint:
   Compute truth labels for zone entry and corridor membership.
 - `pipelines/subsets.py`
   Create the deterministic dev/eval subset split.
+- `pipelines/features.py`
+  Compute reusable per-point context and local-shape features for contextual methods.
+- `pipelines/benchmarks.py`
+  Neutral benchmark entrypoint for baseline and future query-driven methods.
 - `pipelines/baselines.py`
-  Run simplification baselines and persist benchmark metrics.
+  Implement the current uniform and Douglas-Peucker benchmark methods.
 - `pipelines/reports.py`
   Export benchmark summaries and figures.
 - `pipelines/visual_inspection.py`
@@ -72,6 +76,8 @@ If you are re-entering the project after some time away, this is the shortest pa
 3. `query_semantics.py`
 4. `pipelines/trajectories.py`
 5. `pipelines/labels.py`
-6. `pipelines/baselines.py`
+6. `pipelines/features.py`
+7. `pipelines/benchmarks.py`
+8. `pipelines/baselines.py`
 
-That gives you the current defaults, workflow shape, semantics modes, raw data construction, truth generation, and evaluation path in order.
+That gives you the current defaults, workflow shape, semantics modes, raw data construction, truth generation, feature layer, and evaluation path in order.

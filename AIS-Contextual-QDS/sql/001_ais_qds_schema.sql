@@ -99,6 +99,29 @@ CREATE INDEX IF NOT EXISTS idx___SCHEMA___trajectory_query_labels_mode_zone
 CREATE INDEX IF NOT EXISTS idx___SCHEMA___trajectory_query_labels_mode_corridor
     ON __SCHEMA__.trajectory_query_labels (label_mode, corridor_name, corridor_membership);
 
+CREATE TABLE IF NOT EXISTS __SCHEMA__.trajectory_point_context_features (
+    trajectory_id BIGINT NOT NULL,
+    point_seq INTEGER NOT NULL,
+    inside_zone_name TEXT,
+    nearest_zone_name TEXT,
+    inside_corridor BOOLEAN NOT NULL DEFAULT FALSE,
+    distance_to_nearest_zone_boundary_m DOUBLE PRECISION,
+    distance_to_corridor_boundary_m DOUBLE PRECISION,
+    zone_transition BOOLEAN NOT NULL DEFAULT FALSE,
+    corridor_transition BOOLEAN NOT NULL DEFAULT FALSE,
+    local_turn_degrees DOUBLE PRECISION,
+    local_deviation_m DOUBLE PRECISION,
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (trajectory_id, point_seq),
+    FOREIGN KEY (trajectory_id, point_seq) REFERENCES __SCHEMA__.trajectory_points_raw (trajectory_id, point_seq) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx___SCHEMA___trajectory_point_context_features_zone
+    ON __SCHEMA__.trajectory_point_context_features (inside_zone_name, zone_transition);
+
+CREATE INDEX IF NOT EXISTS idx___SCHEMA___trajectory_point_context_features_corridor
+    ON __SCHEMA__.trajectory_point_context_features (inside_corridor, corridor_transition);
+
 CREATE TABLE IF NOT EXISTS __SCHEMA__.trajectory_dev_eval_subset (
     subset_name TEXT NOT NULL,
     trajectory_id BIGINT NOT NULL,

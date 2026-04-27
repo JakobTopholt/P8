@@ -14,10 +14,11 @@ from .logging_utils import configure_logging
 from .paths import resolve_project_path
 from .postgres_tuning import apply_session_profile, apply_system_profile
 from .pipelines import (
-    baselines,
+    benchmarks,
     bootstrap,
     context_loader,
     diagnostics,
+    features,
     doctor,
     labels,
     qgis_export,
@@ -196,6 +197,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--append",
         action="store_true",
         help="Do not delete existing subset rows with the same subset_name.",
+    )
+
+    features_parser = subparsers.add_parser(
+        "compute-features",
+        help="Compute reusable per-point context and local-shape features.",
+    )
+    features_parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Do not truncate existing point-feature rows before computing.",
     )
 
     hardcase_parser = subparsers.add_parser(
@@ -556,6 +567,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_json(summary)
             return 0
 
+        if args.command == "compute-features":
+            summary = features.run(conn, config, truncate=not args.append)
+            _print_json(summary)
+            return 0
+
         if args.command == "create-hardcase-subset":
             summary = diagnostics.create_hardcase_subset(
                 conn,
@@ -633,7 +649,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command in {"benchmark", "run-baselines"}:
-            results = baselines.run(
+            results = benchmarks.run(
                 conn,
                 config,
                 config_path=str(config_path),
