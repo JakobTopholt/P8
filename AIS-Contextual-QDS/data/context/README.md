@@ -21,7 +21,7 @@ buffer distance:
 ```bash
 cd AIS-Contextual-QDS
 
-../.venv/bin/python -m src.cli --config configs/mvp.example.yaml load-context \
+../.venv/bin/python -m src.cli --config configs/iteration1_10days.example.yaml load-context \
   --study-region-file data/context/study_region.geojson \
   --zones-file data/context/zones.geojson \
   --corridor-file data/context/corridor.geojson \
@@ -30,15 +30,22 @@ cd AIS-Contextual-QDS
 
 ## Rationale
 
-These geometries are MVP query-workload definitions, not official nautical
+These geometries are fixed query-workload definitions, not official nautical
 chart data. They are hand-drawn in EPSG:4326 lon/lat coordinates around the
-Great Belt transit area:
+Great Belt transit area and were revised after an AIS-density audit:
 
-- The Danish Maritime Authority describes the Great Belt transit route as a
-  passage over the Great Belt.
-- DMA material and navigation guidance identify the Great Belt as a constrained
-  traffic area with routeing / traffic separation relevance, including the
-  Korsor-Sprogoe passage.
+- `corridor_main_transit_lane` follows the observed cargo transit spine through
+  Route T / BELTREP-relevant Great Belt traffic.
+- `zone_port_approach` now covers the Korsor-side port and East Bridge approach
+  area, where the AIS data shows repeated low-speed/manoeuvring behavior.
+- `zone_anchor_or_waiting_area` now covers the Kalundborg/Jammerland
+  waiting-area context rather than a fast-transit rectangle south of the bridge.
+- `zone_narrow_passage_control` is tightened around Sprogoe and the East Bridge
+  controlled passage.
+- DMA material identifies Route T, BELTREP / Great Belt VTS, the East Bridge
+  traffic route between Korsor and Sprogoe, and Kalundborg Fjord anchorage as
+  relevant navigational context.
 
-Before final thesis experiments, inspect these overlays against the cleaned AIS
-tracks and freeze any refinements in this folder.
+The redesign is documented in `GEOMETRY_AUDIT.md`. If these geometries are
+changed again, reload context, recompute labels, recreate hard-case subsets, and
+recompute point features before comparing benchmark runs.

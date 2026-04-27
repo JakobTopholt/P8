@@ -17,6 +17,7 @@ data/context/*
 !data/processed/.gitkeep
 !data/context/.gitkeep
 !data/context/README.md
+!data/context/GEOMETRY_AUDIT.md
 !data/context/study_region.geojson
 !data/context/zones.geojson
 !data/context/corridor.geojson

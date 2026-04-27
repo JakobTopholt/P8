@@ -6,22 +6,26 @@
       "type": "Feature",
       "properties": {
         "name": "corridor_main_transit_lane",
-        "label": "Great Belt Route T-inspired MVP centerline",
+        "label": "Great Belt Route T / BELTREP transit spine",
         "role": "corridor_membership_target",
         "recommended_buffer_meters": 700,
-        "source_note": "Hand-drawn centerline following the main Great Belt transit direction for MVP query testing, informed by DMA descriptions of the Great Belt transit route and Route T / Great Belt TSS context. Buffer before loading. Not official routeing geometry."
+        "source_note": "Redesigned after AIS-density audit to follow the observed cargo transit spine from the southern Great Belt approach through the East Bridge and Hatter Barn direction. Informed by DMA Route T and BELTREP context. Buffer before loading. Not official routeing geometry."
       },
       "geometry": {
         "type": "LineString",
         "coordinates": [
-          [10.78, 54.72],
-          [10.88, 54.92],
-          [10.94, 55.12],
-          [10.98, 55.32],
-          [10.94, 55.50],
-          [10.84, 55.72],
-          [10.72, 55.94],
-          [10.66, 56.10]
+          [10.88, 54.80],
+          [10.96, 54.94],
+          [11.05, 55.10],
+          [11.09, 55.24],
+          [11.03, 55.36],
+          [10.94, 55.46],
+          [10.85, 55.58],
+          [10.79, 55.70],
+          [10.82, 55.80],
+          [10.90, 55.90],
+          [11.03, 56.00],
+          [11.18, 56.08]
         ]
       }
     }

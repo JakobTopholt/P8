@@ -236,12 +236,13 @@ What is already in place:
 - Label-balance diagnostics and hard-case subset creation
 - Benchmark diagnostic counts, including TP/FP/FN/TN and per-zone zone-entry counts
 - Strict point-membership and event-count metrics that catch errors hidden by trajectory-level labels
+- AIS-audited Great Belt context geometries documented in `data/context/GEOMETRY_AUDIT.md`
 
 What is not yet in place:
 
 - The contextual scorer beyond the current baseline stage
 - Final thesis-grade audit comparisons between `optimized` and `segment_exact`
-- A query workload that reliably produces zone-entry baseline failures under the current optimized semantics
+- Official chart-grade context polygons; the current layers are defensible query-workload geometries, not nautical chart products
 
 ## Notes
 
