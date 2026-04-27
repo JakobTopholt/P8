@@ -12,9 +12,11 @@ from .config import load_config, read_database_url
 from .db import get_connection
 from .logging_utils import configure_logging
 from .paths import resolve_project_path
-from .pipelines import baselines, bootstrap, context_loader, labels, qgis_export, reports, status, subsets, trajectories, visual_inspection
+from .postgres_tuning import apply_session_profile, apply_system_profile
+from .pipelines import baselines, bootstrap, context_loader, doctor, labels, qgis_export, reports, status, subsets, trajectories, visual_inspection
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_CONFIG_PATH = "configs/iteration1_10days.example.yaml"
 
 
 def _parse_csv_list(raw_value: str | None) -> list[str] | None:
@@ -39,15 +41,102 @@ def _parse_csv_ints(raw_value: str | None) -> list[int] | None:
     return [int(value) for value in values]
 
 
+def _add_run_selector_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--run-id",
+        type=int,
+        default=None,
+        help="Optional simplification run_id to compare against raw trajectories.",
+    )
+    parser.add_argument(
+        "--run-tag",
+        default=None,
+        help="Optional run_tag filter for selecting a simplification run.",
+    )
+    parser.add_argument(
+        "--method",
+        default=None,
+        help="Optional method filter for selecting a simplification run, e.g. uniform or dp.",
+    )
+    parser.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        help="Optional budget filter for selecting a simplification run, e.g. 0.10.",
+    )
+
+
+def _add_subset_sampling_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--split",
+        choices=["all", "dev", "eval"],
+        default=None,
+        help="Subset split to sample when --trajectory-ids is not provided. Defaults to the run split or 'dev'.",
+    )
+    parser.add_argument(
+        "--subset-name",
+        default=None,
+        help="Subset name override.",
+    )
+    parser.add_argument(
+        "--trajectory-ids",
+        default=None,
+        help="Comma-separated trajectory IDs to inspect.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=12,
+        help="Maximum number of trajectories to export.",
+    )
+
+
+def _add_evaluation_mode_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
+    parser.add_argument(
+        "--evaluation-mode",
+        choices=["optimized", "segment_exact"],
+        default=None,
+        help=help_text,
+    )
+
+
+def _add_truth_label_mode_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
+    parser.add_argument(
+        "--truth-label-mode",
+        choices=["optimized", "segment_exact"],
+        default=None,
+        help=help_text,
+    )
+
+
+def _run_prepare_data(
+    conn,
+    config,
+    *,
+    skip_bootstrap: bool,
+    label_mode: str | None,
+) -> dict[str, object]:
+    if not skip_bootstrap:
+        bootstrap.run(conn, config)
+        conn.commit()
+    trajectories.run(conn, config, truncate=True)
+    conn.commit()
+    labels.run(conn, config, truncate=True, mode=label_mode)
+    conn.commit()
+    subsets.run(conn, config, truncate=True)
+    conn.commit()
+    return status.run(conn, config)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build top-level argument parser."""
     parser = argparse.ArgumentParser(
-        description="AIS contextual query-driven simplification pipeline bootstrap."
+        description="AIS contextual query-driven simplification workflow for the active Great Belt iteration."
     )
     parser.add_argument(
         "--config",
-        default="configs/mvp.example.yaml",
-        help="Path to YAML config file (relative to AIS-Contextual-QDS root by default).",
+        default=DEFAULT_CONFIG_PATH,
+        help="Path to YAML config file (defaults to the current 10-day iteration config).",
     )
     parser.add_argument(
         "--log-level",
@@ -78,9 +167,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not clear existing label table before inserting.",
     )
+    label_parser.add_argument(
+        "--mode",
+        choices=["optimized", "segment_exact"],
+        default=None,
+        help="Override label semantics mode (default from config performance.label_mode).",
+    )
 
     subset_parser = subparsers.add_parser(
         "create-dev-subset",
+        aliases=["subset"],
         help="Create deterministic dev/eval subset assignment.",
     )
     subset_parser.add_argument(
@@ -131,20 +227,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("status", help="Show table counts for current schema.")
+    subparsers.add_parser(
+        "doctor",
+        aliases=["preflight"],
+        help="Run environment and dataset preflight checks before heavy pipeline work.",
+    )
 
     sprint1_parser = subparsers.add_parser(
-        "sprint1",
-        help="Run bootstrap + trajectory build + labels + subset + status.",
+        "prepare-data",
+        aliases=["sprint1"],
+        help="Build the working dataset: bootstrap, trajectories, labels, subset, and status.",
     )
     sprint1_parser.add_argument(
         "--skip-bootstrap",
         action="store_true",
         help="Skip schema bootstrap step.",
     )
+    sprint1_parser.add_argument(
+        "--label-mode",
+        choices=["optimized", "segment_exact"],
+        default=None,
+        help="Override label semantics mode for the prepare-data label step.",
+    )
 
     baseline_parser = subparsers.add_parser(
-        "run-baselines",
-        help="Run Sprint 2 baselines (uniform, dp) across budget ratios.",
+        "benchmark",
+        aliases=["run-baselines"],
+        help="Run simplification baselines across retained-point budgets.",
     )
     baseline_parser.add_argument(
         "--methods",
@@ -182,6 +291,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip CSV/JSON/Markdown/SVG summary export after run completion.",
     )
+    baseline_parser.add_argument(
+        "--evaluation-mode",
+        choices=["optimized", "segment_exact"],
+        default=None,
+        help="Override evaluation semantics mode (default from config performance.evaluation_mode).",
+    )
+    _add_truth_label_mode_arg(
+        baseline_parser,
+        help_text="Select which stored truth-label mode to score against. Defaults to the evaluation mode.",
+    )
 
     summary_parser = subparsers.add_parser(
         "summarize-baselines",
@@ -199,67 +318,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     inspect_parser = subparsers.add_parser(
-        "export-visual-inspection",
-        help="Export a self-contained HTML report for raw/context/simplified trajectory inspection.",
+        "inspect-html",
+        aliases=["export-visual-inspection"],
+        help="Export a self-contained HTML inspection report for raw/context/simplified trajectories.",
     )
     inspect_parser.add_argument(
         "--output",
         default=None,
         help="Output HTML path. Defaults to results/figures/inspection_*.html.",
     )
-    inspect_parser.add_argument(
-        "--run-id",
-        type=int,
-        default=None,
-        help="Optional simplification run_id to compare against raw trajectories.",
-    )
-    inspect_parser.add_argument(
-        "--run-tag",
-        default=None,
-        help="Optional run_tag filter for selecting a simplification run.",
-    )
-    inspect_parser.add_argument(
-        "--method",
-        default=None,
-        help="Optional method filter for selecting a simplification run, e.g. uniform or dp.",
-    )
-    inspect_parser.add_argument(
-        "--budget",
-        type=float,
-        default=None,
-        help="Optional budget filter for selecting a simplification run, e.g. 0.1.",
-    )
-    inspect_parser.add_argument(
-        "--split",
-        choices=["all", "dev", "eval"],
-        default="dev",
-        help="Subset split to sample when --trajectory-ids is not provided.",
-    )
-    inspect_parser.add_argument(
-        "--subset-name",
-        default=None,
-        help="Subset name override.",
-    )
-    inspect_parser.add_argument(
-        "--trajectory-ids",
-        default=None,
-        help="Comma-separated trajectory IDs to inspect.",
-    )
-    inspect_parser.add_argument(
-        "--limit",
-        type=int,
-        default=12,
-        help="Maximum number of trajectories to export.",
-    )
+    _add_run_selector_args(inspect_parser)
+    _add_subset_sampling_args(inspect_parser)
     inspect_parser.add_argument(
         "--max-points-per-line",
         type=int,
         default=1500,
         help="Maximum points rendered per raw/simplified SVG line for readability.",
     )
+    _add_evaluation_mode_arg(
+        inspect_parser,
+        help_text="Override prediction semantics mode for inspection overlays.",
+    )
+    _add_truth_label_mode_arg(
+        inspect_parser,
+        help_text="Select which stored truth-label mode to display and compare against.",
+    )
 
     qgis_parser = subparsers.add_parser(
-        "export-qgis-inspection",
+        "inspect-qgis",
+        aliases=["export-qgis-inspection"],
         help="Export GeoJSON layers and a QGIS project for trajectory/context inspection.",
     )
     qgis_parser.add_argument(
@@ -267,54 +354,36 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output folder. Defaults to results/figures/qgis_inspection_*.",
     )
-    qgis_parser.add_argument(
-        "--run-id",
-        type=int,
-        default=None,
-        help="Optional simplification run_id to compare against raw trajectories.",
-    )
-    qgis_parser.add_argument(
-        "--run-tag",
-        default=None,
-        help="Optional run_tag filter for selecting a simplification run.",
-    )
-    qgis_parser.add_argument(
-        "--method",
-        default=None,
-        help="Optional method filter for selecting a simplification run, e.g. uniform or dp.",
-    )
-    qgis_parser.add_argument(
-        "--budget",
-        type=float,
-        default=None,
-        help="Optional budget filter for selecting a simplification run, e.g. 0.1.",
-    )
-    qgis_parser.add_argument(
-        "--split",
-        choices=["all", "dev", "eval"],
-        default="dev",
-        help="Subset split to sample when --trajectory-ids is not provided.",
-    )
-    qgis_parser.add_argument(
-        "--subset-name",
-        default=None,
-        help="Subset name override.",
-    )
-    qgis_parser.add_argument(
-        "--trajectory-ids",
-        default=None,
-        help="Comma-separated trajectory IDs to inspect.",
-    )
-    qgis_parser.add_argument(
-        "--limit",
-        type=int,
-        default=12,
-        help="Maximum number of trajectories to export.",
-    )
+    _add_run_selector_args(qgis_parser)
+    _add_subset_sampling_args(qgis_parser)
     qgis_parser.add_argument(
         "--no-points",
         action="store_true",
         help="Skip raw/simplified point layers and export trajectory lines only.",
+    )
+    _add_evaluation_mode_arg(
+        qgis_parser,
+        help_text="Override prediction semantics mode for exported comparison layers.",
+    )
+    _add_truth_label_mode_arg(
+        qgis_parser,
+        help_text="Select which stored truth-label mode to export as truth.",
+    )
+
+    tune_parser = subparsers.add_parser(
+        "tune-postgres",
+        help="Apply a system-wide PostgreSQL tuning profile with ALTER SYSTEM.",
+    )
+    tune_parser.add_argument(
+        "--profile",
+        choices=["laptop_safe"],
+        default="laptop_safe",
+        help="System tuning profile to apply.",
+    )
+    tune_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the changes that would be requested without writing them.",
     )
 
     return parser
@@ -338,6 +407,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     database_url = read_database_url(config)
 
     with get_connection(database_url) as conn:
+        session_profile = apply_session_profile(conn, config.performance.session_profile)
+        LOGGER.info("Applied PostgreSQL session profile: %s", session_profile)
+
+        if args.command == "tune-postgres":
+            _print_json(apply_system_profile(conn, args.profile, dry_run=args.dry_run))
+            return 0
+
+        bootstrap.ensure_schema_compatibility(conn, config.database.schema)
+
         if args.command == "bootstrap":
             bootstrap.run(conn, config)
             return 0
@@ -348,11 +426,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "compute-labels":
-            summary = labels.run(conn, config, truncate=not args.append)
+            summary = labels.run(conn, config, truncate=not args.append, mode=args.mode)
             _print_json(summary)
             return 0
 
-        if args.command == "create-dev-subset":
+        if args.command in {"create-dev-subset", "subset"}:
             summary = subsets.run(conn, config, truncate=not args.append)
             _print_json(summary)
             return 0
@@ -376,16 +454,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_json(status.run(conn, config))
             return 0
 
-        if args.command == "sprint1":
-            if not args.skip_bootstrap:
-                bootstrap.run(conn, config)
-            trajectories.run(conn, config, truncate=True)
-            labels.run(conn, config, truncate=True)
-            subsets.run(conn, config, truncate=True)
-            _print_json(status.run(conn, config))
+        if args.command in {"doctor", "preflight"}:
+            _print_json(doctor.run(conn, config))
             return 0
 
-        if args.command == "run-baselines":
+        if args.command in {"prepare-data", "sprint1"}:
+            _print_json(
+                _run_prepare_data(
+                    conn,
+                    config,
+                    skip_bootstrap=args.skip_bootstrap,
+                    label_mode=args.label_mode,
+                )
+            )
+            return 0
+
+        if args.command in {"benchmark", "run-baselines"}:
             results = baselines.run(
                 conn,
                 config,
@@ -395,6 +479,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_tag=args.run_tag,
                 split=args.split,
                 subset_name=args.subset_name,
+                evaluation_mode=args.evaluation_mode,
+                truth_label_mode=args.truth_label_mode,
                 overwrite=args.overwrite,
             )
             payload: dict[str, object] = {"runs": results}
@@ -418,7 +504,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_json(summary)
             return 0
 
-        if args.command == "export-visual-inspection":
+        if args.command in {"inspect-html", "export-visual-inspection"}:
             summary = visual_inspection.run(
                 conn,
                 config,
@@ -432,11 +518,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 trajectory_ids=_parse_csv_ints(args.trajectory_ids),
                 limit=args.limit,
                 max_points_per_line=args.max_points_per_line,
+                evaluation_mode=args.evaluation_mode,
+                truth_label_mode=args.truth_label_mode,
             )
             _print_json(summary)
             return 0
 
-        if args.command == "export-qgis-inspection":
+        if args.command in {"inspect-qgis", "export-qgis-inspection"}:
             summary = qgis_export.run(
                 conn,
                 config,
@@ -450,6 +538,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 trajectory_ids=_parse_csv_ints(args.trajectory_ids),
                 limit=args.limit,
                 include_points=not args.no_points,
+                evaluation_mode=args.evaluation_mode,
+                truth_label_mode=args.truth_label_mode,
             )
             _print_json(summary)
             return 0

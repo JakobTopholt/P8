@@ -20,6 +20,11 @@ def _sample_rows() -> list[dict[str, object]]:
             "run_tag": "baseline_demo",
             "method": "uniform",
             "budget": 0.1,
+            "evaluation_mode": "optimized",
+            "truth_label_mode": "optimized",
+            "trajectory_split": "dev",
+            "subset_name": "great_belt_iter1_10days",
+            "config_path": "configs/iteration1_10days.example.yaml",
             "zone_entry_precision": 0.8,
             "zone_entry_recall": 0.75,
             "zone_entry_f1": 0.774,
@@ -38,6 +43,11 @@ def _sample_rows() -> list[dict[str, object]]:
             "run_tag": "baseline_demo",
             "method": "dp",
             "budget": 0.1,
+            "evaluation_mode": "segment_exact",
+            "truth_label_mode": "segment_exact",
+            "trajectory_split": "dev",
+            "subset_name": "great_belt_iter1_10days",
+            "config_path": "configs/iteration1_10days.example.yaml",
             "zone_entry_precision": 0.82,
             "zone_entry_recall": 0.76,
             "zone_entry_f1": 0.789,
@@ -81,7 +91,7 @@ def test_summary_exports(tmp_path: Path) -> None:
     assert json_rows[0]["run_tag"] == "baseline_demo"
 
     markdown_text = markdown_path.read_text(encoding="utf-8")
-    assert "| method | budget |" in markdown_text
+    assert "| method | budget | eval_mode | truth_mode |" in markdown_text
 
     svg_text = svg_path.read_text(encoding="utf-8")
     assert "Baseline Query Fidelity" in svg_text

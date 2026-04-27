@@ -41,12 +41,23 @@ def _fetch_rows(
     run_tag: str,
     methods: list[str] | None,
 ) -> list[dict[str, float | int | str]]:
+    method_filter_sql = ""
+    params: dict[str, object] = {"run_tag": run_tag}
+    if methods:
+        method_filter_sql = "  AND r.method_name = ANY(%(methods)s)\n"
+        params["methods"] = methods
+
     sql = f"""
 SELECT
     r.run_id,
     r.run_tag,
     r.method_name AS method,
     r.budget_ratio AS budget,
+    r.evaluation_mode,
+    r.truth_label_mode,
+    r.trajectory_split,
+    r.subset_name,
+    r.config_path,
     MAX(CASE WHEN m.metric_key = 'zone_entry_precision' THEN m.metric_value END) AS zone_entry_precision,
     MAX(CASE WHEN m.metric_key = 'zone_entry_recall' THEN m.metric_value END) AS zone_entry_recall,
     MAX(CASE WHEN m.metric_key = 'zone_entry_f1' THEN m.metric_value END) AS zone_entry_f1,
@@ -62,22 +73,36 @@ SELECT
 FROM {schema}.simplification_runs r
 LEFT JOIN {schema}.benchmark_metrics m ON m.run_id = r.run_id
 WHERE r.run_tag = %(run_tag)s
-  AND (%(methods)s IS NULL OR r.method_name = ANY(%(methods)s))
+{method_filter_sql}
 GROUP BY r.run_id, r.run_tag, r.method_name, r.budget_ratio
 ORDER BY r.method_name, r.budget_ratio;
 """
 
     rows: list[dict[str, float | int | str]] = []
     with conn.cursor() as cur:
-        cur.execute(sql, {"run_tag": run_tag, "methods": methods})
+        cur.execute(sql, params)
         columns = [desc.name for desc in cur.description]
         for record in cur.fetchall():
             row = dict(zip(columns, record, strict=True))
             row["run_id"] = int(row["run_id"])
             row["run_tag"] = str(row["run_tag"])
             row["method"] = str(row["method"])
+            row["evaluation_mode"] = str(row["evaluation_mode"])
+            row["truth_label_mode"] = str(row["truth_label_mode"])
+            row["trajectory_split"] = str(row["trajectory_split"])
+            row["subset_name"] = str(row["subset_name"])
+            row["config_path"] = str(row["config_path"]) if row["config_path"] is not None else ""
             for key in columns:
-                if key in {"run_id", "run_tag", "method"}:
+                if key in {
+                    "run_id",
+                    "run_tag",
+                    "method",
+                    "evaluation_mode",
+                    "truth_label_mode",
+                    "trajectory_split",
+                    "subset_name",
+                    "config_path",
+                }:
                     continue
                 value = row.get(key)
                 row[key] = float(value) if value is not None else 0.0
@@ -133,4 +158,6 @@ def run(
         "plot_path": str(plot_path.resolve()),
         "methods": sorted({str(row["method"]) for row in rows}),
         "budgets": sorted({float(row["budget"]) for row in rows}),
+        "evaluation_modes": sorted({str(row["evaluation_mode"]) for row in rows}),
+        "truth_label_modes": sorted({str(row["truth_label_mode"]) for row in rows}),
     }

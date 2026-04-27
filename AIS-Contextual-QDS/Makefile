@@ -1,44 +1,84 @@
-PYTHON ?= python
-CONFIG ?= configs/mvp.example.yaml
+PYTHON ?= $(shell if [ -x ../.venv/bin/python ]; then printf '%s' ../.venv/bin/python; elif [ -x .venv/bin/python ]; then printf '%s' .venv/bin/python; else printf '%s' python; fi)
+CONFIG ?= configs/iteration1_10days.example.yaml
 STUDY_REGION_FILE ?=
 ZONES_FILE ?=
 CORRIDOR_FILE ?=
 CORRIDOR_BUFFER_METERS ?=
+MODE ?=
+EVALUATION_MODE ?=
+TRUTH_LABEL_MODE ?=
+RUN_TAG ?=
 
-.PHONY: bootstrap load-context build-trajectories compute-labels create-dev-subset sprint1 run-baselines summarize-baselines export-visual-inspection export-qgis-inspection status test
+CLI = $(PYTHON) -m src.cli --config $(CONFIG)
+
+.PHONY: help bootstrap load-context build-trajectories compute-labels create-dev-subset prepare-data benchmark summarize-baselines inspect-html inspect-qgis tune-postgres doctor status test sprint1 run-baselines export-visual-inspection export-qgis-inspection subset preflight
+
+help:
+	@printf "AIS-Contextual-QDS Make Targets\n\n"
+	@printf "Current default config: %s\n\n" "$(CONFIG)"
+	@printf "Setup and data prep:\n"
+	@printf "  make bootstrap\n"
+	@printf "  make load-context STUDY_REGION_FILE=... ZONES_FILE=... CORRIDOR_FILE=... [CORRIDOR_BUFFER_METERS=700]\n"
+	@printf "  make build-trajectories\n"
+	@printf "  make compute-labels [MODE=optimized|segment_exact]\n"
+	@printf "  make create-dev-subset\n"
+	@printf "  make prepare-data [MODE=optimized|segment_exact]\n\n"
+	@printf "Evaluation and inspection:\n"
+	@printf "  make benchmark [EVALUATION_MODE=optimized|segment_exact] [TRUTH_LABEL_MODE=optimized|segment_exact] [RUN_TAG=...]\n"
+	@printf "  make summarize-baselines [RUN_TAG=...]\n"
+	@printf "  make inspect-html [EVALUATION_MODE=optimized|segment_exact] [TRUTH_LABEL_MODE=optimized|segment_exact] [RUN_TAG=...]\n"
+	@printf "  make inspect-qgis [EVALUATION_MODE=optimized|segment_exact] [TRUTH_LABEL_MODE=optimized|segment_exact] [RUN_TAG=...]\n"
+	@printf "  make status\n"
+	@printf "  make doctor\n"
+	@printf "  make tune-postgres\n"
+	@printf "  make test\n"
 
 bootstrap:
-	$(PYTHON) -m src.cli --config $(CONFIG) bootstrap
+	$(CLI) bootstrap
 
 load-context:
-	$(PYTHON) -m src.cli --config $(CONFIG) load-context --study-region-file "$(STUDY_REGION_FILE)" --zones-file "$(ZONES_FILE)" --corridor-file "$(CORRIDOR_FILE)" $(if $(CORRIDOR_BUFFER_METERS),--corridor-buffer-meters $(CORRIDOR_BUFFER_METERS),)
+	$(CLI) load-context --study-region-file "$(STUDY_REGION_FILE)" --zones-file "$(ZONES_FILE)" --corridor-file "$(CORRIDOR_FILE)" $(if $(CORRIDOR_BUFFER_METERS),--corridor-buffer-meters $(CORRIDOR_BUFFER_METERS),)
 
 build-trajectories:
-	$(PYTHON) -m src.cli --config $(CONFIG) build-trajectories
+	$(CLI) build-trajectories
 
 compute-labels:
-	$(PYTHON) -m src.cli --config $(CONFIG) compute-labels
+	$(CLI) compute-labels $(if $(MODE),--mode $(MODE),)
 
 create-dev-subset:
-	$(PYTHON) -m src.cli --config $(CONFIG) create-dev-subset
+	$(CLI) create-dev-subset
 
-sprint1:
-	$(PYTHON) -m src.cli --config $(CONFIG) sprint1
+prepare-data:
+	$(CLI) prepare-data $(if $(MODE),--label-mode $(MODE),)
 
-run-baselines:
-	$(PYTHON) -m src.cli --config $(CONFIG) run-baselines --overwrite
+benchmark:
+	$(CLI) benchmark --overwrite $(if $(EVALUATION_MODE),--evaluation-mode $(EVALUATION_MODE),) $(if $(TRUTH_LABEL_MODE),--truth-label-mode $(TRUTH_LABEL_MODE),) $(if $(RUN_TAG),--run-tag $(RUN_TAG),)
 
 summarize-baselines:
-	$(PYTHON) -m src.cli --config $(CONFIG) summarize-baselines
+	$(CLI) summarize-baselines $(if $(RUN_TAG),--run-tag $(RUN_TAG),)
 
-export-visual-inspection:
-	$(PYTHON) -m src.cli --config $(CONFIG) export-visual-inspection
+inspect-html:
+	$(CLI) inspect-html $(if $(EVALUATION_MODE),--evaluation-mode $(EVALUATION_MODE),) $(if $(TRUTH_LABEL_MODE),--truth-label-mode $(TRUTH_LABEL_MODE),) $(if $(RUN_TAG),--run-tag $(RUN_TAG),)
 
-export-qgis-inspection:
-	$(PYTHON) -m src.cli --config $(CONFIG) export-qgis-inspection
+inspect-qgis:
+	$(CLI) inspect-qgis $(if $(EVALUATION_MODE),--evaluation-mode $(EVALUATION_MODE),) $(if $(TRUTH_LABEL_MODE),--truth-label-mode $(TRUTH_LABEL_MODE),) $(if $(RUN_TAG),--run-tag $(RUN_TAG),)
+
+tune-postgres:
+	$(CLI) tune-postgres --profile laptop_safe
+
+doctor:
+	$(CLI) doctor
 
 status:
-	$(PYTHON) -m src.cli --config $(CONFIG) status
+	$(CLI) status
 
 test:
 	$(PYTHON) -m pytest tests -q
+
+# Backward-compatible aliases
+sprint1: prepare-data
+run-baselines: benchmark
+export-visual-inspection: inspect-html
+export-qgis-inspection: inspect-qgis
+subset: create-dev-subset
+preflight: doctor

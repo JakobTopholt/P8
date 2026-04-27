@@ -154,6 +154,10 @@ GROUP BY trajectory_id, mmsi;
 
     execute_sql(conn, insert_traj_sql)
 
+    LOGGER.info("Analyzing trajectory tables for downstream query planning.")
+    execute_sql(conn, f"ANALYZE {schema}.trajectory_points_raw;")
+    execute_sql(conn, f"ANALYZE {schema}.trajectories_raw;")
+
     points_count = int(fetch_one(conn, f"SELECT COUNT(*) FROM {schema}.trajectory_points_raw;") or 0)
     traj_count = int(fetch_one(conn, f"SELECT COUNT(*) FROM {schema}.trajectories_raw;") or 0)
 

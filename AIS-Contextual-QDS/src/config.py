@@ -12,6 +12,8 @@ from typing import Any
 import yaml
 
 from .paths import resolve_project_path
+from .postgres_tuning import normalize_session_profile
+from .query_semantics import normalize_query_mode
 
 _SCHEMA_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TABLE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
@@ -109,6 +111,15 @@ class BaselineConfig:
 
 
 @dataclass(frozen=True)
+class PerformanceConfig:
+    """Query semantics and connection-level tuning defaults."""
+
+    label_mode: str = "optimized"
+    evaluation_mode: str = "optimized"
+    session_profile: str = "laptop_safe"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Top-level app config."""
 
@@ -121,6 +132,7 @@ class AppConfig:
     subsets: SubsetConfig = field(default_factory=SubsetConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
     baselines: BaselineConfig = field(default_factory=BaselineConfig)
+    performance: PerformanceConfig = field(default_factory=PerformanceConfig)
 
 
 def _parse_datetime(value: str, field_name: str) -> dt.datetime:
@@ -219,6 +231,10 @@ def validate_config(config: AppConfig) -> None:
     if config.baselines.insert_batch_size <= 0:
         raise ValueError("baselines.insert_batch_size must be > 0.")
 
+    normalize_query_mode(config.performance.label_mode, default="optimized")
+    normalize_query_mode(config.performance.evaluation_mode, default="optimized")
+    normalize_session_profile(config.performance.session_profile)
+
     schema_sql_path = resolve_project_path(config.paths.schema_sql_file)
     if not schema_sql_path.exists():
         raise ValueError(f"paths.schema_sql_file does not exist: {schema_sql_path}")
@@ -242,6 +258,7 @@ def load_config(config_path: Path) -> AppConfig:
         subsets=SubsetConfig(**_section(raw, "subsets")),
         paths=PathsConfig(**_section(raw, "paths")),
         baselines=BaselineConfig(**_section(raw, "baselines")),
+        performance=PerformanceConfig(**_section(raw, "performance")),
     )
     validate_config(config)
     return config

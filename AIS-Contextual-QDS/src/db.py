@@ -17,10 +17,17 @@ def get_connection(database_url: str) -> Iterator[Connection[Any]]:
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
+        try:
+            if not conn.closed:
+                conn.rollback()
+        except Exception:
+            pass
         raise
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def execute_sql(conn: Connection[Any], sql_statement: str, params: dict[str, Any] | None = None) -> None:

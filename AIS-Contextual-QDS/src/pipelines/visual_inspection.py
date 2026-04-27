@@ -12,6 +12,7 @@ from psycopg import Connection
 
 from ..config import AppConfig
 from ..paths import resolve_project_path
+from ..query_semantics import build_run_prediction_ctes_sql, normalize_query_mode
 from ..visualization.inspection import ContextFeature, PointRecord, TrajectoryView, write_inspection_html
 
 LOGGER = logging.getLogger(__name__)
@@ -59,7 +60,17 @@ def _resolve_run(
 
     where_sql = " AND ".join(clauses) if clauses else "TRUE"
     sql = f"""
-SELECT run_id, run_tag, method_name, budget_ratio, started_at
+SELECT
+    run_id,
+    run_tag,
+    method_name,
+    budget_ratio,
+    started_at,
+    evaluation_mode,
+    truth_label_mode,
+    trajectory_split,
+    subset_name,
+    config_path
 FROM {schema}.simplification_runs
 WHERE {where_sql}
 ORDER BY started_at DESC, run_id DESC
@@ -81,6 +92,11 @@ LIMIT 1;
         "method_name": str(row[2]),
         "budget_ratio": float(row[3]),
         "started_at": str(row[4]),
+        "evaluation_mode": str(row[5]),
+        "truth_label_mode": str(row[6]),
+        "trajectory_split": str(row[7]),
+        "subset_name": str(row[8]),
+        "config_path": str(row[9]) if row[9] is not None else "",
     }
 
 
@@ -117,6 +133,8 @@ def _select_trajectory_ids(
     split: str,
     subset_name: str,
     limit: int,
+    evaluation_mode: str,
+    truth_label_mode: str,
 ) -> list[int]:
     schema = config.database.schema
     if split not in {"all", "dev", "eval"}:
@@ -129,6 +147,7 @@ def _select_trajectory_ids(
         "split": split,
         "limit": limit,
         "corridor_name": config.context.corridor_name,
+        "truth_label_mode": truth_label_mode,
     }
     if split != "all":
         subset_join = (
@@ -150,6 +169,7 @@ WITH truth AS (
     LEFT JOIN {schema}.trajectory_query_labels q
       ON q.trajectory_id = t.trajectory_id
      AND q.corridor_name = %(corridor_name)s
+     AND q.label_mode = %(truth_label_mode)s
     WHERE TRUE {subset_where}
     GROUP BY t.trajectory_id, t.n_points
 )
@@ -160,97 +180,30 @@ LIMIT %(limit)s;
 """
     else:
         params["run_id"] = run_id
+        params["zone_names"] = config.context.zone_names
+        params["min_overlap_m"] = config.queries.min_corridor_overlap_meters
+        prediction_ctes = build_run_prediction_ctes_sql(
+            schema,
+            mode=evaluation_mode,
+            run_points_where_sql="WHERE run_id = %(run_id)s",
+        )
         sql = f"""
-WITH run_points AS (
-    SELECT trajectory_id, point_seq, geom
-    FROM {schema}.trajectories_simplified_points
-    WHERE run_id = %(run_id)s
-),
-run_traj AS (
-    SELECT DISTINCT trajectory_id
-    FROM run_points
-),
-first_points AS (
-    SELECT trajectory_id, geom
-    FROM run_points
-    WHERE point_seq = 1
-),
-segments AS (
-    SELECT
-        p1.trajectory_id,
-        ST_MakeLine(p1.geom, p2.geom) AS segment_geom,
-        p1.geom AS from_geom,
-        p2.geom AS to_geom
-    FROM run_points p1
-    JOIN run_points p2
-      ON p2.trajectory_id = p1.trajectory_id
-     AND p2.point_seq = p1.point_seq + 1
-),
-zone_preds AS (
-    SELECT
-        rt.trajectory_id,
-        z.zone_name,
-        CASE
-            WHEN ST_Contains(z.geom, fp.geom) THEN FALSE
-            WHEN EXISTS (
-                SELECT 1
-                FROM segments s2
-                WHERE s2.trajectory_id = rt.trajectory_id
-                  AND (
-                      (NOT ST_Contains(z.geom, s2.from_geom) AND ST_Contains(z.geom, s2.to_geom))
-                      OR ST_Crosses(s2.segment_geom, z.geom)
-                  )
-            ) THEN TRUE
-            ELSE FALSE
-        END AS zone_entry_pred
-    FROM run_traj rt
-    JOIN first_points fp ON fp.trajectory_id = rt.trajectory_id
-    JOIN {schema}.context_zones z ON z.zone_name = ANY(%(zone_names)s)
-),
-point_corridor_hits AS (
-    SELECT
-        p.trajectory_id,
-        BOOL_OR(ST_Covers(c.geom, p.geom)) AS corridor_hit_by_point
-    FROM run_points p
-    JOIN {schema}.context_corridors c ON c.corridor_name = %(corridor_name)s
-    GROUP BY p.trajectory_id
-),
-segment_corridor_hits AS (
-    SELECT
-        s2.trajectory_id,
-        BOOL_OR(
-            ST_Intersects(s2.segment_geom, c.geom)
-            AND ST_Length(ST_Intersection(s2.segment_geom, c.geom)::geography) >= %(min_overlap_m)s
-        ) AS corridor_hit_by_segment
-    FROM segments s2
-    JOIN {schema}.context_corridors c ON c.corridor_name = %(corridor_name)s
-    GROUP BY s2.trajectory_id
-),
-preds AS (
-    SELECT
-        zp.trajectory_id,
-        zp.zone_name,
-        zp.zone_entry_pred,
-        COALESCE(pch.corridor_hit_by_point, FALSE) OR COALESCE(sch.corridor_hit_by_segment, FALSE) AS corridor_pred
-    FROM zone_preds zp
-    LEFT JOIN point_corridor_hits pch
-      ON pch.trajectory_id = zp.trajectory_id
-    LEFT JOIN segment_corridor_hits sch
-      ON sch.trajectory_id = zp.trajectory_id
-),
+WITH {prediction_ctes},
 truth AS (
     SELECT
         t.trajectory_id,
         q.zone_name,
+        q.corridor_name,
         q.zone_entry,
         q.corridor_membership,
         t.n_points
     FROM {schema}.trajectories_raw t
-    JOIN run_traj r ON r.trajectory_id = t.trajectory_id
+    JOIN run_lines rl ON rl.trajectory_id = t.trajectory_id
     {subset_join}
     JOIN {schema}.trajectory_query_labels q
       ON q.trajectory_id = t.trajectory_id
      AND q.corridor_name = %(corridor_name)s
+     AND q.label_mode = %(truth_label_mode)s
     WHERE TRUE {subset_where}
 ),
 pairs AS (
@@ -263,7 +216,10 @@ pairs AS (
         preds.zone_entry_pred,
         preds.corridor_pred
     FROM truth
-    JOIN preds USING (trajectory_id, zone_name)
+    JOIN preds
+      ON preds.trajectory_id = truth.trajectory_id
+     AND preds.zone_name = truth.zone_name
+     AND preds.corridor_name = truth.corridor_name
 ),
 scored AS (
     SELECT
@@ -345,6 +301,8 @@ def _fetch_truth(
     conn: Connection[Any],
     config: AppConfig,
     trajectory_ids: list[int],
+    *,
+    truth_label_mode: str,
 ) -> tuple[dict[int, dict[str, bool]], dict[int, bool]]:
     schema = config.database.schema
     sql = f"""
@@ -352,6 +310,7 @@ SELECT trajectory_id, zone_name, zone_entry, corridor_membership
 FROM {schema}.trajectory_query_labels
 WHERE trajectory_id = ANY(%(trajectory_ids)s)
   AND corridor_name = %(corridor_name)s
+  AND label_mode = %(truth_label_mode)s
 ORDER BY trajectory_id, zone_name;
 """
     zone_truth: dict[int, dict[str, bool]] = {trajectory_id: {} for trajectory_id in trajectory_ids}
@@ -362,6 +321,7 @@ ORDER BY trajectory_id, zone_name;
             {
                 "trajectory_ids": trajectory_ids,
                 "corridor_name": config.context.corridor_name,
+                "truth_label_mode": truth_label_mode,
             },
         )
         for trajectory_id, zone_name, zone_entry, corridor_membership in cur.fetchall():
@@ -377,86 +337,23 @@ def _fetch_predictions(
     *,
     run_id: int,
     trajectory_ids: list[int],
+    evaluation_mode: str,
 ) -> tuple[dict[int, dict[str, bool]], dict[int, bool]]:
     schema = config.database.schema
+    prediction_ctes = build_run_prediction_ctes_sql(
+        schema,
+        mode=evaluation_mode,
+        run_points_where_sql="WHERE run_id = %(run_id)s AND trajectory_id = ANY(%(trajectory_ids)s)",
+    )
     sql = f"""
-WITH run_points AS (
-    SELECT trajectory_id, point_seq, geom
-    FROM {schema}.trajectories_simplified_points
-    WHERE run_id = %(run_id)s
-      AND trajectory_id = ANY(%(trajectory_ids)s)
-),
-run_traj AS (
-    SELECT DISTINCT trajectory_id
-    FROM run_points
-),
-first_points AS (
-    SELECT trajectory_id, geom
-    FROM run_points
-    WHERE point_seq = 1
-),
-segments AS (
-    SELECT
-        p1.trajectory_id,
-        ST_MakeLine(p1.geom, p2.geom) AS segment_geom,
-        p1.geom AS from_geom,
-        p2.geom AS to_geom
-    FROM run_points p1
-    JOIN run_points p2
-      ON p2.trajectory_id = p1.trajectory_id
-     AND p2.point_seq = p1.point_seq + 1
-),
-zone_preds AS (
-    SELECT
-        rt.trajectory_id,
-        z.zone_name,
-        CASE
-            WHEN ST_Contains(z.geom, fp.geom) THEN FALSE
-            WHEN EXISTS (
-                SELECT 1
-                FROM segments s
-                WHERE s.trajectory_id = rt.trajectory_id
-                  AND (
-                      (NOT ST_Contains(z.geom, s.from_geom) AND ST_Contains(z.geom, s.to_geom))
-                      OR ST_Crosses(s.segment_geom, z.geom)
-                  )
-            ) THEN TRUE
-            ELSE FALSE
-        END AS zone_entry_pred
-    FROM run_traj rt
-    JOIN first_points fp ON fp.trajectory_id = rt.trajectory_id
-    JOIN {schema}.context_zones z ON z.zone_name = ANY(%(zone_names)s)
-),
-point_corridor_hits AS (
-    SELECT
-        p.trajectory_id,
-        BOOL_OR(ST_Covers(c.geom, p.geom)) AS corridor_hit_by_point
-    FROM run_points p
-    JOIN {schema}.context_corridors c ON c.corridor_name = %(corridor_name)s
-    GROUP BY p.trajectory_id
-),
-segment_corridor_hits AS (
-    SELECT
-        s.trajectory_id,
-        BOOL_OR(
-            ST_Intersects(s.segment_geom, c.geom)
-            AND ST_Length(ST_Intersection(s.segment_geom, c.geom)::geography) >= %(min_overlap_m)s
-        ) AS corridor_hit_by_segment
-    FROM segments s
-    JOIN {schema}.context_corridors c ON c.corridor_name = %(corridor_name)s
-    GROUP BY s.trajectory_id
-)
+WITH {prediction_ctes}
 SELECT
-    zp.trajectory_id,
-    zp.zone_name,
-    zp.zone_entry_pred,
-    COALESCE(pch.corridor_hit_by_point, FALSE) OR COALESCE(sch.corridor_hit_by_segment, FALSE) AS corridor_pred
-FROM zone_preds zp
-LEFT JOIN point_corridor_hits pch
-  ON pch.trajectory_id = zp.trajectory_id
-LEFT JOIN segment_corridor_hits sch
-  ON sch.trajectory_id = zp.trajectory_id
-ORDER BY zp.trajectory_id, zp.zone_name;
+    trajectory_id,
+    zone_name,
+    zone_entry_pred,
+    corridor_pred
+FROM preds
+ORDER BY trajectory_id, zone_name;
 """
     zone_pred: dict[int, dict[str, bool]] = {trajectory_id: {} for trajectory_id in trajectory_ids}
     corridor_pred: dict[int, bool] = {trajectory_id: False for trajectory_id in trajectory_ids}
@@ -496,17 +393,18 @@ def run(
     run_tag: str | None = None,
     method: str | None = None,
     budget: float | None = None,
-    split: str = "dev",
+    split: str | None = None,
     subset_name: str | None = None,
     trajectory_ids: list[int] | None = None,
     limit: int = 12,
     max_points_per_line: int = 1500,
+    evaluation_mode: str | None = None,
+    truth_label_mode: str | None = None,
 ) -> dict[str, object]:
     """Export visual inspection HTML."""
     if limit <= 0:
         raise ValueError("limit must be > 0.")
 
-    selected_subset_name = subset_name or config.subsets.subset_name
     selected_ids = _parse_trajectory_ids(trajectory_ids)
     run_summary = _resolve_run(
         conn,
@@ -517,6 +415,32 @@ def run(
         budget=budget,
     )
     resolved_run_id = int(run_summary["run_id"]) if run_summary else None
+    selected_split = split or (
+        str(run_summary["trajectory_split"])
+        if run_summary and str(run_summary.get("trajectory_split", ""))
+        else "dev"
+    )
+    selected_subset_name = subset_name or (
+        str(run_summary["subset_name"])
+        if run_summary and str(run_summary.get("subset_name", ""))
+        else config.subsets.subset_name
+    )
+    resolved_evaluation_mode = normalize_query_mode(
+        evaluation_mode,
+        default=(
+            str(run_summary["evaluation_mode"])
+            if run_summary and evaluation_mode is None
+            else config.performance.evaluation_mode
+        ),
+    )
+    resolved_truth_label_mode = normalize_query_mode(
+        truth_label_mode,
+        default=(
+            str(run_summary["truth_label_mode"])
+            if run_summary and truth_label_mode is None
+            else config.performance.label_mode
+        ),
+    )
 
     context_features = _fetch_context_features(conn, config)
     if not context_features:
@@ -527,9 +451,11 @@ def run(
             conn,
             config,
             run_id=resolved_run_id,
-            split=split,
+            split=selected_split,
             subset_name=selected_subset_name,
             limit=limit,
+            evaluation_mode=resolved_evaluation_mode,
+            truth_label_mode=resolved_truth_label_mode,
         )
     else:
         selected_ids = selected_ids[:limit]
@@ -547,7 +473,12 @@ def run(
             trajectory_ids=selected_ids,
         )
 
-    zone_truth, corridor_truth = _fetch_truth(conn, config, selected_ids)
+    zone_truth, corridor_truth = _fetch_truth(
+        conn,
+        config,
+        selected_ids,
+        truth_label_mode=resolved_truth_label_mode,
+    )
     zone_pred: dict[int, dict[str, bool]] = {trajectory_id: {} for trajectory_id in selected_ids}
     corridor_pred: dict[int, bool] = {}
     if resolved_run_id is not None:
@@ -556,8 +487,14 @@ def run(
             config,
             run_id=resolved_run_id,
             trajectory_ids=selected_ids,
+            evaluation_mode=resolved_evaluation_mode,
         )
 
+    render_run_summary = None if run_summary is None else {
+        **run_summary,
+        "evaluation_mode": resolved_evaluation_mode,
+        "truth_label_mode": resolved_truth_label_mode,
+    }
     trajectories = [
         TrajectoryView(
             trajectory_id=trajectory_id,
@@ -583,7 +520,7 @@ def run(
         config=config,
         context_features=context_features,
         trajectories=trajectories,
-        run_summary=run_summary,
+        run_summary=render_run_summary,
         max_points_per_line=max_points_per_line,
     )
 
@@ -592,7 +529,9 @@ def run(
         "output_path": str(written_path),
         "trajectory_count": len(trajectories),
         "trajectory_ids": [trajectory.trajectory_id for trajectory in trajectories],
-        "run": run_summary,
-        "split": split,
+        "run": render_run_summary,
+        "evaluation_mode": resolved_evaluation_mode,
+        "truth_label_mode": resolved_truth_label_mode,
+        "split": selected_split,
         "subset_name": selected_subset_name,
     }

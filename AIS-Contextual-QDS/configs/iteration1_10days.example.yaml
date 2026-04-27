@@ -57,3 +57,8 @@ baselines:
   default_split: dev
   dp_search_iterations: 24
   insert_batch_size: 10000
+
+performance:
+  label_mode: optimized
+  evaluation_mode: optimized
+  session_profile: laptop_safe

@@ -78,11 +78,13 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__.trajectory_query_labels (
     trajectory_id BIGINT NOT NULL,
     zone_name TEXT NOT NULL,
     corridor_name TEXT NOT NULL,
+    label_mode TEXT NOT NULL DEFAULT 'optimized',
     zone_entry BOOLEAN NOT NULL,
     corridor_membership BOOLEAN NOT NULL,
     computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (trajectory_id, zone_name, corridor_name),
-    FOREIGN KEY (trajectory_id) REFERENCES __SCHEMA__.trajectories_raw (trajectory_id) ON DELETE CASCADE
+    PRIMARY KEY (trajectory_id, zone_name, corridor_name, label_mode),
+    FOREIGN KEY (trajectory_id) REFERENCES __SCHEMA__.trajectories_raw (trajectory_id) ON DELETE CASCADE,
+    CHECK (label_mode IN ('optimized', 'segment_exact'))
 );
 
 CREATE INDEX IF NOT EXISTS idx___SCHEMA___trajectory_query_labels_zone
@@ -90,6 +92,12 @@ CREATE INDEX IF NOT EXISTS idx___SCHEMA___trajectory_query_labels_zone
 
 CREATE INDEX IF NOT EXISTS idx___SCHEMA___trajectory_query_labels_corridor
     ON __SCHEMA__.trajectory_query_labels (corridor_name, corridor_membership);
+
+CREATE INDEX IF NOT EXISTS idx___SCHEMA___trajectory_query_labels_mode_zone
+    ON __SCHEMA__.trajectory_query_labels (label_mode, zone_name, zone_entry);
+
+CREATE INDEX IF NOT EXISTS idx___SCHEMA___trajectory_query_labels_mode_corridor
+    ON __SCHEMA__.trajectory_query_labels (label_mode, corridor_name, corridor_membership);
 
 CREATE TABLE IF NOT EXISTS __SCHEMA__.trajectory_dev_eval_subset (
     subset_name TEXT NOT NULL,
@@ -110,8 +118,16 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__.simplification_runs (
     method_name TEXT NOT NULL,
     budget_ratio DOUBLE PRECISION NOT NULL,
     config_path TEXT,
+    evaluation_mode TEXT NOT NULL DEFAULT 'optimized',
+    truth_label_mode TEXT NOT NULL DEFAULT 'optimized',
+    trajectory_split TEXT NOT NULL DEFAULT 'dev',
+    subset_name TEXT NOT NULL DEFAULT '',
+    run_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (run_tag, method_name, budget_ratio)
+    CHECK (evaluation_mode IN ('optimized', 'segment_exact')),
+    CHECK (truth_label_mode IN ('optimized', 'segment_exact')),
+    CHECK (trajectory_split IN ('all', 'dev', 'eval')),
+    UNIQUE (run_tag, method_name, budget_ratio, evaluation_mode, truth_label_mode, trajectory_split, subset_name)
 );
 
 CREATE TABLE IF NOT EXISTS __SCHEMA__.trajectories_simplified_points (

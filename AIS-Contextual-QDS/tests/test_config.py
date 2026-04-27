@@ -28,6 +28,9 @@ def test_load_default_config() -> None:
     assert config.subsets.dev_size == 300
     assert config.baselines.methods == ["uniform", "dp"]
     assert config.baselines.default_split == "dev"
+    assert config.performance.label_mode == "optimized"
+    assert config.performance.evaluation_mode == "optimized"
+    assert config.performance.session_profile == "laptop_safe"
 
 
 def test_load_iteration1_10day_config() -> None:
@@ -38,6 +41,9 @@ def test_load_iteration1_10day_config() -> None:
     assert config.scope.window_end == "2026-01-11T00:00:00+00:00"
     assert config.subsets.subset_name == "great_belt_iter1_10days"
     assert config.queries.retained_point_budgets == [0.10, 0.20, 0.30, 0.40, 0.50]
+    assert config.performance.label_mode == "optimized"
+    assert config.performance.evaluation_mode == "optimized"
+    assert config.performance.session_profile == "laptop_safe"
 
 
 def test_invalid_budget_raises(tmp_path: Path) -> None:
@@ -49,4 +55,41 @@ def test_invalid_budget_raises(tmp_path: Path) -> None:
     broken_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
 
     with pytest.raises(ValueError, match="budget"):
+        load_config(broken_path)
+
+
+def test_invalid_label_mode_raises(tmp_path: Path) -> None:
+    config_path = PROJECT_ROOT / "configs" / "mvp.example.yaml"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["performance"]["label_mode"] = "approx"
+
+    broken_path = tmp_path / "broken_label_mode.yaml"
+    broken_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="query mode"):
+        load_config(broken_path)
+
+
+@pytest.mark.parametrize("legacy_mode", ["exact", "fast"])
+def test_legacy_modes_are_rejected(tmp_path: Path, legacy_mode: str) -> None:
+    config_path = PROJECT_ROOT / "configs" / "mvp.example.yaml"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["performance"]["evaluation_mode"] = legacy_mode
+
+    broken_path = tmp_path / f"broken_legacy_mode_{legacy_mode}.yaml"
+    broken_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="query mode"):
+        load_config(broken_path)
+
+
+def test_invalid_session_profile_raises(tmp_path: Path) -> None:
+    config_path = PROJECT_ROOT / "configs" / "mvp.example.yaml"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["performance"]["session_profile"] = "desktop_ultra"
+
+    broken_path = tmp_path / "broken_session_profile.yaml"
+    broken_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="session profile"):
         load_config(broken_path)

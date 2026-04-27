@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
-from psycopg import Connection
+from psycopg import Connection, sql
 
 from ..config import AppConfig
 from ..db import fetch_one
 from ..evaluation.metrics import classification_metrics
+from ..query_semantics import build_run_prediction_ctes_sql, normalize_query_mode
 from ..simplification import simplify_douglas_peucker_indices, simplify_uniform_indices
 
 LOGGER = logging.getLogger(__name__)
@@ -154,6 +156,68 @@ def _simplify_indices(
     raise ValueError(f"Unknown method: {method}")
 
 
+def _ensure_truth_labels_available(
+    conn: Connection[Any],
+    config: AppConfig,
+    *,
+    truth_label_mode: str,
+) -> None:
+    schema = config.database.schema
+    trajectory_count = int(fetch_one(conn, f"SELECT COUNT(*) FROM {schema}.trajectories_raw;") or 0)
+    if trajectory_count <= 0:
+        raise RuntimeError("No raw trajectories available. Run prepare-data or build-trajectories first.")
+
+    expected_rows = trajectory_count * len(config.context.zone_names)
+    actual_rows = int(
+        fetch_one(
+            conn,
+            (
+                f"SELECT COUNT(*) FROM {schema}.trajectory_query_labels "
+                "WHERE label_mode = %(label_mode)s AND corridor_name = %(corridor_name)s;"
+            ),
+            {
+                "label_mode": truth_label_mode,
+                "corridor_name": config.context.corridor_name,
+            },
+        )
+        or 0
+    )
+    if actual_rows != expected_rows:
+        raise RuntimeError(
+            "Truth labels are missing or incomplete for "
+            f"label_mode={truth_label_mode!r}. Expected {expected_rows} rows, found {actual_rows}. "
+            f"Run `python -m src.cli compute-labels --mode {truth_label_mode}` first."
+        )
+
+
+def _build_run_metadata(
+    config: AppConfig,
+    *,
+    config_path: str,
+    trajectory_split: str,
+    subset_name: str,
+    evaluation_mode: str,
+    truth_label_mode: str,
+) -> dict[str, object]:
+    return {
+        "project_name": config.project.name,
+        "database_schema": config.database.schema,
+        "source_points_table": config.database.source_points_table,
+        "region_name": config.scope.region_name,
+        "window_start": config.scope.window_start,
+        "window_end": config.scope.window_end,
+        "vessel_class_pattern": config.scope.vessel_class_pattern,
+        "zone_names": list(config.context.zone_names),
+        "corridor_name": config.context.corridor_name,
+        "trajectory_split": trajectory_split,
+        "subset_name": subset_name,
+        "evaluation_mode": evaluation_mode,
+        "truth_label_mode": truth_label_mode,
+        "session_profile": config.performance.session_profile,
+        "config_path": config_path,
+    }
+
+
 def _create_run_record(
     conn: Connection[Any],
     *,
@@ -162,16 +226,31 @@ def _create_run_record(
     method: str,
     budget: float,
     config_path: str,
+    evaluation_mode: str,
+    truth_label_mode: str,
+    trajectory_split: str,
+    subset_name: str,
+    run_metadata: dict[str, object],
     overwrite: bool,
 ) -> int:
     existing_sql = (
         f"SELECT run_id FROM {schema}.simplification_runs "
-        "WHERE run_tag = %(run_tag)s AND method_name = %(method)s AND budget_ratio = %(budget)s;"
+        "WHERE run_tag = %(run_tag)s AND method_name = %(method)s AND budget_ratio = %(budget)s "
+        "  AND evaluation_mode = %(evaluation_mode)s AND truth_label_mode = %(truth_label_mode)s "
+        "  AND trajectory_split = %(trajectory_split)s AND subset_name = %(subset_name)s;"
     )
     with conn.cursor() as cur:
         cur.execute(
             existing_sql,
-            {"run_tag": run_tag, "method": method, "budget": budget},
+            {
+                "run_tag": run_tag,
+                "method": method,
+                "budget": budget,
+                "evaluation_mode": evaluation_mode,
+                "truth_label_mode": truth_label_mode,
+                "trajectory_split": trajectory_split,
+                "subset_name": subset_name,
+            },
         )
         row = cur.fetchone()
 
@@ -189,8 +268,8 @@ def _create_run_record(
         cur.execute(
             (
                 f"INSERT INTO {schema}.simplification_runs "
-                "(run_tag, method_name, budget_ratio, config_path) "
-                "VALUES (%(run_tag)s, %(method)s, %(budget)s, %(config_path)s) "
+                "(run_tag, method_name, budget_ratio, config_path, evaluation_mode, truth_label_mode, trajectory_split, subset_name, run_metadata) "
+                "VALUES (%(run_tag)s, %(method)s, %(budget)s, %(config_path)s, %(evaluation_mode)s, %(truth_label_mode)s, %(trajectory_split)s, %(subset_name)s, %(run_metadata)s::jsonb) "
                 "RETURNING run_id;"
             ),
             {
@@ -198,6 +277,11 @@ def _create_run_record(
                 "method": method,
                 "budget": budget,
                 "config_path": config_path,
+                "evaluation_mode": evaluation_mode,
+                "truth_label_mode": truth_label_mode,
+                "trajectory_split": trajectory_split,
+                "subset_name": subset_name,
+                "run_metadata": json.dumps(run_metadata, sort_keys=True),
             },
         )
         return int(cur.fetchone()[0])
@@ -229,88 +313,23 @@ VALUES (
         cur.executemany(insert_sql, rows)
 
 
-def _compute_run_metric_counts(conn: Connection[Any], config: AppConfig, run_id: int) -> dict[str, int]:
+def _compute_run_metric_counts(
+    conn: Connection[Any],
+    config: AppConfig,
+    run_id: int,
+    *,
+    evaluation_mode: str,
+    truth_label_mode: str,
+) -> dict[str, int]:
     schema = config.database.schema
 
+    prediction_ctes = build_run_prediction_ctes_sql(
+        schema,
+        mode=evaluation_mode,
+        run_points_where_sql="WHERE run_id = %(run_id)s",
+    )
     metric_sql = f"""
-WITH run_points AS (
-    SELECT trajectory_id, point_seq, geom
-    FROM {schema}.trajectories_simplified_points
-    WHERE run_id = %(run_id)s
-),
-run_traj AS (
-    SELECT DISTINCT trajectory_id
-    FROM run_points
-),
-first_points AS (
-    SELECT trajectory_id, geom
-    FROM run_points
-    WHERE point_seq = 1
-),
-segments AS (
-    SELECT
-        p1.trajectory_id,
-        ST_MakeLine(p1.geom, p2.geom) AS segment_geom,
-        p1.geom AS from_geom,
-        p2.geom AS to_geom
-    FROM run_points p1
-    JOIN run_points p2
-      ON p2.trajectory_id = p1.trajectory_id
-     AND p2.point_seq = p1.point_seq + 1
-),
-zone_preds AS (
-    SELECT
-        rt.trajectory_id,
-        z.zone_name,
-        CASE
-            WHEN ST_Contains(z.geom, fp.geom) THEN FALSE
-            WHEN EXISTS (
-                SELECT 1
-                FROM segments s
-                WHERE s.trajectory_id = rt.trajectory_id
-                  AND (
-                      (NOT ST_Contains(z.geom, s.from_geom) AND ST_Contains(z.geom, s.to_geom))
-                      OR ST_Crosses(s.segment_geom, z.geom)
-                  )
-            ) THEN TRUE
-            ELSE FALSE
-        END AS zone_entry_pred
-    FROM run_traj rt
-    JOIN first_points fp ON fp.trajectory_id = rt.trajectory_id
-    JOIN {schema}.context_zones z ON z.zone_name = ANY(%(zone_names)s)
-),
-point_corridor_hits AS (
-    SELECT
-        p.trajectory_id,
-        BOOL_OR(ST_Covers(c.geom, p.geom)) AS corridor_hit_by_point
-    FROM run_points p
-    JOIN {schema}.context_corridors c ON c.corridor_name = %(corridor_name)s
-    GROUP BY p.trajectory_id
-),
-segment_corridor_hits AS (
-    SELECT
-        s.trajectory_id,
-        BOOL_OR(
-            ST_Intersects(s.segment_geom, c.geom)
-            AND ST_Length(ST_Intersection(s.segment_geom, c.geom)::geography) >= %(min_overlap_m)s
-        ) AS corridor_hit_by_segment
-    FROM segments s
-    JOIN {schema}.context_corridors c ON c.corridor_name = %(corridor_name)s
-    GROUP BY s.trajectory_id
-),
-preds AS (
-    SELECT
-        zp.trajectory_id,
-        zp.zone_name,
-        %(corridor_name)s::text AS corridor_name,
-        zp.zone_entry_pred AS zone_pred,
-        COALESCE(pch.corridor_hit_by_point, FALSE) OR COALESCE(sch.corridor_hit_by_segment, FALSE) AS corridor_pred
-    FROM zone_preds zp
-    LEFT JOIN point_corridor_hits pch
-      ON pch.trajectory_id = zp.trajectory_id
-    LEFT JOIN segment_corridor_hits sch
-      ON sch.trajectory_id = zp.trajectory_id
-),
+WITH {prediction_ctes},
 truth AS (
     SELECT
         q.trajectory_id,
@@ -319,18 +338,24 @@ truth AS (
         q.zone_entry AS zone_true,
         q.corridor_membership AS corridor_true
     FROM {schema}.trajectory_query_labels q
-    JOIN run_traj rt ON rt.trajectory_id = q.trajectory_id
+    JOIN run_lines rl ON rl.trajectory_id = q.trajectory_id
     WHERE q.zone_name = ANY(%(zone_names)s)
       AND q.corridor_name = %(corridor_name)s
+      AND q.label_mode = %(truth_label_mode)s
 ),
 pairs AS (
     SELECT
         t.zone_true,
-        p.zone_pred,
+        zp.zone_entry_pred AS zone_pred,
         t.corridor_true,
-        p.corridor_pred
+        cp.corridor_pred
     FROM truth t
-    JOIN preds p USING (trajectory_id, zone_name, corridor_name)
+    JOIN zone_preds zp
+      ON zp.trajectory_id = t.trajectory_id
+     AND zp.zone_name = t.zone_name
+    JOIN corridor_preds cp
+      ON cp.trajectory_id = t.trajectory_id
+     AND cp.corridor_name = t.corridor_name
 )
 SELECT
     COALESCE(SUM(CASE WHEN zone_true AND zone_pred THEN 1 ELSE 0 END), 0) AS zone_tp,
@@ -345,11 +370,17 @@ FROM pairs;
 
     with conn.cursor() as cur:
         cur.execute(
+            sql.SQL("SET LOCAL work_mem = {};").format(
+                sql.Literal("128MB" if evaluation_mode == "segment_exact" else "64MB")
+            )
+        )
+        cur.execute(
             metric_sql,
             {
                 "run_id": run_id,
                 "zone_names": config.context.zone_names,
                 "corridor_name": config.context.corridor_name,
+                "truth_label_mode": truth_label_mode,
                 "min_overlap_m": config.queries.min_corridor_overlap_meters,
             },
         )
@@ -433,24 +464,39 @@ def run(
     run_tag: str | None = None,
     split: str | None = None,
     subset_name: str | None = None,
+    evaluation_mode: str | None = None,
+    truth_label_mode: str | None = None,
     overwrite: bool = False,
 ) -> list[dict[str, float | int | str]]:
     """Run uniform/DP baselines for all requested budgets and store metrics."""
     schema = config.database.schema
     selected_methods = _parse_methods(methods, config)
     selected_budgets = _parse_budgets(budgets, config)
+    resolved_evaluation_mode = normalize_query_mode(evaluation_mode, default=config.performance.evaluation_mode)
+    resolved_truth_label_mode = normalize_query_mode(truth_label_mode, default=resolved_evaluation_mode)
 
     selected_split = split or config.baselines.default_split
     selected_subset_name = subset_name or config.subsets.subset_name
-    current_run_tag = run_tag or dt.datetime.now(dt.timezone.utc).strftime("baseline_%Y%m%dT%H%M%SZ")
+    stored_subset_name = "" if selected_split == "all" else selected_subset_name
+    current_run_tag = run_tag or dt.datetime.now(dt.timezone.utc).strftime(
+        f"baseline_{selected_split}_{resolved_evaluation_mode}_truth_{resolved_truth_label_mode}_%Y%m%dT%H%M%SZ"
+    )
 
     LOGGER.info(
-        "Running baselines methods=%s budgets=%s split=%s subset_name=%s run_tag=%s",
+        "Running baselines methods=%s budgets=%s split=%s subset_name=%s run_tag=%s evaluation_mode=%s truth_label_mode=%s",
         selected_methods,
         selected_budgets,
         selected_split,
         selected_subset_name,
         current_run_tag,
+        resolved_evaluation_mode,
+        resolved_truth_label_mode,
+    )
+
+    _ensure_truth_labels_available(
+        conn,
+        config,
+        truth_label_mode=resolved_truth_label_mode,
     )
 
     trajectories = _fetch_trajectories(
@@ -471,6 +517,18 @@ def run(
                 method=method,
                 budget=budget,
                 config_path=(config_path or "unspecified"),
+                evaluation_mode=resolved_evaluation_mode,
+                truth_label_mode=resolved_truth_label_mode,
+                trajectory_split=selected_split,
+                subset_name=stored_subset_name,
+                run_metadata=_build_run_metadata(
+                    config,
+                    config_path=(config_path or "unspecified"),
+                    trajectory_split=selected_split,
+                    subset_name=stored_subset_name,
+                    evaluation_mode=resolved_evaluation_mode,
+                    truth_label_mode=resolved_truth_label_mode,
+                ),
                 overwrite=overwrite,
             )
 
@@ -509,7 +567,13 @@ def run(
             _flush_simplified_buffer(conn, schema, buffer)
             elapsed_seconds = perf_counter() - start
 
-            counts = _compute_run_metric_counts(conn, config, run_id)
+            counts = _compute_run_metric_counts(
+                conn,
+                config,
+                run_id,
+                evaluation_mode=resolved_evaluation_mode,
+                truth_label_mode=resolved_truth_label_mode,
+            )
             zone_metrics = classification_metrics(
                 counts["zone_tp"],
                 counts["zone_fp"],
@@ -542,6 +606,10 @@ def run(
                 "run_id": run_id,
                 "run_tag": current_run_tag,
                 "method": method,
+                "evaluation_mode": resolved_evaluation_mode,
+                "truth_label_mode": resolved_truth_label_mode,
+                "trajectory_split": selected_split,
+                "subset_name": stored_subset_name,
                 "budget": budget,
                 **metric_payload,
             }
@@ -555,5 +623,6 @@ def run(
                 corridor_metrics["f1"],
                 retention["retained_point_ratio"],
             )
+            conn.commit()
 
     return results
