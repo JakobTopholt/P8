@@ -285,6 +285,8 @@ ORDER BY split;
                 f"Subset {selected_subset}/{split_name} has only "
                 f"{corridor_data['positive_trajectories']} corridor-positive trajectories."
             )
+    if not split_counts:
+        warnings.append(f"Subset {selected_subset!r} has no dev/eval rows.")
 
     return {
         "label_mode": resolved_mode,
@@ -376,6 +378,8 @@ def create_hardcase_subset(
         raise ValueError("positive_fraction must be in [0, 1].")
     if any(size <= 0 for size in split_targets.values()):
         raise ValueError("Hard-case split sizes must be positive.")
+    if min_zone_positives_per_split < 0 or min_corridor_positives_per_split < 0:
+        raise ValueError("Minimum positive targets must be non-negative.")
 
     records = _fetch_label_records(conn, config, label_mode=resolved_mode)
     if not records:

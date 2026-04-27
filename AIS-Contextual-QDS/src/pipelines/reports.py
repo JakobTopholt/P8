@@ -58,72 +58,50 @@ SELECT
     r.trajectory_split,
     r.subset_name,
     r.config_path,
-    MAX(CASE WHEN m.metric_key = 'zone_entry_precision' THEN m.metric_value END) AS zone_entry_precision,
-    MAX(CASE WHEN m.metric_key = 'zone_entry_recall' THEN m.metric_value END) AS zone_entry_recall,
-    MAX(CASE WHEN m.metric_key = 'zone_entry_f1' THEN m.metric_value END) AS zone_entry_f1,
-    MAX(CASE WHEN m.metric_key = 'zone_entry_tp' THEN m.metric_value END) AS zone_entry_tp,
-    MAX(CASE WHEN m.metric_key = 'zone_entry_fp' THEN m.metric_value END) AS zone_entry_fp,
-    MAX(CASE WHEN m.metric_key = 'zone_entry_fn' THEN m.metric_value END) AS zone_entry_fn,
-    MAX(CASE WHEN m.metric_key = 'zone_entry_tn' THEN m.metric_value END) AS zone_entry_tn,
-    MAX(CASE WHEN m.metric_key = 'zone_entry_support' THEN m.metric_value END) AS zone_entry_support,
-    MAX(CASE WHEN m.metric_key = 'zone_entry_true_positive' THEN m.metric_value END) AS zone_entry_true_positive,
-    MAX(CASE WHEN m.metric_key = 'zone_entry_predicted_positive' THEN m.metric_value END) AS zone_entry_predicted_positive,
-    MAX(CASE WHEN m.metric_key = 'corridor_membership_precision' THEN m.metric_value END) AS corridor_membership_precision,
-    MAX(CASE WHEN m.metric_key = 'corridor_membership_recall' THEN m.metric_value END) AS corridor_membership_recall,
-    MAX(CASE WHEN m.metric_key = 'corridor_membership_f1' THEN m.metric_value END) AS corridor_membership_f1,
-    MAX(CASE WHEN m.metric_key = 'corridor_membership_tp' THEN m.metric_value END) AS corridor_membership_tp,
-    MAX(CASE WHEN m.metric_key = 'corridor_membership_fp' THEN m.metric_value END) AS corridor_membership_fp,
-    MAX(CASE WHEN m.metric_key = 'corridor_membership_fn' THEN m.metric_value END) AS corridor_membership_fn,
-    MAX(CASE WHEN m.metric_key = 'corridor_membership_tn' THEN m.metric_value END) AS corridor_membership_tn,
-    MAX(CASE WHEN m.metric_key = 'corridor_membership_support' THEN m.metric_value END) AS corridor_membership_support,
-    MAX(CASE WHEN m.metric_key = 'corridor_membership_true_positive' THEN m.metric_value END) AS corridor_membership_true_positive,
-    MAX(CASE WHEN m.metric_key = 'corridor_membership_predicted_positive' THEN m.metric_value END) AS corridor_membership_predicted_positive,
-    MAX(CASE WHEN m.metric_key = 'retained_point_ratio' THEN m.metric_value END) AS retained_point_ratio,
-    MAX(CASE WHEN m.metric_key = 'simplification_runtime_seconds' THEN m.metric_value END) AS simplification_runtime_seconds,
-    MAX(CASE WHEN m.metric_key = 'n_query_pairs' THEN m.metric_value END) AS n_query_pairs,
-    MAX(CASE WHEN m.metric_key = 'n_corridor_trajectories' THEN m.metric_value END) AS n_corridor_trajectories,
-    MAX(CASE WHEN m.metric_key = 'n_simplified_trajectories' THEN m.metric_value END) AS n_simplified_trajectories,
-    MAX(CASE WHEN m.metric_key = 'n_simplified_points' THEN m.metric_value END) AS n_simplified_points,
-    MAX(CASE WHEN m.metric_key = 'n_raw_points' THEN m.metric_value END) AS n_raw_points
+    m.metric_key,
+    m.metric_value
 FROM {schema}.simplification_runs r
 LEFT JOIN {schema}.benchmark_metrics m ON m.run_id = r.run_id
 WHERE r.run_tag = %(run_tag)s
 {method_filter_sql}
-GROUP BY r.run_id, r.run_tag, r.method_name, r.budget_ratio
-ORDER BY r.method_name, r.budget_ratio;
+ORDER BY r.method_name, r.budget_ratio, r.run_id, m.metric_key;
 """
 
-    rows: list[dict[str, float | int | str]] = []
+    rows_by_run_id: dict[int, dict[str, float | int | str]] = {}
     with conn.cursor() as cur:
         cur.execute(sql, params)
-        columns = [desc.name for desc in cur.description]
-        for record in cur.fetchall():
-            row = dict(zip(columns, record, strict=True))
-            row["run_id"] = int(row["run_id"])
-            row["run_tag"] = str(row["run_tag"])
-            row["method"] = str(row["method"])
-            row["evaluation_mode"] = str(row["evaluation_mode"])
-            row["truth_label_mode"] = str(row["truth_label_mode"])
-            row["trajectory_split"] = str(row["trajectory_split"])
-            row["subset_name"] = str(row["subset_name"])
-            row["config_path"] = str(row["config_path"]) if row["config_path"] is not None else ""
-            for key in columns:
-                if key in {
-                    "run_id",
-                    "run_tag",
-                    "method",
-                    "evaluation_mode",
-                    "truth_label_mode",
-                    "trajectory_split",
-                    "subset_name",
-                    "config_path",
-                }:
-                    continue
-                value = row.get(key)
-                row[key] = float(value) if value is not None else 0.0
-            rows.append(row)
+        for (
+            run_id,
+            run_tag_value,
+            method,
+            budget,
+            evaluation_mode,
+            truth_label_mode,
+            trajectory_split,
+            subset_name,
+            config_path,
+            metric_key,
+            metric_value,
+        ) in cur.fetchall():
+            normalized_run_id = int(run_id)
+            row = rows_by_run_id.setdefault(
+                normalized_run_id,
+                {
+                    "run_id": normalized_run_id,
+                    "run_tag": str(run_tag_value),
+                    "method": str(method),
+                    "budget": float(budget),
+                    "evaluation_mode": str(evaluation_mode),
+                    "truth_label_mode": str(truth_label_mode),
+                    "trajectory_split": str(trajectory_split),
+                    "subset_name": str(subset_name),
+                    "config_path": str(config_path) if config_path is not None else "",
+                },
+            )
+            if metric_key is not None:
+                row[str(metric_key)] = float(metric_value) if metric_value is not None else 0.0
 
-    return rows
+    return sorted(rows_by_run_id.values(), key=lambda row: (str(row["method"]), float(row["budget"]), int(row["run_id"])))
 
 
 def run(

@@ -70,8 +70,17 @@ def _xml_escape(text: str) -> str:
 def write_summary_csv(rows: list[dict[str, object]], output_path: Path) -> None:
     """Write summary rows to CSV."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    extra_columns = sorted(
+        {
+            key
+            for row in rows
+            for key in row
+            if key not in SUMMARY_COLUMNS
+        }
+    )
+    fieldnames = SUMMARY_COLUMNS + extra_columns
     with output_path.open("w", newline="", encoding="utf-8") as file_obj:
-        writer = csv.DictWriter(file_obj, fieldnames=SUMMARY_COLUMNS, extrasaction="ignore")
+        writer = csv.DictWriter(file_obj, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
             writer.writerow(row)

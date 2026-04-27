@@ -28,9 +28,16 @@ def _sample_rows() -> list[dict[str, object]]:
             "zone_entry_precision": 0.8,
             "zone_entry_recall": 0.75,
             "zone_entry_f1": 0.774,
+            "zone_entry_tp": 8.0,
+            "zone_entry_fp": 2.0,
+            "zone_entry_fn": 3.0,
             "corridor_membership_precision": 0.9,
             "corridor_membership_recall": 0.7,
             "corridor_membership_f1": 0.788,
+            "corridor_membership_tp": 9.0,
+            "corridor_membership_fp": 1.0,
+            "corridor_membership_fn": 4.0,
+            "zone_entry_zone_anchor_or_waiting_area_tp": 4.0,
             "retained_point_ratio": 0.1,
             "simplification_runtime_seconds": 0.02,
             "n_query_pairs": 500.0,
@@ -85,6 +92,7 @@ def test_summary_exports(tmp_path: Path) -> None:
     csv_text = csv_path.read_text(encoding="utf-8")
     assert "zone_entry_f1" in csv_text
     assert "corridor_membership_f1" in csv_text
+    assert "zone_entry_zone_anchor_or_waiting_area_tp" in csv_text
 
     json_rows = json.loads(json_path.read_text(encoding="utf-8"))
     assert len(json_rows) == 2

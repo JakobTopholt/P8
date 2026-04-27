@@ -9,8 +9,12 @@ EVALUATION_MODE ?=
 TRUTH_LABEL_MODE ?=
 RUN_TAG ?=
 METHODS ?=
+BUDGET ?=
 BUDGETS ?=
+METHOD ?=
 SUBSET_NAME ?=
+DEV_SIZE ?=
+EVAL_SIZE ?=
 BASE_MODE ?= optimized
 CANDIDATE_MODE ?= segment_exact
 SPLIT ?=
@@ -31,15 +35,15 @@ help:
 	@printf "  make build-trajectories\n"
 	@printf "  make compute-labels [MODE=optimized|segment_exact]\n"
 	@printf "  make create-dev-subset\n"
-	@printf "  make create-hardcase-subset [SUBSET_NAME=...] [MODE=optimized|segment_exact]\n"
+	@printf "  make create-hardcase-subset [SUBSET_NAME=...] [MODE=optimized|segment_exact] [DEV_SIZE=...] [EVAL_SIZE=...]\n"
 	@printf "  make prepare-data [MODE=optimized|segment_exact]\n\n"
 	@printf "Evaluation and inspection:\n"
 	@printf "  make label-balance [MODE=optimized|segment_exact] [SUBSET_NAME=...]\n"
 	@printf "  make compare-label-modes [BASE_MODE=optimized] [CANDIDATE_MODE=segment_exact] [SUBSET_NAME=...] [SPLIT=dev|eval]\n"
 	@printf "  make benchmark [METHODS=uniform,dp] [BUDGETS=0.1,0.2] [SUBSET_NAME=...] [EVALUATION_MODE=optimized|segment_exact] [TRUTH_LABEL_MODE=optimized|segment_exact] [RUN_TAG=...]\n"
 	@printf "  make summarize-baselines [RUN_TAG=...]\n"
-	@printf "  make inspect-html [EVALUATION_MODE=optimized|segment_exact] [TRUTH_LABEL_MODE=optimized|segment_exact] [RUN_TAG=...]\n"
-	@printf "  make inspect-qgis [EVALUATION_MODE=optimized|segment_exact] [TRUTH_LABEL_MODE=optimized|segment_exact] [RUN_TAG=...]\n"
+	@printf "  make inspect-html [RUN_TAG=...] [METHOD=...] [BUDGET=...] [SUBSET_NAME=...] [SPLIT=dev|eval]\n"
+	@printf "  make inspect-qgis [RUN_TAG=...] [METHOD=...] [BUDGET=...] [SUBSET_NAME=...] [SPLIT=dev|eval]\n"
 	@printf "  make status\n"
 	@printf "  make doctor\n"
 	@printf "  make tune-postgres\n"
@@ -61,7 +65,7 @@ create-dev-subset:
 	$(CLI) create-dev-subset
 
 create-hardcase-subset:
-	$(CLI) create-hardcase-subset $(if $(SUBSET_NAME),--subset-name $(SUBSET_NAME),) $(if $(MODE),--mode $(MODE),) $(if $(POSITIVE_FRACTION),--positive-fraction $(POSITIVE_FRACTION),) $(if $(MIN_ZONE_POSITIVES),--min-zone-positives-per-split $(MIN_ZONE_POSITIVES),) $(if $(MIN_CORRIDOR_POSITIVES),--min-corridor-positives-per-split $(MIN_CORRIDOR_POSITIVES),)
+	$(CLI) create-hardcase-subset $(if $(SUBSET_NAME),--subset-name $(SUBSET_NAME),) $(if $(MODE),--mode $(MODE),) $(if $(DEV_SIZE),--dev-size $(DEV_SIZE),) $(if $(EVAL_SIZE),--eval-size $(EVAL_SIZE),) $(if $(POSITIVE_FRACTION),--positive-fraction $(POSITIVE_FRACTION),) $(if $(MIN_ZONE_POSITIVES),--min-zone-positives-per-split $(MIN_ZONE_POSITIVES),) $(if $(MIN_CORRIDOR_POSITIVES),--min-corridor-positives-per-split $(MIN_CORRIDOR_POSITIVES),)
 
 label-balance:
 	$(CLI) label-balance $(if $(MODE),--mode $(MODE),) $(if $(SUBSET_NAME),--subset-name $(SUBSET_NAME),) $(if $(MIN_ZONE_POSITIVES),--min-zone-positives $(MIN_ZONE_POSITIVES),) $(if $(MIN_CORRIDOR_POSITIVES),--min-corridor-positives $(MIN_CORRIDOR_POSITIVES),)
@@ -79,10 +83,10 @@ summarize-baselines:
 	$(CLI) summarize-baselines $(if $(RUN_TAG),--run-tag $(RUN_TAG),)
 
 inspect-html:
-	$(CLI) inspect-html $(if $(EVALUATION_MODE),--evaluation-mode $(EVALUATION_MODE),) $(if $(TRUTH_LABEL_MODE),--truth-label-mode $(TRUTH_LABEL_MODE),) $(if $(RUN_TAG),--run-tag $(RUN_TAG),)
+	$(CLI) inspect-html $(if $(EVALUATION_MODE),--evaluation-mode $(EVALUATION_MODE),) $(if $(TRUTH_LABEL_MODE),--truth-label-mode $(TRUTH_LABEL_MODE),) $(if $(RUN_TAG),--run-tag $(RUN_TAG),) $(if $(METHOD),--method $(METHOD),) $(if $(BUDGET),--budget $(BUDGET),) $(if $(SUBSET_NAME),--subset-name $(SUBSET_NAME),) $(if $(SPLIT),--split $(SPLIT),)
 
 inspect-qgis:
-	$(CLI) inspect-qgis $(if $(EVALUATION_MODE),--evaluation-mode $(EVALUATION_MODE),) $(if $(TRUTH_LABEL_MODE),--truth-label-mode $(TRUTH_LABEL_MODE),) $(if $(RUN_TAG),--run-tag $(RUN_TAG),)
+	$(CLI) inspect-qgis $(if $(EVALUATION_MODE),--evaluation-mode $(EVALUATION_MODE),) $(if $(TRUTH_LABEL_MODE),--truth-label-mode $(TRUTH_LABEL_MODE),) $(if $(RUN_TAG),--run-tag $(RUN_TAG),) $(if $(METHOD),--method $(METHOD),) $(if $(BUDGET),--budget $(BUDGET),) $(if $(SUBSET_NAME),--subset-name $(SUBSET_NAME),) $(if $(SPLIT),--split $(SPLIT),)
 
 tune-postgres:
 	$(CLI) tune-postgres --profile laptop_safe

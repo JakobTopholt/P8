@@ -75,6 +75,24 @@ def test_find_named_feature_from_multiple() -> None:
     assert feature.properties["name"] == "B"
 
 
+def test_find_named_feature_rejects_single_wrong_named_feature() -> None:
+    features = [
+        FeatureRecord(geometry={"type": "Polygon", "coordinates": []}, properties={"name": "A"}),
+    ]
+
+    with pytest.raises(ValueError, match="Single feature"):
+        _find_named_feature(features, expected_name="B", name_property="name")
+
+
+def test_find_named_feature_accepts_single_unnamed_feature() -> None:
+    features = [
+        FeatureRecord(geometry={"type": "Polygon", "coordinates": []}, properties={}),
+    ]
+
+    feature = _find_named_feature(features, expected_name="B", name_property="name")
+    assert feature is features[0]
+
+
 def test_find_named_feature_errors_without_unique_match() -> None:
     features = [
         FeatureRecord(geometry={"type": "Polygon", "coordinates": []}, properties={"name": "A"}),

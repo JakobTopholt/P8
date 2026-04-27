@@ -118,7 +118,14 @@ def _find_named_feature(
     name_property: str | None,
 ) -> FeatureRecord:
     if len(features) == 1:
-        return features[0]
+        feature = features[0]
+        if name_property:
+            actual_name = str(feature.properties.get(name_property, "")).strip()
+            if actual_name and actual_name != expected_name:
+                raise ValueError(
+                    f"Single feature has {name_property!r}={actual_name!r}, expected {expected_name!r}."
+                )
+        return feature
 
     if not name_property:
         raise ValueError(
