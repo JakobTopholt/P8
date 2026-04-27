@@ -12,7 +12,7 @@ from ..query_semantics import QUERY_MODES
 from .status import CORE_TABLES, run as status_run
 
 
-def _safe_split_counts(conn: Connection[Any], schema: str) -> dict[str, int]:
+def _safe_split_counts(conn: Connection[Any], schema: str, *, subset_name: str) -> dict[str, int]:
     if not bool(fetch_one(conn, "SELECT to_regclass(%(table)s) IS NOT NULL;", {"table": f"{schema}.trajectory_dev_eval_subset"})):
         return {}
 
@@ -21,9 +21,11 @@ def _safe_split_counts(conn: Connection[Any], schema: str) -> dict[str, int]:
             f"""
 SELECT split, COUNT(*)
 FROM {schema}.trajectory_dev_eval_subset
+WHERE subset_name = %(subset_name)s
 GROUP BY split
 ORDER BY split;
-"""
+""",
+            {"subset_name": subset_name},
         )
         return {str(split_name): int(count_value) for split_name, count_value in cur.fetchall()}
 
@@ -94,7 +96,7 @@ def run(conn: Connection[Any], config: AppConfig) -> dict[str, object]:
 
     trajectory_count = int(status_payload.get("trajectories_raw", 0))
     point_count = int(status_payload.get("trajectory_points_raw", 0))
-    split_counts = _safe_split_counts(conn, schema)
+    split_counts = _safe_split_counts(conn, schema, subset_name=config.subsets.subset_name)
     label_modes = _label_mode_summary(conn, config, trajectory_count=trajectory_count)
 
     context_ready = (
@@ -173,6 +175,7 @@ def run(conn: Connection[Any], config: AppConfig) -> dict[str, object]:
             "modes": label_modes,
         },
         "subsets": {
+            "subset_name": config.subsets.subset_name,
             "split_counts": split_counts,
             "ready": subset_ready,
         },

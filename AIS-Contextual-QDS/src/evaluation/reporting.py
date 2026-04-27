@@ -19,12 +19,27 @@ SUMMARY_COLUMNS = [
     "zone_entry_precision",
     "zone_entry_recall",
     "zone_entry_f1",
+    "zone_entry_tp",
+    "zone_entry_fp",
+    "zone_entry_fn",
+    "zone_entry_tn",
+    "zone_entry_support",
+    "zone_entry_true_positive",
+    "zone_entry_predicted_positive",
     "corridor_membership_precision",
     "corridor_membership_recall",
     "corridor_membership_f1",
+    "corridor_membership_tp",
+    "corridor_membership_fp",
+    "corridor_membership_fn",
+    "corridor_membership_tn",
+    "corridor_membership_support",
+    "corridor_membership_true_positive",
+    "corridor_membership_predicted_positive",
     "retained_point_ratio",
     "simplification_runtime_seconds",
     "n_query_pairs",
+    "n_corridor_trajectories",
     "n_simplified_trajectories",
     "n_simplified_points",
     "n_raw_points",
@@ -79,7 +94,9 @@ def write_summary_markdown(rows: list[dict[str, object]], output_path: Path) -> 
         "eval_mode",
         "truth_mode",
         "zone_entry_f1",
+        "zone_tp/fp/fn",
         "corridor_membership_f1",
+        "corridor_tp/fp/fn",
         "retained_point_ratio",
         "runtime_s",
     ]
@@ -96,7 +113,17 @@ def write_summary_markdown(rows: list[dict[str, object]], output_path: Path) -> 
             str(row.get("evaluation_mode", "")),
             str(row.get("truth_label_mode", "")),
             f"{float(row.get('zone_entry_f1', 0.0)):.4f}",
+            (
+                f"{int(float(row.get('zone_entry_tp', 0.0)))}/"
+                f"{int(float(row.get('zone_entry_fp', 0.0)))}/"
+                f"{int(float(row.get('zone_entry_fn', 0.0)))}"
+            ),
             f"{float(row.get('corridor_membership_f1', 0.0)):.4f}",
+            (
+                f"{int(float(row.get('corridor_membership_tp', 0.0)))}/"
+                f"{int(float(row.get('corridor_membership_fp', 0.0)))}/"
+                f"{int(float(row.get('corridor_membership_fn', 0.0)))}"
+            ),
             f"{float(row.get('retained_point_ratio', 0.0)):.4f}",
             f"{float(row.get('simplification_runtime_seconds', 0.0)):.3f}",
         ]

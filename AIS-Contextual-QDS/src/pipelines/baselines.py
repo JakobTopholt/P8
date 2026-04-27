@@ -313,6 +313,23 @@ VALUES (
         cur.executemany(insert_sql, rows)
 
 
+def _safe_metric_key(raw_value: str) -> str:
+    """Normalize dynamic metric-key fragments for benchmark_metrics."""
+    return "".join(char if char.isalnum() else "_" for char in raw_value.lower()).strip("_")
+
+
+def _empty_confusion_counts() -> dict[str, int]:
+    return {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "tn": 0,
+        "support": 0,
+        "true_positive": 0,
+        "predicted_positive": 0,
+    }
+
+
 def _compute_run_metric_counts(
     conn: Connection[Any],
     config: AppConfig,
@@ -320,7 +337,7 @@ def _compute_run_metric_counts(
     *,
     evaluation_mode: str,
     truth_label_mode: str,
-) -> dict[str, int]:
+) -> dict[str, dict[str, dict[str, int]]]:
     schema = config.database.schema
 
     prediction_ctes = build_run_prediction_ctes_sql(
@@ -345,6 +362,8 @@ truth AS (
 ),
 pairs AS (
     SELECT
+        t.trajectory_id,
+        t.zone_name,
         t.zone_true,
         zp.zone_entry_pred AS zone_pred,
         t.corridor_true,
@@ -356,16 +375,64 @@ pairs AS (
     JOIN corridor_preds cp
       ON cp.trajectory_id = t.trajectory_id
      AND cp.corridor_name = t.corridor_name
+),
+corridor_pairs AS (
+    SELECT DISTINCT
+        trajectory_id,
+        corridor_true,
+        corridor_pred
+    FROM pairs
+),
+metric_rows AS (
+    SELECT
+        'zone_entry' AS family,
+        'all' AS group_key,
+        COALESCE(SUM(CASE WHEN zone_true AND zone_pred THEN 1 ELSE 0 END), 0) AS tp,
+        COALESCE(SUM(CASE WHEN NOT zone_true AND zone_pred THEN 1 ELSE 0 END), 0) AS fp,
+        COALESCE(SUM(CASE WHEN zone_true AND NOT zone_pred THEN 1 ELSE 0 END), 0) AS fn,
+        COALESCE(SUM(CASE WHEN NOT zone_true AND NOT zone_pred THEN 1 ELSE 0 END), 0) AS tn,
+        COALESCE(COUNT(*), 0) AS support,
+        COALESCE(SUM(CASE WHEN zone_true THEN 1 ELSE 0 END), 0) AS true_positive,
+        COALESCE(SUM(CASE WHEN zone_pred THEN 1 ELSE 0 END), 0) AS predicted_positive
+    FROM pairs
+    UNION ALL
+    SELECT
+        'zone_entry' AS family,
+        zone_name AS group_key,
+        COALESCE(SUM(CASE WHEN zone_true AND zone_pred THEN 1 ELSE 0 END), 0) AS tp,
+        COALESCE(SUM(CASE WHEN NOT zone_true AND zone_pred THEN 1 ELSE 0 END), 0) AS fp,
+        COALESCE(SUM(CASE WHEN zone_true AND NOT zone_pred THEN 1 ELSE 0 END), 0) AS fn,
+        COALESCE(SUM(CASE WHEN NOT zone_true AND NOT zone_pred THEN 1 ELSE 0 END), 0) AS tn,
+        COALESCE(COUNT(*), 0) AS support,
+        COALESCE(SUM(CASE WHEN zone_true THEN 1 ELSE 0 END), 0) AS true_positive,
+        COALESCE(SUM(CASE WHEN zone_pred THEN 1 ELSE 0 END), 0) AS predicted_positive
+    FROM pairs
+    GROUP BY zone_name
+    UNION ALL
+    SELECT
+        'corridor_membership' AS family,
+        'all' AS group_key,
+        COALESCE(SUM(CASE WHEN corridor_true AND corridor_pred THEN 1 ELSE 0 END), 0) AS tp,
+        COALESCE(SUM(CASE WHEN NOT corridor_true AND corridor_pred THEN 1 ELSE 0 END), 0) AS fp,
+        COALESCE(SUM(CASE WHEN corridor_true AND NOT corridor_pred THEN 1 ELSE 0 END), 0) AS fn,
+        COALESCE(SUM(CASE WHEN NOT corridor_true AND NOT corridor_pred THEN 1 ELSE 0 END), 0) AS tn,
+        COALESCE(COUNT(*), 0) AS support,
+        COALESCE(SUM(CASE WHEN corridor_true THEN 1 ELSE 0 END), 0) AS true_positive,
+        COALESCE(SUM(CASE WHEN corridor_pred THEN 1 ELSE 0 END), 0) AS predicted_positive
+    FROM corridor_pairs
 )
 SELECT
-    COALESCE(SUM(CASE WHEN zone_true AND zone_pred THEN 1 ELSE 0 END), 0) AS zone_tp,
-    COALESCE(SUM(CASE WHEN NOT zone_true AND zone_pred THEN 1 ELSE 0 END), 0) AS zone_fp,
-    COALESCE(SUM(CASE WHEN zone_true AND NOT zone_pred THEN 1 ELSE 0 END), 0) AS zone_fn,
-    COALESCE(SUM(CASE WHEN corridor_true AND corridor_pred THEN 1 ELSE 0 END), 0) AS corridor_tp,
-    COALESCE(SUM(CASE WHEN NOT corridor_true AND corridor_pred THEN 1 ELSE 0 END), 0) AS corridor_fp,
-    COALESCE(SUM(CASE WHEN corridor_true AND NOT corridor_pred THEN 1 ELSE 0 END), 0) AS corridor_fn,
-    COALESCE(COUNT(*), 0) AS n_pairs
-FROM pairs;
+    family,
+    group_key,
+    tp,
+    fp,
+    fn,
+    tn,
+    support,
+    true_positive,
+    predicted_positive
+FROM metric_rows
+ORDER BY family, group_key;
 """
 
     with conn.cursor() as cur:
@@ -384,18 +451,25 @@ FROM pairs;
                 "min_overlap_m": config.queries.min_corridor_overlap_meters,
             },
         )
-        row = cur.fetchone()
+        rows = cur.fetchall()
 
-    keys = [
-        "zone_tp",
-        "zone_fp",
-        "zone_fn",
-        "corridor_tp",
-        "corridor_fp",
-        "corridor_fn",
-        "n_pairs",
-    ]
-    return {key: int(value) for key, value in zip(keys, row, strict=True)}
+    counts: dict[str, dict[str, dict[str, int]]] = {
+        "zone_entry": {"all": _empty_confusion_counts()},
+        "corridor_membership": {"all": _empty_confusion_counts()},
+    }
+    for family, group_key, tp, fp, fn, tn, support, true_positive, predicted_positive in rows:
+        family_key = str(family)
+        counts.setdefault(family_key, {})
+        counts[family_key][str(group_key)] = {
+            "tp": int(tp),
+            "fp": int(fp),
+            "fn": int(fn),
+            "tn": int(tn),
+            "support": int(support),
+            "true_positive": int(true_positive),
+            "predicted_positive": int(predicted_positive),
+        }
+    return counts
 
 
 def _compute_retention_metrics(conn: Connection[Any], schema: str, run_id: int) -> dict[str, float]:
@@ -574,15 +648,17 @@ def run(
                 evaluation_mode=resolved_evaluation_mode,
                 truth_label_mode=resolved_truth_label_mode,
             )
+            zone_counts = counts["zone_entry"]["all"]
+            corridor_counts = counts["corridor_membership"]["all"]
             zone_metrics = classification_metrics(
-                counts["zone_tp"],
-                counts["zone_fp"],
-                counts["zone_fn"],
+                zone_counts["tp"],
+                zone_counts["fp"],
+                zone_counts["fn"],
             )
             corridor_metrics = classification_metrics(
-                counts["corridor_tp"],
-                counts["corridor_fp"],
-                counts["corridor_fn"],
+                corridor_counts["tp"],
+                corridor_counts["fp"],
+                corridor_counts["fn"],
             )
             retention = _compute_retention_metrics(conn, schema, run_id)
 
@@ -590,16 +666,53 @@ def run(
                 "zone_entry_precision": zone_metrics["precision"],
                 "zone_entry_recall": zone_metrics["recall"],
                 "zone_entry_f1": zone_metrics["f1"],
+                "zone_entry_tp": float(zone_counts["tp"]),
+                "zone_entry_fp": float(zone_counts["fp"]),
+                "zone_entry_fn": float(zone_counts["fn"]),
+                "zone_entry_tn": float(zone_counts["tn"]),
+                "zone_entry_support": float(zone_counts["support"]),
+                "zone_entry_true_positive": float(zone_counts["true_positive"]),
+                "zone_entry_predicted_positive": float(zone_counts["predicted_positive"]),
                 "corridor_membership_precision": corridor_metrics["precision"],
                 "corridor_membership_recall": corridor_metrics["recall"],
                 "corridor_membership_f1": corridor_metrics["f1"],
+                "corridor_membership_tp": float(corridor_counts["tp"]),
+                "corridor_membership_fp": float(corridor_counts["fp"]),
+                "corridor_membership_fn": float(corridor_counts["fn"]),
+                "corridor_membership_tn": float(corridor_counts["tn"]),
+                "corridor_membership_support": float(corridor_counts["support"]),
+                "corridor_membership_true_positive": float(corridor_counts["true_positive"]),
+                "corridor_membership_predicted_positive": float(corridor_counts["predicted_positive"]),
                 "retained_point_ratio": retention["retained_point_ratio"],
                 "simplification_runtime_seconds": elapsed_seconds,
-                "n_query_pairs": float(counts["n_pairs"]),
+                "n_query_pairs": float(zone_counts["support"]),
+                "n_corridor_trajectories": float(corridor_counts["support"]),
                 "n_simplified_trajectories": retention["trajectory_count"],
                 "n_simplified_points": retention["simplified_points"],
                 "n_raw_points": retention["raw_points"],
             }
+            for zone_name in config.context.zone_names:
+                per_zone_counts = counts["zone_entry"].get(zone_name, _empty_confusion_counts())
+                per_zone_metrics = classification_metrics(
+                    per_zone_counts["tp"],
+                    per_zone_counts["fp"],
+                    per_zone_counts["fn"],
+                )
+                zone_key = _safe_metric_key(zone_name)
+                metric_payload.update(
+                    {
+                        f"zone_entry_{zone_key}_precision": per_zone_metrics["precision"],
+                        f"zone_entry_{zone_key}_recall": per_zone_metrics["recall"],
+                        f"zone_entry_{zone_key}_f1": per_zone_metrics["f1"],
+                        f"zone_entry_{zone_key}_tp": float(per_zone_counts["tp"]),
+                        f"zone_entry_{zone_key}_fp": float(per_zone_counts["fp"]),
+                        f"zone_entry_{zone_key}_fn": float(per_zone_counts["fn"]),
+                        f"zone_entry_{zone_key}_tn": float(per_zone_counts["tn"]),
+                        f"zone_entry_{zone_key}_support": float(per_zone_counts["support"]),
+                        f"zone_entry_{zone_key}_true_positive": float(per_zone_counts["true_positive"]),
+                        f"zone_entry_{zone_key}_predicted_positive": float(per_zone_counts["predicted_positive"]),
+                    }
+                )
             _store_metrics(conn, schema, run_id, metric_payload)
 
             result_row: dict[str, float | int | str] = {

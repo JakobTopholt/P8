@@ -13,7 +13,20 @@ from .db import get_connection
 from .logging_utils import configure_logging
 from .paths import resolve_project_path
 from .postgres_tuning import apply_session_profile, apply_system_profile
-from .pipelines import baselines, bootstrap, context_loader, doctor, labels, qgis_export, reports, status, subsets, trajectories, visual_inspection
+from .pipelines import (
+    baselines,
+    bootstrap,
+    context_loader,
+    diagnostics,
+    doctor,
+    labels,
+    qgis_export,
+    reports,
+    status,
+    subsets,
+    trajectories,
+    visual_inspection,
+)
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = "configs/iteration1_10days.example.yaml"
@@ -185,6 +198,57 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not delete existing subset rows with the same subset_name.",
     )
 
+    hardcase_parser = subparsers.add_parser(
+        "create-hardcase-subset",
+        help="Create a deterministic query-positive/negative hard-case dev/eval subset.",
+    )
+    hardcase_parser.add_argument(
+        "--subset-name",
+        default=None,
+        help="Subset name to create. Defaults to '<configured subset>_hardcase'.",
+    )
+    hardcase_parser.add_argument(
+        "--mode",
+        choices=["optimized", "segment_exact"],
+        default=None,
+        help="Label mode used to balance hard cases.",
+    )
+    hardcase_parser.add_argument(
+        "--dev-size",
+        type=int,
+        default=None,
+        help="Dev split size override.",
+    )
+    hardcase_parser.add_argument(
+        "--eval-size",
+        type=int,
+        default=None,
+        help="Eval split size override.",
+    )
+    hardcase_parser.add_argument(
+        "--min-zone-positives-per-split",
+        type=int,
+        default=20,
+        help="Target minimum positives per zone in each split, limited by availability.",
+    )
+    hardcase_parser.add_argument(
+        "--min-corridor-positives-per-split",
+        type=int,
+        default=60,
+        help="Target minimum corridor-positive trajectories in each split.",
+    )
+    hardcase_parser.add_argument(
+        "--positive-fraction",
+        type=float,
+        default=0.50,
+        help="Approximate query-positive fraction per split after required positives are seeded.",
+    )
+    hardcase_parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Do not delete existing rows with the same hard-case subset name first.",
+    )
+
     context_parser = subparsers.add_parser(
         "load-context",
         help="Load study region, zones, and corridor geometry files into PostGIS.",
@@ -231,6 +295,63 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor",
         aliases=["preflight"],
         help="Run environment and dataset preflight checks before heavy pipeline work.",
+    )
+
+    balance_parser = subparsers.add_parser(
+        "label-balance",
+        help="Report label balance overall and for a dev/eval subset.",
+    )
+    balance_parser.add_argument(
+        "--mode",
+        choices=["optimized", "segment_exact"],
+        default=None,
+        help="Label mode to inspect.",
+    )
+    balance_parser.add_argument(
+        "--subset-name",
+        default=None,
+        help="Subset name to inspect. Defaults to config subsets.subset_name.",
+    )
+    balance_parser.add_argument(
+        "--min-zone-positives",
+        type=int,
+        default=20,
+        help="Warning threshold for zone-positive trajectories.",
+    )
+    balance_parser.add_argument(
+        "--min-corridor-positives",
+        type=int,
+        default=20,
+        help="Warning threshold for corridor-positive trajectories.",
+    )
+
+    compare_parser = subparsers.add_parser(
+        "compare-label-modes",
+        aliases=["audit-label-modes"],
+        help="Compare stored labels from two semantics modes, e.g. optimized vs segment_exact.",
+    )
+    compare_parser.add_argument(
+        "--base-mode",
+        choices=["optimized", "segment_exact"],
+        default="optimized",
+        help="Baseline label mode.",
+    )
+    compare_parser.add_argument(
+        "--candidate-mode",
+        choices=["optimized", "segment_exact"],
+        default="segment_exact",
+        help="Candidate/audit label mode.",
+    )
+    compare_parser.add_argument(
+        "--subset-name",
+        default=None,
+        help="Optional subset name to restrict comparison.",
+    )
+    compare_parser.add_argument(
+        "--split",
+        choices=["dev", "eval"],
+        default=None,
+        help="Optional subset split to restrict comparison.",
     )
 
     sprint1_parser = subparsers.add_parser(
@@ -435,6 +556,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_json(summary)
             return 0
 
+        if args.command == "create-hardcase-subset":
+            summary = diagnostics.create_hardcase_subset(
+                conn,
+                config,
+                subset_name=args.subset_name,
+                label_mode=args.mode,
+                dev_size=args.dev_size,
+                eval_size=args.eval_size,
+                min_zone_positives_per_split=args.min_zone_positives_per_split,
+                min_corridor_positives_per_split=args.min_corridor_positives_per_split,
+                positive_fraction=args.positive_fraction,
+                truncate=not args.append,
+            )
+            _print_json(summary)
+            return 0
+
         if args.command == "load-context":
             summary = context_loader.run(
                 conn,
@@ -456,6 +593,32 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command in {"doctor", "preflight"}:
             _print_json(doctor.run(conn, config))
+            return 0
+
+        if args.command == "label-balance":
+            _print_json(
+                diagnostics.label_balance(
+                    conn,
+                    config,
+                    mode=args.mode,
+                    subset_name=args.subset_name,
+                    min_zone_positives=args.min_zone_positives,
+                    min_corridor_positives=args.min_corridor_positives,
+                )
+            )
+            return 0
+
+        if args.command in {"compare-label-modes", "audit-label-modes"}:
+            _print_json(
+                diagnostics.compare_label_modes(
+                    conn,
+                    config,
+                    base_mode=args.base_mode,
+                    candidate_mode=args.candidate_mode,
+                    subset_name=args.subset_name,
+                    split=args.split,
+                )
+            )
             return 0
 
         if args.command in {"prepare-data", "sprint1"}:

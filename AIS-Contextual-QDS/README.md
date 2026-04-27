@@ -38,6 +38,8 @@ python -m src.cli load-context \
   --corridor-file data/context/corridor.geojson \
   --corridor-buffer-meters 700
 python -m src.cli prepare-data
+python -m src.cli label-balance
+python -m src.cli create-hardcase-subset
 python -m src.cli benchmark --overwrite
 python -m src.cli summarize-baselines
 python -m src.cli inspect-html --method uniform --budget 0.10
@@ -123,15 +125,21 @@ That applies the repository’s safe local tuning profile. Some settings, such a
   Compute trajectory-level truth labels.
 - `create-dev-subset`
   Create the deterministic dev/eval split.
+- `create-hardcase-subset`
+  Create a deterministic query-balanced subset, defaulting to `<subset_name>_hardcase`.
 - `prepare-data`
   Run bootstrap, trajectory build, labels, subset creation, and status in sequence.
 
 ### Evaluation
 
+- `label-balance`
+  Report overall and split-level positives for each zone and the corridor.
 - `benchmark`
   Run the baseline simplifiers across one or more retained-point budgets.
 - `summarize-baselines`
   Export CSV, JSON, Markdown, and SVG summaries from stored benchmark metrics.
+- `compare-label-modes`
+  Compare stored labels between semantics modes, primarily `optimized` and `segment_exact`.
 
 ### Inspection
 
@@ -167,9 +175,12 @@ Common examples:
 
 ```bash
 make prepare-data
+make label-balance
+make create-hardcase-subset
 make benchmark
 make doctor
 make compute-labels MODE=segment_exact
+make compare-label-modes
 make benchmark EVALUATION_MODE=segment_exact TRUTH_LABEL_MODE=segment_exact RUN_TAG=truth_audit
 make inspect-html RUN_TAG=truth_audit TRUTH_LABEL_MODE=segment_exact
 make inspect-qgis RUN_TAG=truth_audit TRUTH_LABEL_MODE=segment_exact
@@ -215,12 +226,15 @@ What is already in place:
 - Summary export to CSV, JSON, Markdown, and SVG
 - HTML and QGIS inspection exports
 - `optimized` and `segment_exact` semantics modes
+- Label-balance diagnostics and hard-case subset creation
+- Benchmark diagnostic counts, including TP/FP/FN/TN and per-zone zone-entry counts
 
 What is not yet in place:
 
 - The contextual scorer beyond the current baseline stage
 - Boundary-distance and transition features from later planning milestones
 - Final thesis-grade audit comparisons between `optimized` and `segment_exact`
+- A query workload that reliably produces baseline failures under the current optimized semantics
 
 ## Notes
 
@@ -228,3 +242,4 @@ What is not yet in place:
 - Context files are expected in EPSG:4326.
 - The current default path is intentionally narrow and reproducible so iteration stays fast.
 - Full `segment_exact` label generation can be slow on the older laptop and is best treated as a stronger-hardware audit step.
+- If `label-balance` reports very low zone positives, run `create-hardcase-subset` and benchmark with `SUBSET_NAME=<configured>_hardcase`.
