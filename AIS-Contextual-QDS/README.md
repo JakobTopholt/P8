@@ -252,3 +252,4 @@ What is not yet in place:
 - Full `segment_exact` label generation can be slow on the older laptop and is best treated as a stronger-hardware audit step.
 - If `label-balance` reports very low zone positives, run `create-hardcase-subset` and benchmark with `SUBSET_NAME=<configured>_hardcase`.
 - The headline benchmark F1 values are trajectory-level labels. Use the strict point and event metrics in summary exports when judging whether a simplifier is preserving boundary behavior.
+- `segment_exact` keeps adjacent-segment semantics. Benchmark runs materialize simplified segments in `trajectories_simplified_segments` so exact predictions can reuse cached segment geometry; if the cache is absent, prediction SQL falls back to rebuilding adjacent segments from simplified points.

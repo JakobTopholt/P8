@@ -73,7 +73,17 @@ WITH first_points AS (
     FROM {schema}.trajectory_points_raw
     WHERE point_seq = 1
 ),
-segments AS (
+zones AS (
+    SELECT zone_name, geom
+    FROM {schema}.context_zones
+    WHERE zone_name = ANY(%(zone_names)s)
+),
+corridor AS (
+    SELECT corridor_name, geom
+    FROM {schema}.context_corridors
+    WHERE corridor_name = %(corridor_name)s
+),
+segments AS MATERIALIZED (
     SELECT
         p1.trajectory_id,
         ST_MakeLine(p1.geom, p2.geom) AS segment_geom,
@@ -84,26 +94,33 @@ segments AS (
       ON p2.trajectory_id = p1.trajectory_id
      AND p2.point_seq = p1.point_seq + 1
 ),
+zone_segment_hits AS (
+    SELECT
+        s.trajectory_id,
+        z.zone_name,
+        BOOL_OR(
+            (NOT ST_Contains(z.geom, s.from_geom) AND ST_Contains(z.geom, s.to_geom))
+            OR ST_Crosses(s.segment_geom, z.geom)
+        ) AS segment_enters_zone
+    FROM segments s
+    JOIN zones z ON ST_Intersects(s.segment_geom, z.geom)
+    GROUP BY s.trajectory_id, z.zone_name
+),
 zone_labels AS (
     SELECT
         t.trajectory_id,
         z.zone_name,
         CASE
             WHEN ST_Contains(z.geom, fp.geom) THEN FALSE
-            WHEN EXISTS (
-                SELECT 1
-                FROM segments s
-                WHERE s.trajectory_id = t.trajectory_id
-                  AND (
-                      (NOT ST_Contains(z.geom, s.from_geom) AND ST_Contains(z.geom, s.to_geom))
-                      OR ST_Crosses(s.segment_geom, z.geom)
-                  )
-            ) THEN TRUE
+            WHEN COALESCE(zsh.segment_enters_zone, FALSE) THEN TRUE
             ELSE FALSE
         END AS zone_entry
     FROM {schema}.trajectories_raw t
     JOIN first_points fp ON fp.trajectory_id = t.trajectory_id
-    JOIN {schema}.context_zones z ON z.zone_name = ANY(%(zone_names)s)
+    JOIN zones z ON TRUE
+    LEFT JOIN zone_segment_hits zsh
+      ON zsh.trajectory_id = t.trajectory_id
+     AND zsh.zone_name = z.zone_name
 ),
 point_corridor_hits AS (
     SELECT
@@ -111,9 +128,7 @@ point_corridor_hits AS (
         c.corridor_name,
         BOOL_OR(ST_Covers(c.geom, p.geom)) AS corridor_hit_by_point
     FROM {schema}.trajectory_points_raw p
-    JOIN {schema}.context_corridors c
-      ON c.corridor_name = %(corridor_name)s
-     AND ST_Intersects(c.geom, p.geom)
+    JOIN corridor c ON ST_Intersects(c.geom, p.geom)
     GROUP BY p.trajectory_id, c.corridor_name
 ),
 segment_corridor_hits AS (
@@ -121,11 +136,10 @@ segment_corridor_hits AS (
         s.trajectory_id,
         c.corridor_name,
         BOOL_OR(
-            ST_Intersects(s.segment_geom, c.geom)
-            AND ST_Length(ST_Intersection(s.segment_geom, c.geom)::geography) >= %(min_overlap_m)s
+            ST_Length(ST_Intersection(s.segment_geom, c.geom)::geography) >= %(min_overlap_m)s
         ) AS corridor_hit_by_segment
     FROM segments s
-    JOIN {schema}.context_corridors c ON c.corridor_name = %(corridor_name)s
+    JOIN corridor c ON ST_Intersects(s.segment_geom, c.geom)
     GROUP BY s.trajectory_id, c.corridor_name
 )
 INSERT INTO {schema}.trajectory_query_labels (
@@ -230,9 +244,11 @@ def build_run_prediction_ctes_sql(
     *,
     mode: str,
     run_points_where_sql: str,
+    run_segments_where_sql: str | None = None,
 ) -> str:
     """Build CTE chain producing `preds` for simplified trajectories."""
     normalized_mode = normalize_query_mode(mode, default="optimized")
+    segment_filter_sql = run_segments_where_sql or run_points_where_sql
 
     if normalized_mode == "segment_exact":
         return f"""
@@ -240,6 +256,16 @@ run_points AS (
     SELECT trajectory_id, point_seq, geom
     FROM {schema}.trajectories_simplified_points
     {run_points_where_sql}
+),
+zones AS (
+    SELECT zone_name, geom
+    FROM {schema}.context_zones
+    WHERE zone_name = ANY(%(zone_names)s)
+),
+corridor AS (
+    SELECT corridor_name, geom
+    FROM {schema}.context_corridors
+    WHERE corridor_name = %(corridor_name)s
 ),
 run_lines AS (
     SELECT
@@ -253,9 +279,31 @@ first_points AS (
     FROM run_points
     WHERE point_seq = 1
 ),
-segments AS (
+cached_segments AS (
+    SELECT
+        trajectory_id,
+        segment_seq,
+        geom AS segment_geom,
+        from_geom,
+        to_geom
+    FROM {schema}.trajectories_simplified_segments
+    {segment_filter_sql}
+),
+cached_segment_presence AS (
+    SELECT EXISTS (SELECT 1 FROM cached_segments) AS has_cached_segments
+),
+segments AS MATERIALIZED (
+    SELECT
+        trajectory_id,
+        segment_seq,
+        segment_geom,
+        from_geom,
+        to_geom
+    FROM cached_segments
+    UNION ALL
     SELECT
         p1.trajectory_id,
+        p1.point_seq AS segment_seq,
         ST_MakeLine(p1.geom, p2.geom) AS segment_geom,
         p1.geom AS from_geom,
         p2.geom AS to_geom
@@ -263,6 +311,19 @@ segments AS (
     JOIN run_points p2
       ON p2.trajectory_id = p1.trajectory_id
      AND p2.point_seq = p1.point_seq + 1
+    WHERE NOT (SELECT has_cached_segments FROM cached_segment_presence)
+),
+zone_segment_hits AS (
+    SELECT
+        s.trajectory_id,
+        z.zone_name,
+        BOOL_OR(
+            (NOT ST_Contains(z.geom, s.from_geom) AND ST_Contains(z.geom, s.to_geom))
+            OR ST_Crosses(s.segment_geom, z.geom)
+        ) AS segment_enters_zone
+    FROM segments s
+    JOIN zones z ON ST_Intersects(s.segment_geom, z.geom)
+    GROUP BY s.trajectory_id, z.zone_name
 ),
 zone_preds AS (
     SELECT
@@ -270,20 +331,15 @@ zone_preds AS (
         z.zone_name,
         CASE
             WHEN ST_Contains(z.geom, fp.geom) THEN FALSE
-            WHEN EXISTS (
-                SELECT 1
-                FROM segments s
-                WHERE s.trajectory_id = rl.trajectory_id
-                  AND (
-                      (NOT ST_Contains(z.geom, s.from_geom) AND ST_Contains(z.geom, s.to_geom))
-                      OR ST_Crosses(s.segment_geom, z.geom)
-                  )
-            ) THEN TRUE
+            WHEN COALESCE(zsh.segment_enters_zone, FALSE) THEN TRUE
             ELSE FALSE
         END AS zone_entry_pred
     FROM run_lines rl
     JOIN first_points fp ON fp.trajectory_id = rl.trajectory_id
-    JOIN {schema}.context_zones z ON z.zone_name = ANY(%(zone_names)s)
+    JOIN zones z ON TRUE
+    LEFT JOIN zone_segment_hits zsh
+      ON zsh.trajectory_id = rl.trajectory_id
+     AND zsh.zone_name = z.zone_name
 ),
 point_corridor_hits AS (
     SELECT
@@ -291,9 +347,7 @@ point_corridor_hits AS (
         c.corridor_name,
         BOOL_OR(ST_Covers(c.geom, p.geom)) AS corridor_hit_by_point
     FROM run_points p
-    JOIN {schema}.context_corridors c
-      ON c.corridor_name = %(corridor_name)s
-     AND ST_Intersects(c.geom, p.geom)
+    JOIN corridor c ON ST_Intersects(c.geom, p.geom)
     GROUP BY p.trajectory_id, c.corridor_name
 ),
 segment_corridor_hits AS (
@@ -301,11 +355,10 @@ segment_corridor_hits AS (
         s.trajectory_id,
         c.corridor_name,
         BOOL_OR(
-            ST_Intersects(s.segment_geom, c.geom)
-            AND ST_Length(ST_Intersection(s.segment_geom, c.geom)::geography) >= %(min_overlap_m)s
+            ST_Length(ST_Intersection(s.segment_geom, c.geom)::geography) >= %(min_overlap_m)s
         ) AS corridor_hit_by_segment
     FROM segments s
-    JOIN {schema}.context_corridors c ON c.corridor_name = %(corridor_name)s
+    JOIN corridor c ON ST_Intersects(s.segment_geom, c.geom)
     GROUP BY s.trajectory_id, c.corridor_name
 ),
 corridor_preds AS (
@@ -314,7 +367,7 @@ corridor_preds AS (
         c.corridor_name,
         COALESCE(pch.corridor_hit_by_point, FALSE) OR COALESCE(sch.corridor_hit_by_segment, FALSE) AS corridor_pred
     FROM run_lines rl
-    JOIN {schema}.context_corridors c ON c.corridor_name = %(corridor_name)s
+    JOIN corridor c ON TRUE
     LEFT JOIN point_corridor_hits pch
       ON pch.trajectory_id = rl.trajectory_id
      AND pch.corridor_name = c.corridor_name

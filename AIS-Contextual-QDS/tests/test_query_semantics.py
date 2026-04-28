@@ -10,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.query_semantics import (
+    build_run_prediction_ctes_sql,
     corridor_membership_optimized,
     corridor_membership_segment_exact,
     normalize_query_mode,
@@ -107,3 +108,17 @@ def test_optimized_corridor_can_be_more_permissive_than_segment_exact() -> None:
         segment_overlap_meters=0.6,
         min_overlap_meters=1.0,
     ) is False
+
+
+def test_segment_exact_prediction_sql_uses_cached_segments_with_exact_fallback() -> None:
+    sql = build_run_prediction_ctes_sql(
+        "ais_qds",
+        mode="segment_exact",
+        run_points_where_sql="WHERE run_id = %(run_id)s",
+    )
+
+    assert "trajectories_simplified_segments" in sql
+    assert "cached_segment_presence" in sql
+    assert "WHERE NOT (SELECT has_cached_segments FROM cached_segment_presence)" in sql
+    assert "ST_Crosses(s.segment_geom, z.geom)" in sql
+    assert "ST_Length(ST_Intersection(s.segment_geom, c.geom)::geography)" in sql

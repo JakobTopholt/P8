@@ -171,6 +171,29 @@ CREATE INDEX IF NOT EXISTS idx___SCHEMA___trajectories_simplified_points_geom
     ON __SCHEMA__.trajectories_simplified_points
     USING GIST (geom);
 
+CREATE TABLE IF NOT EXISTS __SCHEMA__.trajectories_simplified_segments (
+    run_id BIGINT NOT NULL,
+    trajectory_id BIGINT NOT NULL,
+    segment_seq INTEGER NOT NULL,
+    from_point_seq INTEGER NOT NULL,
+    to_point_seq INTEGER NOT NULL,
+    from_source_point_seq INTEGER,
+    to_source_point_seq INTEGER,
+    geom geometry(LineString, 4326) NOT NULL,
+    from_geom geometry(Point, 4326) NOT NULL,
+    to_geom geometry(Point, 4326) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (run_id, trajectory_id, segment_seq),
+    FOREIGN KEY (run_id) REFERENCES __SCHEMA__.simplification_runs (run_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx___SCHEMA___trajectories_simplified_segments_run_traj
+    ON __SCHEMA__.trajectories_simplified_segments (run_id, trajectory_id);
+
+CREATE INDEX IF NOT EXISTS idx___SCHEMA___trajectories_simplified_segments_geom
+    ON __SCHEMA__.trajectories_simplified_segments
+    USING GIST (geom);
+
 CREATE TABLE IF NOT EXISTS __SCHEMA__.benchmark_metrics (
     run_id BIGINT NOT NULL,
     metric_key TEXT NOT NULL,

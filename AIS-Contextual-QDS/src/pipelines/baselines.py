@@ -314,6 +314,65 @@ VALUES (
         cur.executemany(insert_sql, rows)
 
 
+def _materialize_simplified_segments(conn: Connection[Any], schema: str, run_id: int) -> int:
+    """Persist adjacent simplified-point segments for exact evaluation reuse."""
+    insert_sql = f"""
+INSERT INTO {schema}.trajectories_simplified_segments (
+    run_id,
+    trajectory_id,
+    segment_seq,
+    from_point_seq,
+    to_point_seq,
+    from_source_point_seq,
+    to_source_point_seq,
+    geom,
+    from_geom,
+    to_geom
+)
+SELECT
+    run_id,
+    trajectory_id,
+    point_seq AS segment_seq,
+    point_seq AS from_point_seq,
+    next_point_seq AS to_point_seq,
+    source_point_seq AS from_source_point_seq,
+    next_source_point_seq AS to_source_point_seq,
+    ST_MakeLine(geom, next_geom) AS geom,
+    geom AS from_geom,
+    next_geom AS to_geom
+FROM (
+    SELECT
+        run_id,
+        trajectory_id,
+        point_seq,
+        source_point_seq,
+        geom,
+        LEAD(point_seq) OVER (PARTITION BY run_id, trajectory_id ORDER BY point_seq) AS next_point_seq,
+        LEAD(source_point_seq) OVER (PARTITION BY run_id, trajectory_id ORDER BY point_seq) AS next_source_point_seq,
+        LEAD(geom) OVER (PARTITION BY run_id, trajectory_id ORDER BY point_seq) AS next_geom
+    FROM {schema}.trajectories_simplified_points
+    WHERE run_id = %(run_id)s
+) ordered_points
+WHERE next_geom IS NOT NULL;
+"""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM {schema}.trajectories_simplified_segments WHERE run_id = %(run_id)s;",
+            {"run_id": run_id},
+        )
+        cur.execute(insert_sql, {"run_id": run_id})
+        cur.execute(
+            f"SELECT COUNT(*) FROM {schema}.trajectories_simplified_segments WHERE run_id = %(run_id)s;",
+            {"run_id": run_id},
+        )
+        segment_count = int(cur.fetchone()[0])
+
+    with conn.cursor() as cur:
+        cur.execute(f"ANALYZE {schema}.trajectories_simplified_segments;")
+
+    return segment_count
+
+
 def _safe_metric_key(raw_value: str) -> str:
     """Normalize dynamic metric-key fragments for benchmark_metrics."""
     return "".join(char if char.isalnum() else "_" for char in raw_value.lower()).strip("_")
@@ -640,7 +699,9 @@ def run(
                     buffer.clear()
 
             _flush_simplified_buffer(conn, schema, buffer)
+            segment_count = _materialize_simplified_segments(conn, schema, run_id)
             elapsed_seconds = perf_counter() - start
+            LOGGER.info("Materialized %s simplified segments for run_id=%s.", segment_count, run_id)
 
             counts = _compute_run_metric_counts(
                 conn,
@@ -690,6 +751,7 @@ def run(
                 "n_corridor_trajectories": float(corridor_counts["support"]),
                 "n_simplified_trajectories": retention["trajectory_count"],
                 "n_simplified_points": retention["simplified_points"],
+                "n_simplified_segments": float(segment_count),
                 "n_raw_points": retention["raw_points"],
             }
             line_zone_metric_values: list[dict[str, float]] = []

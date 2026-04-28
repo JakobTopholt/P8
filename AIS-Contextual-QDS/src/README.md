@@ -18,7 +18,7 @@ The source tree is organized by responsibility rather than by sprint:
 ## Query Semantics and Runtime Tuning
 
 - `query_semantics.py`
-  Shared query labeling and evaluation SQL builders for the `optimized` and `segment_exact` modes.
+  Shared query labeling and evaluation SQL builders for the `optimized` and `segment_exact` modes, including exact segment-predicate SQL.
 - `postgres_tuning.py`
   Session-level and system-level PostgreSQL tuning profiles for local runs.
 
@@ -39,7 +39,7 @@ The source tree is organized by responsibility rather than by sprint:
 - `pipelines/benchmarks.py`
   Neutral benchmark entrypoint for baseline and future query-driven methods.
 - `pipelines/baselines.py`
-  Implement the current uniform and Douglas-Peucker benchmark methods.
+  Implement the current uniform and Douglas-Peucker benchmark methods and materialize simplified segments for exact evaluation reuse.
 - `pipelines/reports.py`
   Export benchmark summaries and figures.
 - `pipelines/visual_inspection.py`

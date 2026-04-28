@@ -58,6 +58,7 @@ SUMMARY_COLUMNS = [
     "n_corridor_trajectories",
     "n_simplified_trajectories",
     "n_simplified_points",
+    "n_simplified_segments",
     "n_raw_points",
 ]
 

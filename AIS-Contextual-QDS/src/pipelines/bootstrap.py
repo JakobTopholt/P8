@@ -23,6 +23,7 @@ def ensure_schema_compatibility(conn: Connection, schema: str) -> None:
     runs_table = f"{schema}.simplification_runs"
     points_table = f"{schema}.trajectory_points_raw"
     point_features_table = f"{schema}.trajectory_point_context_features"
+    simplified_segments_table = f"{schema}.trajectories_simplified_segments"
 
     labels_exists = bool(fetch_one(conn, "SELECT to_regclass(%(table)s) IS NOT NULL;", {"table": labels_table}))
     runs_exists = bool(fetch_one(conn, "SELECT to_regclass(%(table)s) IS NOT NULL;", {"table": runs_table}))
@@ -112,6 +113,29 @@ CREATE INDEX IF NOT EXISTS idx_{schema}_trajectory_point_context_features_corrid
         execute_sql(
             conn,
             f"""
+CREATE TABLE IF NOT EXISTS {simplified_segments_table} (
+    run_id BIGINT NOT NULL,
+    trajectory_id BIGINT NOT NULL,
+    segment_seq INTEGER NOT NULL,
+    from_point_seq INTEGER NOT NULL,
+    to_point_seq INTEGER NOT NULL,
+    from_source_point_seq INTEGER,
+    to_source_point_seq INTEGER,
+    geom geometry(LineString, 4326) NOT NULL,
+    from_geom geometry(Point, 4326) NOT NULL,
+    to_geom geometry(Point, 4326) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (run_id, trajectory_id, segment_seq),
+    FOREIGN KEY (run_id) REFERENCES {schema}.simplification_runs (run_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_{schema}_trajectories_simplified_segments_run_traj
+    ON {simplified_segments_table} (run_id, trajectory_id);
+
+CREATE INDEX IF NOT EXISTS idx_{schema}_trajectories_simplified_segments_geom
+    ON {simplified_segments_table}
+    USING GIST (geom);
+
 ALTER TABLE {runs_table}
     ADD COLUMN IF NOT EXISTS evaluation_mode TEXT;
 ALTER TABLE {runs_table}

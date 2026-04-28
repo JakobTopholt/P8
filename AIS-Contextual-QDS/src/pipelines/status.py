@@ -18,6 +18,7 @@ CORE_TABLES = [
     "trajectory_query_labels",
     "trajectory_point_context_features",
     "trajectory_dev_eval_subset",
+    "trajectories_simplified_segments",
 ]
 
 
@@ -85,4 +86,5 @@ ORDER BY label_mode;
         "trajectory_query_labels_by_mode": label_counts_by_mode,
         "trajectory_point_context_features": count("trajectory_point_context_features"),
         "trajectory_dev_eval_subset": count("trajectory_dev_eval_subset"),
+        "trajectories_simplified_segments": count("trajectories_simplified_segments"),
     }
