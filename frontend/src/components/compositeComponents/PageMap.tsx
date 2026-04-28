@@ -5,9 +5,11 @@ import {
   CircleMarker,
   Popup,
   Polyline,
+  Polygon,
 } from "react-leaflet";
 import SearchBar from "./SearchBar";
 import Randomizer from "../pageComponents/Randomizer";
+import QueryLayerToggle from "../pageComponents/QueryLayerToggle";
 import type { SearchMode } from "../pageComponents/Search";
 import "leaflet/dist/leaflet.css";
 import "./PageMap.css";
@@ -22,6 +24,31 @@ interface DataPoint {
   description?: string;
 }
 
+interface QueryFeature {
+  type: "Feature";
+  properties: {
+    query_id: number;
+    query_type: string;
+    lat_min: number;
+    lat_max: number;
+    lon_min: number;
+    lon_max: number;
+    time_start: number;
+    time_end: number;
+  };
+  geometry: {
+    type: "Polygon";
+    coordinates: [number, number][][];
+  };
+}
+
+const QUERY_COLORS: Record<string, string> = {
+  range: "#e67e22",
+  intersection: "#9b59b6",
+  nearest: "#16a085",
+  aggregation: "#c0392b",
+};
+
 export default function PageMap() {
   // Default center position
   const defaultCenter: [number, number] = [55.6761, 12.5683]; // Copenhagen, Denmark
@@ -35,6 +62,11 @@ export default function PageMap() {
   const [filteredDataPoints, setFilteredDataPoints] = useState<DataPoint[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [queryFeatures, setQueryFeatures] = useState<QueryFeature[]>([]);
+  const [visibleQueryTypes, setVisibleQueryTypes] = useState<Set<string>>(
+    new Set(),
+  );
+  const [queryLoadError, setQueryLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -74,6 +106,59 @@ export default function PageMap() {
       controller.abort();
     };
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadQueries = async () => {
+      try {
+        const res = await fetch("/query_borders_2026-02-05-1000.geojson", {
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          throw new Error(`Request failed with ${res.status}`);
+        }
+        const payload = (await res.json()) as {
+          features: QueryFeature[];
+        };
+        const features = payload.features ?? [];
+        setQueryFeatures(features);
+        const types = new Set(features.map((f) => f.properties.query_type));
+        setVisibleQueryTypes(types);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        setQueryFeatures([]);
+        setVisibleQueryTypes(new Set());
+        setQueryLoadError(
+          error instanceof Error ? error.message : "Unknown error",
+        );
+      }
+    };
+
+    void loadQueries();
+
+    return () => {
+      controller.abort();
+    };
+  }, []);
+
+  const queryTypes = useMemo(
+    () =>
+      Array.from(
+        new Set(queryFeatures.map((f) => f.properties.query_type)),
+      ).sort(),
+    [queryFeatures],
+  );
+
+  const visibleQueryFeatures = useMemo(
+    () =>
+      queryFeatures.filter((f) =>
+        visibleQueryTypes.has(f.properties.query_type),
+      ),
+    [queryFeatures, visibleQueryTypes],
+  );
 
   const handleRandomizer = useCallback(
     (mmsis: number[]) => {
@@ -200,6 +285,38 @@ export default function PageMap() {
             pathOptions={{ color: "#676767", weight: 2 }}
           />
         ))}
+        {visibleQueryFeatures.map((feature) => {
+          const ring = feature.geometry.coordinates[0].map<
+            [number, number]
+          >(([lon, lat]) => [lat, lon]);
+          const color =
+            QUERY_COLORS[feature.properties.query_type] ?? "#555";
+          return (
+            <Polygon
+              key={`query-${feature.properties.query_id}`}
+              positions={ring}
+              pathOptions={{
+                color,
+                fillColor: color,
+                fillOpacity: 0.15,
+                weight: 2,
+              }}
+            >
+              <Popup>
+                <div>
+                  <h3 style={{ textTransform: "capitalize", margin: 0 }}>
+                    {feature.properties.query_type}
+                  </h3>
+                  <p>Query ID: {feature.properties.query_id}</p>
+                  <p>
+                    Time: {feature.properties.time_start} –{" "}
+                    {feature.properties.time_end}
+                  </p>
+                </div>
+              </Popup>
+            </Polygon>
+          );
+        })}
       </MapContainer>
       {isLoading && (
         <div className="map-status-overlay">Loading DataPoints...</div>
@@ -209,11 +326,24 @@ export default function PageMap() {
           Failed to load DataPoints: {loadError}
         </div>
       )}
+      {queryLoadError && (
+        <div className="map-status-overlay map-status-overlay-error">
+          Failed to load queries: {queryLoadError}
+        </div>
+      )}
       <div className="search-bar-overlay">
         <SearchBar onSearch={handleSearch} />
       </div>
       <div className="randomizer-overlay">
         <Randomizer allDataPoints={dataPoints} onRandomize={handleRandomizer} />
+      </div>
+      <div className="query-layer-overlay">
+        <QueryLayerToggle
+          queryTypes={queryTypes}
+          visibleTypes={visibleQueryTypes}
+          colors={QUERY_COLORS}
+          onChange={setVisibleQueryTypes}
+        />
       </div>
     </div>
   );

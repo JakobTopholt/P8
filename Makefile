@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 
 PYTHON ?= python
-CSV ?= AISDATA/aisdk-2026-02-05.cleaned.csv
+CSV ?= AISDATA/ML_2026-02-05-1000.csv
 QUERY_ARGS ?= --help
 FRONTEND_DIR ?= frontend
 
