@@ -69,14 +69,16 @@ The MVP will use these logical table groups:
 
 ### 2.3 Time span
 **Locked choice**
-- Initial working window: **4 consecutive weeks**
+- MVP target window: **2 to 4 consecutive weeks**
+- Current active implementation window: **2026-01-01 through 2026-01-10** in `configs/iteration1_10days.example.yaml`
 
 **Why this choice**
 - Large enough to contain repeated traffic patterns
 - Small enough to debug and inspect manually
 
 **Consequence**
-- The first implementation and all debugging runs use only this 4-week slice.
+- The current implementation uses the 10-day Great Belt iteration for day-to-day debugging and method development.
+- The broader 2-to-4-week MVP window remains the scale-up target after the method and evaluation pipeline are stable.
 - Larger time ranges are postponed.
 
 ---
@@ -174,11 +176,12 @@ A trajectory counts as entering zone Z if:
 
 **Semantics**
 A trajectory counts as corridor-positive if:
-- At least one point lies inside the corridor polygon, or
-- A trajectory segment intersects the corridor polygon
+- At least one point is covered by the corridor polygon, or
+- One adjacent trajectory segment overlaps the corridor polygon by at least the configured minimum overlap distance
 
 **Additional rules**
-- Boundary touch alone counts as corridor-positive only if the segment intersects the corridor polygon beyond a single numerical artifact
+- The current iteration uses `min_corridor_overlap_meters: 1.0`
+- Boundary touch alone does not count unless the segment overlap reaches the configured threshold
 - No minimum dwell time is required in the MVP
 
 ### 5.3 Query scope
@@ -227,12 +230,26 @@ A trajectory counts as corridor-positive if:
 
 ### 7.2 Retained-point budgets
 **Locked choice**
-Evaluate these retained-point ratios:
+Evaluate these standard retained-point ratios:
 - **10%**
 - **20%**
 - **30%**
 - **40%**
 - **50%**
+
+**Stress-test rule**
+If the standard budgets saturate the primary query metrics, run an additional low-budget stress grid before designing new methods:
+- **1%**
+- **2%**
+- **3%**
+- **5%**
+- **7.5%**
+- **10%**
+
+**Why**
+- The project goal is maximum useful compression, not just good scores at easy budgets
+- New methods need a budget range where baseline quality starts to deteriorate
+- If primary yes/no query metrics stay perfect, strict diagnostics become the development signal
 
 ### 7.3 Output rule
 **Locked choice**
@@ -266,15 +283,37 @@ The MVP includes exactly these baseline families:
 
 ### 9.1 Base score
 **Locked choice**
-The initial non-context query-driven score combines:
+The initial non-context query-driven score, B3, combines:
 - simple geometric importance (turning / local deviation proxy)
-- query relevance for preserving zone-entry and corridor-membership results
+- query-witness relevance for preserving zone-entry and corridor-membership results
+
+**Allowed in B3**
+- first and last point preservation
+- local shape importance from the trajectory itself
+- high score for points whose removal changes a primary query answer
+- high score for points whose removal changes strict event-count diagnostics
+- high score for points adjacent to an observed raw query state transition, treated as query evidence
+
+**Not allowed in B3**
+- distance to zone boundary
+- distance to corridor boundary or centerline
+- generic boundary-proximity boosts
+- generic maritime-context proximity terms
+- learned context embeddings
+
+**Reason**
+B3 must test whether query-driven selection helps before static maritime context is added. A point can be important because it is a query witness, but B3 must not use continuous context priors such as "near a boundary."
 
 ### 9.2 Context-aware additions
 **Locked choice**
-The context-aware method adds only these AIS-relevant terms:
+The context-aware method, B4, adds only these AIS-relevant terms:
 - **boundary proximity term**: higher score near zone or corridor boundaries
+- **corridor proximity term**: higher score near the corridor boundary or centerline, depending on the final corridor feature representation
 - **transition term**: higher score near entry/exit transitions for zones and corridor
+- **inside/outside state term** if it improves query preservation without duplicating the query-witness term
+
+**Separation rule**
+B4 may use static context as a prior for points that have not yet been proven query-critical. B3 may only use query evidence and trajectory-local shape evidence.
 
 ### 9.3 Excluded features
 **Locked choice**
@@ -330,6 +369,8 @@ For each point, compute:
 **Locked choice**
 - Create one held-out evaluation subset separated from the dev subset by time or trajectory IDs
 - Tuning happens only on the dev subset
+- Use `eval` only for confirmation after budgets, method definitions, and scoring weights are chosen on `dev`
+- Do not repeatedly tune B3 or B4 after seeing `eval` results
 
 ### 12.3 Primary metrics
 **Locked choice**
@@ -343,14 +384,31 @@ Measure for each method and budget:
 - retained-point ratio
 - simplification runtime
 
-### 12.4 Sanity metrics
+**Discovery rule**
+- Do not choose a fixed acceptance threshold before the stress-budget curves are visible
+- First identify where diminishing returns begin for each method
+- Compare methods by their full metric-vs-budget curves, especially in the low-budget region where baselines begin to degrade
+
+### 12.4 Strict development metrics
+**Locked choice**
+When the primary yes/no metrics are saturated, method development should use stricter diagnostics:
+- zone point-membership precision / recall / F1
+- zone entry-count exact rate
+- corridor point-membership precision / recall / F1
+- corridor entry-count exact rate
+- per-zone event exact rates
+
+**Rule**
+Primary query F1 remains the gate. Strict metrics are used to compare methods when all methods preserve the primary query answers. During the exploratory phase, strict metrics are ranking and diagnosis signals, not hard acceptance thresholds.
+
+### 12.5 Sanity metrics
 **Locked choice**
 Also track:
 - false zone crossing count created by simplification
 - missed zone crossing count caused by simplification
 - obviously invalid spatial artifacts relative to land mask
 
-### 12.5 Inspection rule
+### 12.6 Inspection rule
 **Locked choice**
 - Every major benchmark run must include manual inspection of representative trajectories
 - Aggregate metrics alone are not considered sufficient evidence
@@ -382,10 +440,17 @@ Also track:
 **Locked success target**
 The MVP is considered successful if:
 1. The raw query engine is trusted on the chosen region
-2. All 4 methods run at all 5 budgets
+2. All 4 methods run at the standard budget grid and the selected stress budget grid
 3. The context-aware query-driven method improves at least one primary query metric over the context-unaware query-driven baseline at the same budget
 4. The improvement survives manual inspection
 5. The method remains simple and reproducible
+
+**If primary metrics saturate**
+If all methods reach perfect primary query F1 over the chosen budgets, success can instead be shown by:
+- matching primary query F1 at a lower retained-point budget
+- improving strict point-membership or event-count metrics at the same budget
+- reducing spatial artifacts while preserving the same query answers
+- showing a better diminishing-returns curve, meaning equal or better fidelity over a wider low-budget range
 
 ---
 
@@ -412,4 +477,3 @@ If a new idea does not directly improve or clarify:
 - simplification under fixed retained-point budgets,
 
 then it is out of scope for the MVP.
-

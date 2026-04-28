@@ -56,6 +56,8 @@ Start with only two:
 * **Q2: corridor membership query**
   Which trajectories passed through corridor C during time interval T?
 
+Current corridor semantics use covered points or adjacent segment overlap above the configured minimum overlap distance. The active 10-day iteration uses `min_corridor_overlap_meters: 1.0`.
+
 Only add route similarity later.
 
 ## What not to do
@@ -164,7 +166,7 @@ I_{\text{base}}(p) = w_1 \cdot I_{\text{shape}}(p) + w_2 \cdot I_{\text{query}}(
 Where:
 
 * (I_{\text{shape}}): simple local importance, such as deviation/turning/curvature proxy
-* (I_{\text{query}}): whether the point contributes to answering your two target queries correctly
+* (I_{\text{query}}): whether the point acts as evidence for preserving the target query answers or strict event counts
 
 You do not need a GNN yet.
 
@@ -172,8 +174,12 @@ A practical version:
 
 * high score if removing the point changes zone membership outcome
 * high score if removing the point changes corridor membership outcome
+* high score if removing the point changes strict entry-count diagnostics
+* high score if the point is adjacent to an observed raw query state transition
 * medium score if the point is a strong turn / route-shape point
 * low score if redundant
+
+B3 must stay context-minimal. It may use query witnesses and trajectory-local shape evidence, but it must not use continuous static context priors such as distance to a zone boundary or distance to a corridor boundary.
 
 ### Method v2: context-aware query-driven scorer
 
@@ -187,6 +193,7 @@ Where:
 
 * (I_{\text{boundary}}(p)): higher near zone or corridor boundaries
 * (I_{\text{transition}}(p)): high if the point marks entering/exiting a zone or corridor
+* static context can act as a prior even when a point has not yet been proven query-critical
 
 This is your first real method.
 
@@ -232,6 +239,17 @@ Primary metrics:
 
 * zone-entry precision / recall / F1
 * corridor-membership precision / recall / F1
+
+Strict development metrics:
+
+* zone point-membership F1
+* zone entry-count exact rate
+* corridor point-membership F1
+* corridor entry-count exact rate
+
+If the primary yes/no metrics are saturated, use these strict metrics and lower retained-point budgets to compare methods.
+
+Do not set a fixed acceptance threshold before the stress curves are visible. First compare the full metric-vs-budget curves and identify where diminishing returns begin for each simplification strategy.
 
 Optional later:
 
@@ -299,13 +317,26 @@ Output:
 
 * proof that geometry-based simplification hurts query fidelity
 
+If the primary query metrics are already perfect at 10%, run a stress grid before implementing B3:
+
+* 1%, 2%, 3%, 5%, 7.5%, 10% retained points
+
+Output:
+
+* the budget range where baselines start to lose query or strict-event fidelity
+* the diminishing-returns point for each baseline
+* the budgets to use for B3/B4 development
+
+Run this stress search on `dev` first. Keep `eval` as a confirmation split after budgets and comparison rules are fixed.
+
 ### Experiment 2: query-driven without context
 
 Add B3.
 
 Output:
 
-* proof that query-driven objective helps
+* proof that query-driven objective helps on the stress budgets
+* or proof that it preserves the same query quality at lower retained-point ratios
 
 ### Experiment 3: context-aware query-driven
 
@@ -314,6 +345,7 @@ Add B4.
 Output:
 
 * proof that maritime context helps over pure query-driven
+* if primary query F1 is saturated, show the gain through strict metrics, lower budget thresholds, or fewer spatial artifacts
 
 ### Experiment 4: ablation
 
@@ -448,10 +480,17 @@ Be concrete.
 
 A good first success target:
 
-* your context-aware method beats the context-unaware query-driven baseline on zone-entry and corridor F1
+* your context-aware method beats the context-unaware query-driven baseline on zone-entry or corridor F1
 * at the same retained-point ratio
 * without blowing up runtime
 * and with fewer false spatial artifacts
+
+If zone-entry and corridor F1 are already perfect for all methods, the success target shifts to:
+
+* same primary query F1 at a lower retained-point ratio
+* better strict point-membership or event-count fidelity at the same retained-point ratio
+* fewer spatial artifacts at the same retained-point ratio
+* better diminishing-returns behavior across the low-budget stress range
 
 If that happens, the project is working.
 

@@ -12,8 +12,18 @@ The repository now defaults to the 10-day iteration config:
 - Time window: `2026-01-01` through `2026-01-10`
 - Query families: zone entry and corridor membership
 - Default semantics mode: `optimized`
+- Current corridor threshold: `min_corridor_overlap_meters = 1.0`
 
 The broader 4-week MVP config still exists as `configs/mvp.example.yaml`, but it is now a reference config rather than the default day-to-day entrypoint.
+
+## Current Evaluation Guardrails
+
+- Use `dev` for stress-budget search, method design, and scoring-weight choices.
+- Keep `eval` as a confirmation split after budgets and comparison rules are fixed.
+- Do not set a fixed acceptance threshold before the stress curves are visible.
+- Compare methods by metric-vs-budget curves and identify where diminishing returns begin.
+- Primary query F1 remains the gate; strict point-membership and event-count metrics are used to rank methods when primary query F1 is saturated.
+- B3 is query-witness and trajectory-local only; B4 is the first method allowed to use static context priors such as boundary/corridor distances.
 
 ## Workflow
 
@@ -64,7 +74,7 @@ There are two supported query-semantics modes:
 - `optimized`
   Default mode. Uses line-level geometry plus point-hit aggregation. This is the mode intended for normal development, laptop runs, and most benchmarking.
 - `segment_exact`
-  Audit/truth mode. Uses adjacent-segment logic and is intentionally more expensive. This is the mode to run on stronger hardware when you want the closest match to the literal segment-based interpretation.
+  Audit/truth mode. Uses adjacent-segment logic and is intentionally more expensive than `optimized`. Benchmark runs materialize adjacent simplified segments so this mode is practical for the current hardcase subsets, but it remains the stricter mode to use for final checks and larger-machine runs.
 
 Examples:
 

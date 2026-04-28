@@ -274,11 +274,43 @@ Compare raw baselines across all budgets.
 
 ---
 
+## T12b. Run low-budget stress benchmark
+
+**Priority:** P0
+
+**Task**
+If the 10% to 50% grid preserves the primary query answers too well, run a lower-budget stress grid before implementing B3.
+
+Recommended stress budgets:
+
+* 1%
+* 2%
+* 3%
+* 5%
+* 7.5%
+* 10%
+
+Run this on `dev` first with the trusted label/evaluation mode. Use the result to identify the diminishing-returns region and choose the budgets for B3/B4 development. Run `eval` only after the stress range and comparison protocol are fixed.
+
+**Acceptance criteria**
+
+* one dev stress table exists
+* one dev stress plot or curve summary exists
+* the budget range where baselines begin to deteriorate is identified
+* the first diminishing-returns point is described for each baseline
+* the chosen method-development budgets are written down
+* strict metrics are included: zone point F1, zone event exact rate, corridor event exact rate
+* an eval confirmation run is scheduled but not used for tuning
+
+---
+
 ### Sprint 2 done when
 
 * evaluation pipeline is stable
 * you can compare baselines at fixed budgets
-* you have at least one example where geometry-based simplification breaks a target query
+* you know whether the standard 10% to 50% budgets are too easy
+* if they are too easy, the low-budget stress range has been identified
+* `eval` remains a confirmation split, not a tuning split
 
 ---
 
@@ -296,14 +328,22 @@ Assign higher importance to points that matter for preserving:
 
 Simple first version:
 
-* high score near zone/corridor crossings
-* high score if removing point flips inside/outside outcome
+* high score if removing a point changes a primary query answer
+* high score if removing a point changes strict event-count diagnostics
+* high score for points adjacent to observed raw query state transitions, treated as query witnesses
 * medium score near strong turns
 * low score if redundant
+
+Do not use static context priors in B3:
+
+* no distance-to-zone-boundary term
+* no distance-to-corridor-boundary term
+* no generic boundary-proximity boost
 
 **Acceptance criteria**
 
 * scoring formula written down clearly
+* B3/B4 feature boundary is documented
 * no learned model required yet
 * score can be computed for every point
 
@@ -326,7 +366,8 @@ This is query-driven, but not yet maritime-context-aware.
 
 * runs on all trajectories
 * respects budget
-* beats or matches at least one dumb baseline on one target query
+* preserves primary query F1 at least as well as one dumb baseline
+* improves at least one strict metric or reaches the same strict quality at a lower budget
 
 ---
 
@@ -353,6 +394,7 @@ Inspect where B3 fails:
 ### Sprint 3 done when
 
 * you have a non-context query-driven baseline
+* it has been evaluated on the stress budget range
 * you understand where it breaks
 
 This is a real milestone. Do not skip it.
@@ -419,6 +461,7 @@ Keep it simple.
 **Acceptance criteria**
 
 * alpha and beta configurable
+* static context features are used only in B4, not B3
 * method runs end-to-end
 * does not require retraining anything expensive
 
@@ -440,7 +483,9 @@ Compare:
 
 * one summary table exists
 * one plot per metric exists
+* results include the stress budget range where baseline degradation is visible
 * clear statement on whether context helps and at which budgets
+* if primary query F1 is saturated, conclusion is based on strict metrics and/or lower retained-point budgets
 
 ---
 
@@ -587,7 +632,7 @@ The MVP is done if all of this is true:
 
 * raw zone/corridor queries are trustworthy
 * all 4 baseline/method variants run at fixed budgets
-* context-aware method improves at least one primary query metric over context-unaware query-driven simplification
+* context-aware method improves over context-unaware query-driven simplification on at least one primary query metric, strict diagnostic, or lower-budget threshold
 * results survive manual inspection
 * code is reproducible
 * you can explain exactly which preserved points caused the gain
