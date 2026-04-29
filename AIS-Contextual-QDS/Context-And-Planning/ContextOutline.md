@@ -136,6 +136,20 @@ Allowed additions:
 
 Purpose: test whether maritime context improves over pure query-driven evidence.
 
+### B5: Optional Advanced Query-Context Method
+
+B5 is not part of the core MVP. It is a possible extension if B4 is implemented, benchmarked, inspected, and ablated with time left.
+
+Possible directions:
+
+- adaptive B4 weights instead of fixed configured weights
+- learned scoring using B3/B4 features
+- explicit query-context interaction terms, such as transition witness plus boundary proximity
+- global budget allocation across trajectories
+- failure-recovery logic based on B4 error taxonomy
+
+Purpose: test whether a more advanced method improves beyond the explainable B4 baseline without replacing B4 as the main thesis method.
+
 ## Evaluation Strategy
 
 ### Primary Metrics
@@ -209,6 +223,8 @@ The MVP is successful if:
 - the method remains simple and reproducible
 - we can explain which preserved points caused the gain
 
+B5 is explicitly optional and should not be required for the MVP success claim.
+
 ## Main Risks
 
 - Adding more context before B3 exists
@@ -216,3 +232,4 @@ The MVP is successful if:
 - Tuning on `eval`
 - Trusting aggregate metrics without visual inspection
 - Jumping to learned models before the simple scoring methods are benchmarked and ablated
+- Letting optional B5 work blur the core B3-to-B4 comparison

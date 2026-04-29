@@ -47,6 +47,7 @@ Current method ladder:
 - B2: Douglas-Peucker geometry baseline.
 - B3: query-driven, context-unaware simplification.
 - B4: query-driven, context-aware simplification.
+- B5: optional advanced query-context method after B4 is complete.
 
 ## Baseline Evidence
 
@@ -333,6 +334,25 @@ Acceptance criteria:
 - Dev/eval usage is documented.
 - The final result can explain which kept points caused the observed gain.
 
+## Optional After B4: B5
+
+B5 is not part of the MVP definition of done. It is worth considering only if B4 is implemented, benchmarked, manually inspected, and ablated with time left.
+
+Possible B5 directions:
+
+- Adaptive B4 weights instead of fixed configured weights.
+- A learned scorer trained on B3/B4 feature signals.
+- Explicit query-context interaction terms.
+- Global budget allocation across trajectories.
+- Failure-recovery logic based on the B4 error taxonomy.
+
+Acceptance criteria:
+
+- B5 is compared directly against B4.
+- B5 does not replace the B3-to-B4 comparison.
+- Any added complexity gives a measurable benefit on dev and survives eval confirmation.
+- The result remains explainable enough to support the project argument.
+
 ## Backlog After MVP
 
 P1:
@@ -345,6 +365,7 @@ P1:
 - Add a second region.
 - Add a second vessel class.
 - Add context sensitivity by geography if not completed in Sprint 5.
+- Try B5 adaptive or query-context interaction scoring if B4 is already complete.
 
 P2:
 
@@ -365,6 +386,8 @@ The MVP is done when:
 - Code and configs are reproducible.
 - The result explains which preserved points or segments caused the gain.
 
+B5 is explicitly outside the MVP definition of done.
+
 ## Guardrails
 
 - Do not add new context layers before B4 has been benchmarked and inspected.
@@ -372,3 +395,4 @@ The MVP is done when:
 - Do not claim a context benefit until B4 is compared against B3.
 - Do not rely only on trajectory-level F1 when it is saturated.
 - Do not move to learned models before the simple explainable scorer has been ablated.
+- Do not start B5 until B4 has a clean result and error analysis.

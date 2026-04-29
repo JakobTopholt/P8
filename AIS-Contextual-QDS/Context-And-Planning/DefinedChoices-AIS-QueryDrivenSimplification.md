@@ -190,10 +190,17 @@ Truth labels are stored by `label_mode`, so `optimized` and `segment_exact` labe
 - Allowed: boundary proximity, corridor proximity, inside/outside state, and configurable static context weights.
 - B4 may reuse B3 transition witnesses, but observed trajectory transitions are not what makes B4 context-aware.
 
+**B5: Optional advanced query-context method**
+
+- Not part of the MVP success criteria.
+- Only allowed after B4 has been benchmarked, manually inspected, and ablated.
+- Possible forms: adaptive context weights, learned scorer, explicit query-context interaction terms, global cross-trajectory budget allocation, or failure-recovery logic based on the B4 error taxonomy.
+- B5 must be compared against B4, not used as a substitute for the B3-to-B4 thesis comparison.
+
 **Model complexity rule**
 
 - No GNN, diffusion model, or full MLSimp reproduction in the MVP.
-- Learned methods are deferred until simple B3/B4 scoring is benchmarked, inspected, and ablated.
+- Learned methods are deferred until simple B3/B4 scoring is benchmarked, inspected, and ablated. If used at all, they belong under optional B5 work.
 
 ## 9. Features
 
@@ -264,6 +271,8 @@ The MVP is successful if:
 5. the implementation remains simple and reproducible
 6. we can explain which preserved points caused the gain
 
+B5 is optional extension work and is not required for MVP success.
+
 ## 12. Deferred Choices
 
 Do not add these until the MVP is stable:
@@ -279,6 +288,7 @@ Do not add these until the MVP is stable:
 - multiple corridors or narrower zones
 - sub-interval queries inside the current trajectory window
 - global cross-trajectory budget allocation
+- adaptive B4 weights or learned scoring as B5
 - GNN or diffusion models
 - streaming/online simplification
 - weather and other dynamic context

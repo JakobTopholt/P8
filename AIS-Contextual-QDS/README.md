@@ -24,6 +24,7 @@ The broader 4-week MVP config still exists as `configs/mvp.example.yaml`, but it
 - Compare methods by metric-vs-budget curves and identify where diminishing returns begin.
 - Primary query F1 remains the gate; strict point-membership and event-count metrics are used to rank methods when primary query F1 is saturated.
 - B3 is query-witness and trajectory-local only; B4 is the first method allowed to use static context priors such as boundary/corridor distances.
+- B5 is optional extension work after B4: adaptive, learned, or interaction-based query-context scoring. It is not part of the current MVP success criteria.
 
 ## Planning Docs
 
