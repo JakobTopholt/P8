@@ -216,9 +216,7 @@ B3_score_i =
   +        S_i
 ```
 
-Budget handling is per trajectory. After forced endpoints and temporal guards, B3 fills remaining slots by ranking interior points by descending `(B3_score_i, primary_query_i, strict_event_count_i, point_membership_i, S_i, -point_seq)`, where `primary_query_i = primary_zone_entry_i + primary_corridor_membership_i`. This gives deterministic tie-breaking under tight budgets while keeping query witnesses ahead of shape-only points.
-
-Primary-answer guard: after scored selection, B3 evaluates the selected trajectory against the same primary query workload and truth-label mode used by the benchmark. If any primary zone-entry or corridor-membership answer differs from the raw trajectory label, B3 falls back to deterministic uniform selection for that trajectory and budget. This guard is query-aware and trajectory-local; it does not use boundary distance, corridor centerline distance, or other static context priors.
+Budget handling is per trajectory. After forced endpoints and temporal guards, B3 fills remaining slots by ranking interior points by descending `(B3_score_i, primary_query_i, strict_event_count_i, point_membership_i, S_i, -point_seq)`, where `primary_query_i = primary_zone_entry_i + primary_corridor_membership_i`. This gives deterministic tie-breaking under tight budgets while keeping query witnesses ahead of shape-only points. B3 does not inspect its own benchmark outcome and does not fall back to another method when it makes a primary-query error.
 
 **B4: Context-aware query-driven method**
 

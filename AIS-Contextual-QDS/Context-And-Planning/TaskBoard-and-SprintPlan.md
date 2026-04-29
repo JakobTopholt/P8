@@ -87,13 +87,14 @@ Current B3 development budgets:
 
 B3 implementation run:
 
-- Run tag: `b3_segment_exact_dev_refined_stress_grid_20260429T043000`
+- Run tag: `b3_temporal_guard_dev_refined_stress_grid_20260429T051500`
 - Methods: `uniform`, `dp`, `b3`
 - Budgets: 0.5%, 1%, 1.5%, 2%, 3%, 5%
 - Split/subset: `dev`, `great_belt_iter1_10days_hardcase`
 - Evaluation mode: `segment_exact`
 - Truth label mode: `segment_exact`
-- Result: B3 preserves primary query F1 from 1% upward, improves 0.5% zone-entry F1 over both baselines, and improves strict zone diagnostics across the grid. Corridor event-count exact rate still favors uniform at several budgets, so this remains a likely B4/failure-inspection target.
+- Result: canonical B3 keeps the temporal guard and no longer uses the primary-answer fallback. B3 improves strict zone diagnostics across the grid, preserves both primary query families from 3% upward, but trails the stronger primary baseline at 0.5%, 1%, 1.5%, and 2%.
+- T15 note: `Context-And-Planning/B3-Failure-Inspection-T15.md`
 
 ## Next: Sprint 3
 

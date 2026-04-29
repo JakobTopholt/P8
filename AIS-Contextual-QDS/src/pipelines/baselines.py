@@ -599,63 +599,6 @@ VALUES (
         cur.executemany(insert_sql, rows)
 
 
-def _replace_trajectories_with_uniform(
-    conn: Connection[Any],
-    schema: str,
-    run_id: int,
-    trajectories: dict[int, list[TrajectoryPoint]],
-    trajectory_ids: set[int],
-    *,
-    budget: float,
-    insert_batch_size: int,
-) -> int:
-    """Replace selected run trajectories with deterministic uniform selections."""
-    if not trajectory_ids:
-        return 0
-
-    with conn.cursor() as cur:
-        cur.execute(
-            (
-                f"DELETE FROM {schema}.trajectories_simplified_points "
-                "WHERE run_id = %(run_id)s AND trajectory_id = ANY(%(trajectory_ids)s::bigint[]);"
-            ),
-            {"run_id": run_id, "trajectory_ids": sorted(trajectory_ids)},
-        )
-
-    buffer: list[tuple[Any, ...]] = []
-    replaced = 0
-    for trajectory_id in sorted(trajectory_ids):
-        points = trajectories.get(trajectory_id)
-        if not points:
-            continue
-
-        target_points = _target_points(len(points), budget)
-        kept_indices = simplify_uniform_indices(len(points), target_points)
-        replaced += 1
-        for out_seq, source_idx in enumerate(kept_indices, start=1):
-            point = points[source_idx]
-            buffer.append(
-                (
-                    run_id,
-                    trajectory_id,
-                    out_seq,
-                    point.source_point_seq,
-                    point.mmsi,
-                    point.ts,
-                    point.lat,
-                    point.lon,
-                    point.lon,
-                    point.lat,
-                )
-            )
-            if len(buffer) >= insert_batch_size:
-                _flush_simplified_buffer(conn, schema, buffer)
-                buffer.clear()
-
-    _flush_simplified_buffer(conn, schema, buffer)
-    return replaced
-
-
 def _materialize_simplified_segments(conn: Connection[Any], schema: str, run_id: int) -> int:
     """Persist adjacent simplified-point segments for exact evaluation reuse."""
     insert_sql = f"""
@@ -730,77 +673,6 @@ def _empty_confusion_counts() -> dict[str, int]:
         "true_positive": 0,
         "predicted_positive": 0,
     }
-
-
-def _primary_mismatch_trajectory_ids(
-    conn: Connection[Any],
-    config: AppConfig,
-    run_id: int,
-    *,
-    evaluation_mode: str,
-    truth_label_mode: str,
-) -> set[int]:
-    """Return trajectories whose simplified primary query answers differ from raw labels."""
-    schema = config.database.schema
-    prediction_ctes = build_run_prediction_ctes_sql(
-        schema,
-        mode=evaluation_mode,
-        run_points_where_sql="WHERE run_id = %(run_id)s",
-    )
-    mismatch_sql = f"""
-WITH {prediction_ctes},
-truth AS (
-    SELECT
-        q.trajectory_id,
-        q.zone_name,
-        q.corridor_name,
-        q.zone_entry AS zone_true,
-        q.corridor_membership AS corridor_true
-    FROM {schema}.trajectory_query_labels q
-    JOIN run_lines rl ON rl.trajectory_id = q.trajectory_id
-    WHERE q.zone_name = ANY(%(zone_names)s)
-      AND q.corridor_name = %(corridor_name)s
-      AND q.label_mode = %(truth_label_mode)s
-),
-zone_mismatches AS (
-    SELECT DISTINCT t.trajectory_id
-    FROM truth t
-    JOIN zone_preds zp
-      ON zp.trajectory_id = t.trajectory_id
-     AND zp.zone_name = t.zone_name
-    WHERE t.zone_true IS DISTINCT FROM zp.zone_entry_pred
-),
-corridor_mismatches AS (
-    SELECT DISTINCT t.trajectory_id
-    FROM truth t
-    JOIN corridor_preds cp
-      ON cp.trajectory_id = t.trajectory_id
-     AND cp.corridor_name = t.corridor_name
-    WHERE t.corridor_true IS DISTINCT FROM cp.corridor_pred
-)
-SELECT trajectory_id FROM zone_mismatches
-UNION
-SELECT trajectory_id FROM corridor_mismatches
-ORDER BY trajectory_id;
-"""
-
-    with conn.cursor() as cur:
-        cur.execute(
-            sql.SQL("SET LOCAL work_mem = {};").format(
-                sql.Literal("128MB" if evaluation_mode == "segment_exact" else "64MB")
-            )
-        )
-        cur.execute(
-            mismatch_sql,
-            {
-                "run_id": run_id,
-                "zone_names": config.context.zone_names,
-                "corridor_name": config.context.corridor_name,
-                "truth_label_mode": truth_label_mode,
-                "min_overlap_m": config.queries.min_corridor_overlap_meters,
-            },
-        )
-        return {int(row[0]) for row in cur.fetchall()}
 
 
 def _compute_run_metric_counts(
@@ -1121,30 +993,6 @@ def run(
 
             _flush_simplified_buffer(conn, schema, buffer)
             segment_count = _materialize_simplified_segments(conn, schema, run_id)
-            if method == "b3":
-                mismatch_ids = _primary_mismatch_trajectory_ids(
-                    conn,
-                    config,
-                    run_id,
-                    evaluation_mode=resolved_evaluation_mode,
-                    truth_label_mode=resolved_truth_label_mode,
-                )
-                replaced_count = _replace_trajectories_with_uniform(
-                    conn,
-                    schema,
-                    run_id,
-                    trajectories,
-                    mismatch_ids,
-                    budget=budget,
-                    insert_batch_size=config.baselines.insert_batch_size,
-                )
-                if replaced_count:
-                    segment_count = _materialize_simplified_segments(conn, schema, run_id)
-                    LOGGER.info(
-                        "B3 primary-answer guard replaced %s trajectories with uniform selections for run_id=%s.",
-                        replaced_count,
-                        run_id,
-                    )
             elapsed_seconds = perf_counter() - start
             LOGGER.info("Materialized %s simplified segments for run_id=%s.", segment_count, run_id)
 
