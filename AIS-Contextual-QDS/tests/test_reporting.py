@@ -19,7 +19,7 @@ def _sample_rows() -> list[dict[str, object]]:
             "run_id": 1,
             "run_tag": "baseline_demo",
             "method": "uniform",
-            "budget": 0.1,
+            "budget": 0.005,
             "evaluation_mode": "optimized",
             "truth_label_mode": "optimized",
             "trajectory_split": "dev",
@@ -42,7 +42,7 @@ def _sample_rows() -> list[dict[str, object]]:
             "corridor_point_membership_f1": 0.714,
             "corridor_entry_event_count_exact_rate": 0.875,
             "zone_entry_zone_anchor_or_waiting_area_tp": 4.0,
-            "retained_point_ratio": 0.1,
+            "retained_point_ratio": 0.005,
             "simplification_runtime_seconds": 0.02,
             "n_query_pairs": 500.0,
             "n_simplified_trajectories": 250.0,
@@ -112,6 +112,7 @@ def test_summary_exports(tmp_path: Path) -> None:
     assert "corridor_event_exact" in markdown_text
     assert "0.6670" in markdown_text
     assert "0.8750" in markdown_text
+    assert "| uniform | 0.005 |" in markdown_text
 
     svg_text = svg_path.read_text(encoding="utf-8")
     assert "Baseline Query Fidelity" in svg_text

@@ -304,6 +304,40 @@ Run this on `dev` first with the trusted label/evaluation mode. Use the result t
 
 ---
 
+**Current status, 2026-04-29**
+
+Completed dev stress runs:
+
+* run tag: `segment_exact_dev_stress_grid_20260429T013759`
+* split: `dev`
+* subset: `great_belt_iter1_10days_hardcase`
+* methods: `uniform`, `dp`
+* budgets: `0.01`, `0.02`, `0.03`, `0.05`, `0.075`, `0.10`
+* evaluation mode: `segment_exact`
+* truth label mode: `segment_exact`
+* refined run tag: `segment_exact_dev_refined_stress_grid_20260429T022828`
+* refined budgets: `0.005`, `0.01`, `0.015`, `0.02`, `0.03`, `0.05`
+
+Observed baseline behavior:
+
+* primary query degradation is material at 0.5% retained points
+* at 1%, uniform has only one zone false positive and perfect corridor membership; DP still has one zone false positive and one corridor false negative
+* from 1.5% upward, both baselines preserve primary zone-entry and corridor-membership F1 on this dev split
+* strict metrics still show useful separation across 0.5% to 5%
+* uniform dominates DP on strict zone metrics and runtime in this stress run
+* uniform shows clear diminishing returns after roughly 3% to 5%
+* DP keeps improving through the tested range, but remains weaker than uniform on strict zone metrics
+
+B3 development focus:
+
+* tune and inspect primarily on `0.5%`, `1%`, `1.5%`, `2%`, `3%`, and `5%`
+* treat `0.5%` and `1%` as the primary-query stress budgets
+* treat `1.5%`, `2%`, `3%`, and `5%` as strict-metric comparison budgets
+* keep `7.5%` and `10%` only for later curve-continuity reports if needed
+* use `eval` only after B3 scoring and comparison choices are fixed
+
+---
+
 ### Sprint 2 done when
 
 * evaluation pipeline is stable

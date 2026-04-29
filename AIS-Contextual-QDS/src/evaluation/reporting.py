@@ -139,7 +139,7 @@ def write_summary_markdown(rows: list[dict[str, object]], output_path: Path) -> 
     for row in rows:
         values = [
             str(row.get("method", "")),
-            f"{float(row.get('budget', 0.0)):.2f}",
+            f"{float(row.get('budget', 0.0)):.3f}",
             str(row.get("evaluation_mode", "")),
             str(row.get("truth_label_mode", "")),
             f"{float(row.get('zone_entry_f1', 0.0)):.4f}",
