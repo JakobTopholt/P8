@@ -123,7 +123,7 @@ ORDER BY p.trajectory_id, p.point_seq;
 
     if not grouped:
         raise RuntimeError(
-            "No trajectories available for baseline run. "
+            "No trajectories available for benchmark run. "
             f"Check split='{split}' and subset_name='{subset_name}'."
         )
 

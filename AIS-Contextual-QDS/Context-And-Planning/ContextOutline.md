@@ -26,7 +26,7 @@ The current implementation is focused on a reproducible Great Belt cargo-vessel 
 
 ## Current Empirical Finding
 
-The first `segment_exact` baseline runs showed that trajectory-level yes/no query F1 can saturate at very low retained-point ratios.
+The first `segment_exact` benchmark runs showed that trajectory-level yes/no query F1 can saturate at very low retained-point ratios.
 
 This is not automatically a methodology flaw. A yes/no query such as "did the vessel enter zone Z?" only needs enough retained geometry to preserve one valid query witness. Once that evidence survives, the final F1 can be perfect even if many query-relevant points or event details are gone.
 
@@ -93,11 +93,11 @@ Current `segment_exact` semantics:
 
 Keeps points uniformly along the trajectory while always keeping first and last point.
 
-Purpose: cheap baseline and sanity check.
+Purpose: cheap reference method and sanity check.
 
 ### Douglas-Peucker (`douglas_peucker`)
 
-Geometry baseline that optimizes shape rather than query behavior.
+Geometry reference method that optimizes shape rather than query behavior.
 
 Purpose: show how geometry-preserving simplification behaves under query-driven evaluation.
 
@@ -148,7 +148,7 @@ Possible directions:
 - global budget allocation across trajectories
 - failure-recovery logic based on `context_aware_query_witness` error taxonomy
 
-Purpose: test whether a more advanced method improves beyond the explainable `context_aware_query_witness` baseline without replacing `context_aware_query_witness` as the main thesis method.
+Purpose: test whether a more advanced method improves beyond the explainable `context_aware_query_witness` method without replacing `context_aware_query_witness` as the main thesis method.
 
 ## Evaluation Strategy
 

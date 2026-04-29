@@ -139,7 +139,7 @@ Rules in `segment_exact` mode:
 - Audit/truth mode.
 - Uses adjacent-segment semantics.
 - Benchmark runs materialize adjacent simplified segments for practical exact evaluation.
-- This is the mode used for the current stress-grid baseline decisions.
+- This is the mode used for the current stress-grid benchmark decisions.
 
 Truth labels are stored by `label_mode`, so `optimized` and `segment_exact` labels can coexist.
 
@@ -176,7 +176,7 @@ Truth labels are stored by `label_mode`, so `optimized` and `segment_exact` labe
 
 **Douglas-Peucker (`douglas_peucker`)**
 
-- Geometry baseline.
+- Geometry reference method.
 
 **Query-witness without static context (`query_witness`)**
 

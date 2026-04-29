@@ -25,7 +25,7 @@ Use three priorities:
 
 ## Current Status
 
-The project is past the initial setup and baseline stage. The current work is preparing the `query_witness` method: a query-driven, context-unaware simplifier that can be compared against uniform and Douglas-Peucker before `context_aware_query_witness` adds maritime-context priors.
+The project is past the initial setup and reference-method stage. The current work is preparing the `query_witness` method: a query-driven, context-unaware simplifier that can be compared against uniform and Douglas-Peucker before `context_aware_query_witness` adds maritime-context priors.
 
 Done:
 
@@ -44,21 +44,21 @@ Done:
 Current method ladder:
 
 - Uniform subsampling: `uniform`.
-- Douglas-Peucker geometry baseline: `douglas_peucker`.
+- Douglas-Peucker geometry reference method: `douglas_peucker`.
 - Query-witness context-free simplification: `query_witness`.
 - Context-aware query-witness simplification: planned method `context_aware_query_witness`.
 - Optional advanced query-context method after `context_aware_query_witness` is complete.
 
 ## Benchmark Evidence
 
-Standard segment-exact baseline runs:
+Standard segment-exact benchmark runs:
 
 - Dev run tag: `segment_exact_full_grid_20260428T235751`
 - Eval run tag: `segment_exact_eval_full_grid_20260429T010505`
 - Budgets: 10%, 20%, 30%, 40%, 50%
 - Result: primary trajectory-level query F1 is already saturated at these budgets.
 
-Stress baseline runs:
+Stress benchmark runs:
 
 - Dev run tag: `segment_exact_dev_stress_grid_20260429T013759`
 - Refined dev run tag: `segment_exact_dev_refined_stress_grid_20260429T022828`
@@ -93,7 +93,7 @@ Query-witness implementation run:
 - Split/subset: `dev`, `great_belt_iter1_10days_hardcase`
 - Evaluation mode: `segment_exact`
 - Truth label mode: `segment_exact`
-- Result: canonical `query_witness` keeps the temporal guard and no longer uses the primary-answer fallback. `query_witness` improves strict zone diagnostics across the grid, preserves both primary query families from 3% upward, but trails the stronger primary baseline at 0.5%, 1%, 1.5%, and 2%.
+- Result: canonical `query_witness` keeps the temporal guard and no longer uses the primary-answer fallback. `query_witness` improves strict zone diagnostics across the grid, preserves both primary query families from 3% upward, but trails the stronger primary reference method at 0.5%, 1%, 1.5%, and 2%.
 - T15 note: `Context-And-Planning/Query-Witness-Failure-Inspection-T15.md`
 
 ## Next: Sprint 3
@@ -145,7 +145,7 @@ Acceptance criteria:
 - `query_witness` respects retained-point budgets.
 - `query_witness` supports the refined stress budgets.
 - `query_witness` can run with `EVALUATION_MODE=segment_exact` and `TRUTH_LABEL_MODE=segment_exact`.
-- `query_witness` preserves primary query F1 at least as well as the stronger baseline in the key stress range, or failures are documented clearly.
+- `query_witness` preserves primary query F1 at least as well as the stronger reference method in the key stress range, or failures are documented clearly.
 - `query_witness` improves at least one strict metric or reaches the same strict quality at a lower retained-point budget.
 
 ### T15. Inspect Query-Witness Failures
@@ -179,7 +179,7 @@ Sprint 3 is done when:
 - `query_witness` has been benchmarked on the refined dev stress budgets.
 - `query_witness` has been compared against uniform and Douglas-Peucker.
 - `query_witness` failure cases have been inspected.
-- The project has a defensible context-unaware query-driven baseline.
+- The project has a defensible context-unaware query-driven reference method.
 
 ## Later: Sprint 4
 

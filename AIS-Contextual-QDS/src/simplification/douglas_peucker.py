@@ -1,4 +1,4 @@
-"""Douglas-Peucker simplification baseline with target-point control."""
+"""Douglas-Peucker simplification method with target-point control."""
 
 from __future__ import annotations
 

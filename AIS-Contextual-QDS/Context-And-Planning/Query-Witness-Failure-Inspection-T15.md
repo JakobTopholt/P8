@@ -14,7 +14,7 @@ The inspected `query_witness` method is the temporal-guarded query scorer only. 
 
 ## Metric Summary
 
-At `0.005`, `query_witness` has weaker primary F1 than the stronger baseline:
+At `0.005`, `query_witness` has weaker primary F1 than the stronger reference method:
 
 - `query_witness` zone-entry F1: `0.9863` with `287/2/6` TP/FP/FN.
 - Uniform zone-entry F1: `0.9880` with `288/2/5`.

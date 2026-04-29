@@ -14,7 +14,7 @@ from ..config import AppConfig
 from ..paths import resolve_project_path
 from ..query_semantics import build_run_prediction_ctes_sql, normalize_query_mode
 from ..visualization.qgis_package import make_feature, sanitize_layer_name, write_feature_collection, write_qgis_project
-from .visual_inspection import _parse_trajectory_ids, _resolve_run, _select_trajectory_ids
+from .inspection_selection import parse_trajectory_ids, resolve_run, select_trajectory_ids
 
 LOGGER = logging.getLogger(__name__)
 
@@ -407,8 +407,8 @@ def run(
     if limit <= 0:
         raise ValueError("limit must be > 0.")
 
-    selected_ids = _parse_trajectory_ids(trajectory_ids)
-    run_summary = _resolve_run(
+    selected_ids = parse_trajectory_ids(trajectory_ids)
+    run_summary = resolve_run(
         conn,
         config,
         run_id=run_id,
@@ -445,7 +445,7 @@ def run(
     )
 
     if selected_ids is None:
-        selected_ids = _select_trajectory_ids(
+        selected_ids = select_trajectory_ids(
             conn,
             config,
             run_id=resolved_run_id,

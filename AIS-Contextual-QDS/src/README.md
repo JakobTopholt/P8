@@ -46,15 +46,17 @@ The source tree is organized by responsibility rather than by sprint:
   Produce standalone HTML inspection artifacts.
 - `pipelines/qgis_export.py`
   Produce GeoJSON and QGIS inspection packages.
+- `pipelines/inspection_selection.py`
+  Shared run and trajectory selection helpers for inspection exports.
 - `pipelines/status.py`
   Report current table counts for the active schema.
 
 ## Simplification Methods
 
 - `simplification/uniform.py`
-  Uniform point-retention baseline.
+  Uniform point-retention simplification method.
 - `simplification/douglas_peucker.py`
-  Douglas-Peucker baseline with target-point search.
+  Douglas-Peucker simplification method with target-point search.
 - `simplification/query_witness.py`
   Query-witness simplifier using trajectory-local query witnesses and local shape evidence.
 

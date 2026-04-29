@@ -30,7 +30,7 @@ The broader 4-week MVP config still exists as `configs/mvp.example.yaml`, but it
 
 - `Context-And-Planning/ContextOutline.md`: methodology narrative, research questions, scope, method ladder, and evaluation strategy.
 - `Context-And-Planning/DefinedChoices-AIS-QueryDrivenSimplification.md`: locked project choices, semantics, metrics, features, and deferred decisions.
-- `Context-And-Planning/TaskBoard-and-SprintPlan.md`: active execution board, current baseline evidence, and next sprint tasks.
+- `Context-And-Planning/TaskBoard-and-SprintPlan.md`: active execution board, current benchmark evidence, and next sprint tasks.
 
 ## Workflow
 
@@ -243,7 +243,7 @@ What is already in place:
 - Raw trajectory construction from cleaned AIS points
 - Truth labeling for zone entry and corridor membership
 - Deterministic dev/eval subset creation
-- Uniform and Douglas-Peucker baseline benchmarking
+- Uniform and Douglas-Peucker benchmark methods
 - Reusable point-context features for the next contextual method stage
 - Summary export to CSV, JSON, Markdown, and SVG
 - HTML and QGIS inspection exports
@@ -255,7 +255,7 @@ What is already in place:
 
 What is not yet in place:
 
-- The contextual scorer beyond the current baseline stage
+- The contextual scorer beyond the current query-witness stage
 - Final thesis-grade audit comparisons between `optimized` and `segment_exact`
 - Official chart-grade context polygons; the current layers are defensible query-workload geometries, not nautical chart products
 

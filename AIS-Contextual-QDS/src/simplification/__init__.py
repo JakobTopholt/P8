@@ -1,4 +1,4 @@
-"""Trajectory simplification algorithms used by baseline pipelines."""
+"""Trajectory simplification algorithms used by benchmark pipelines."""
 
 from .douglas_peucker import simplify_douglas_peucker_indices
 from .methods import (

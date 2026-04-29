@@ -1,4 +1,4 @@
-"""Uniform temporal simplification baseline."""
+"""Uniform temporal point-retention simplification method."""
 
 from __future__ import annotations
 
