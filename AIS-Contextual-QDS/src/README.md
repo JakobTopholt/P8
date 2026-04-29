@@ -38,6 +38,8 @@ The source tree is organized by responsibility rather than by sprint:
   Compute reusable per-point context and local-shape features for contextual methods.
 - `pipelines/benchmarks.py`
   Neutral benchmark entrypoint for baseline and query-driven methods.
+- `pipelines/b3_evidence.py`
+  PostGIS query-witness extraction for the B3 simplifier.
 - `pipelines/baselines.py`
   Implement the current uniform, Douglas-Peucker, and B3 benchmark methods and materialize simplified segments for exact evaluation reuse.
 - `pipelines/reports.py`
