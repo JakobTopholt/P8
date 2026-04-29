@@ -1,8 +1,8 @@
 """General simplification benchmark runner.
 
-This module is the neutral entrypoint for benchmark execution. The current
-implemented methods still live in `baselines` until query-driven methods are
-added, but callers should depend on this module going forward.
+This module is the neutral entrypoint for benchmark execution. The concrete
+method implementations live behind the current `baselines` module name for
+backward-compatible CLI aliases and report filenames.
 """
 
 from __future__ import annotations

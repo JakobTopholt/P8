@@ -41,7 +41,7 @@ help:
 	@printf "Evaluation and inspection:\n"
 	@printf "  make label-balance [MODE=optimized|segment_exact] [SUBSET_NAME=...]\n"
 	@printf "  make compare-label-modes [BASE_MODE=optimized] [CANDIDATE_MODE=segment_exact] [SUBSET_NAME=...] [SPLIT=dev|eval]\n"
-	@printf "  make benchmark [METHODS=uniform,dp] [BUDGETS=0.1,0.2] [SUBSET_NAME=...] [EVALUATION_MODE=optimized|segment_exact] [TRUTH_LABEL_MODE=optimized|segment_exact] [RUN_TAG=...]\n"
+	@printf "  make benchmark [METHODS=uniform,dp,b3] [BUDGETS=0.1,0.2] [SUBSET_NAME=...] [EVALUATION_MODE=optimized|segment_exact] [TRUTH_LABEL_MODE=optimized|segment_exact] [RUN_TAG=...]\n"
 	@printf "  make summarize-baselines [RUN_TAG=...]\n"
 	@printf "  make inspect-html [RUN_TAG=...] [METHOD=...] [BUDGET=...] [SUBSET_NAME=...] [SPLIT=dev|eval]\n"
 	@printf "  make inspect-qgis [RUN_TAG=...] [METHOD=...] [BUDGET=...] [SUBSET_NAME=...] [SPLIT=dev|eval]\n"

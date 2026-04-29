@@ -102,9 +102,9 @@ class PathsConfig:
 
 @dataclass(frozen=True)
 class BaselineConfig:
-    """Baseline runner settings for Sprint 2."""
+    """Simplification benchmark runner settings."""
 
-    methods: list[str] = field(default_factory=lambda: ["uniform", "dp"])
+    methods: list[str] = field(default_factory=lambda: ["uniform", "dp", "b3"])
     default_split: str = "dev"
     dp_search_iterations: int = 24
     insert_batch_size: int = 10_000

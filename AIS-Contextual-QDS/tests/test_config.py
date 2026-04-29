@@ -26,7 +26,7 @@ def test_load_default_config() -> None:
     ]
     assert config.queries.retained_point_budgets == [0.10, 0.20, 0.30, 0.40, 0.50]
     assert config.subsets.dev_size == 300
-    assert config.baselines.methods == ["uniform", "dp"]
+    assert config.baselines.methods == ["uniform", "dp", "b3"]
     assert config.baselines.default_split == "dev"
     assert config.performance.label_mode == "optimized"
     assert config.performance.evaluation_mode == "optimized"

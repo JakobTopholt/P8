@@ -37,9 +37,9 @@ The source tree is organized by responsibility rather than by sprint:
 - `pipelines/features.py`
   Compute reusable per-point context and local-shape features for contextual methods.
 - `pipelines/benchmarks.py`
-  Neutral benchmark entrypoint for baseline and future query-driven methods.
+  Neutral benchmark entrypoint for baseline and query-driven methods.
 - `pipelines/baselines.py`
-  Implement the current uniform and Douglas-Peucker benchmark methods and materialize simplified segments for exact evaluation reuse.
+  Implement the current uniform, Douglas-Peucker, and B3 benchmark methods and materialize simplified segments for exact evaluation reuse.
 - `pipelines/reports.py`
   Export benchmark summaries and figures.
 - `pipelines/visual_inspection.py`
@@ -55,6 +55,8 @@ The source tree is organized by responsibility rather than by sprint:
   Uniform point-retention baseline.
 - `simplification/douglas_peucker.py`
   Douglas-Peucker baseline with target-point search.
+- `simplification/query_driven.py`
+  B3 query-driven simplifier using trajectory-local query witnesses and local shape evidence.
 
 ## Evaluation and Output
 

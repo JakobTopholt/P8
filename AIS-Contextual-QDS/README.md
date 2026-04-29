@@ -43,7 +43,7 @@ The project is easiest to understand as five layers:
 3. Feature preparation
    Compute reusable per-point context and local-shape features for contextual methods.
 4. Benchmarking
-   Run simplification baselines and persist metrics.
+   Run simplification methods and persist metrics.
 5. Inspection
    Export HTML or QGIS artifacts for manual review.
 
@@ -228,7 +228,7 @@ AIS-Contextual-QDS/
 │   ├── postgres_tuning.py     # local PostgreSQL tuning profiles
 │   ├── query_semantics.py     # optimized vs segment_exact semantics
 │   ├── pipelines/             # runnable pipeline steps
-│   ├── simplification/        # uniform and Douglas-Peucker baselines
+│   ├── simplification/        # uniform, Douglas-Peucker, and B3 simplifiers
 │   ├── evaluation/            # metrics and report export
 │   └── visualization/         # HTML and QGIS packaging helpers
 ├── tests/                     # unit tests

@@ -85,6 +85,16 @@ Current B3 development budgets:
 - 7.5% and 10% are not current tuning budgets; keep them only for later curve-continuity reports if needed.
 - `eval` should stay held back until B3 scoring and comparison rules are fixed on `dev`.
 
+B3 implementation run:
+
+- Run tag: `b3_segment_exact_dev_refined_stress_grid_20260429T043000`
+- Methods: `uniform`, `dp`, `b3`
+- Budgets: 0.5%, 1%, 1.5%, 2%, 3%, 5%
+- Split/subset: `dev`, `great_belt_iter1_10days_hardcase`
+- Evaluation mode: `segment_exact`
+- Truth label mode: `segment_exact`
+- Result: B3 preserves primary query F1 from 1% upward, improves 0.5% zone-entry F1 over both baselines, and improves strict zone diagnostics across the grid. Corridor event-count exact rate still favors uniform at several budgets, so this remains a likely B4/failure-inspection target.
+
 ## Next: Sprint 3
 
 Sprint 3 creates the first query-driven method without static maritime-context priors. This is the required comparison point before claiming that maritime context helps.

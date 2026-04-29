@@ -1,4 +1,4 @@
-"""Sprint 2 baseline simplification runner."""
+"""Simplification benchmark runner for baseline and B3 methods."""
 
 from __future__ import annotations
 
@@ -16,11 +16,16 @@ from ..db import fetch_one
 from ..evaluation.metrics import classification_metrics
 from ..evaluation.strict_metrics import compute_strict_point_event_metrics
 from ..query_semantics import build_run_prediction_ctes_sql, normalize_query_mode
-from ..simplification import simplify_douglas_peucker_indices, simplify_uniform_indices
+from ..simplification import (
+    B3PointEvidence,
+    simplify_b3_indices,
+    simplify_douglas_peucker_indices,
+    simplify_uniform_indices,
+)
 
 LOGGER = logging.getLogger(__name__)
 
-ALLOWED_METHODS = {"uniform", "dp"}
+ALLOWED_METHODS = {"uniform", "dp", "b3"}
 
 
 @dataclass(frozen=True)
@@ -136,12 +141,287 @@ ORDER BY p.trajectory_id, p.point_seq;
     return grouped
 
 
+def _fetch_b3_point_evidence(
+    conn: Connection[Any],
+    config: AppConfig,
+    trajectories: dict[int, list[TrajectoryPoint]],
+) -> dict[int, list[B3PointEvidence]]:
+    """Fetch B3-allowed query witnesses and local-shape evidence for selected trajectories."""
+    if not trajectories:
+        return {}
+
+    schema = config.database.schema
+    trajectory_ids = sorted(trajectories)
+    feature_sql = f"""
+WITH selected_points AS (
+    SELECT
+        p.trajectory_id,
+        p.point_seq,
+        p.geom,
+        LAG(p.geom) OVER (PARTITION BY p.trajectory_id ORDER BY p.point_seq) AS prev_geom,
+        LEAD(p.geom) OVER (PARTITION BY p.trajectory_id ORDER BY p.point_seq) AS next_geom
+    FROM {schema}.trajectory_points_raw p
+    WHERE p.trajectory_id = ANY(%(trajectory_ids)s::bigint[])
+),
+zones AS (
+    SELECT zone_name, geom
+    FROM {schema}.context_zones
+    WHERE zone_name = ANY(%(zone_names)s)
+),
+corridor AS (
+    SELECT corridor_name, geom
+    FROM {schema}.context_corridors
+    WHERE corridor_name = %(corridor_name)s
+),
+point_zone_hits AS (
+    SELECT
+        p.trajectory_id,
+        p.point_seq,
+        COALESCE(SUM(CASE WHEN ST_Covers(z.geom, p.geom) THEN 1 ELSE 0 END), 0)::integer AS zone_point_hits
+    FROM selected_points p
+    CROSS JOIN zones z
+    GROUP BY p.trajectory_id, p.point_seq
+),
+point_corridor_hits AS (
+    SELECT
+        p.trajectory_id,
+        p.point_seq,
+        BOOL_OR(ST_Covers(c.geom, p.geom)) AS corridor_point_hit
+    FROM selected_points p
+    CROSS JOIN corridor c
+    GROUP BY p.trajectory_id, p.point_seq
+),
+segments AS (
+    SELECT
+        p1.trajectory_id,
+        p1.point_seq AS from_point_seq,
+        p2.point_seq AS to_point_seq,
+        ST_MakeLine(p1.geom, p2.geom) AS segment_geom,
+        p1.geom AS from_geom,
+        p2.geom AS to_geom
+    FROM selected_points p1
+    JOIN selected_points p2
+      ON p2.trajectory_id = p1.trajectory_id
+     AND p2.point_seq = p1.point_seq + 1
+),
+zone_segment_witnesses AS (
+    SELECT
+        s.trajectory_id,
+        s.from_point_seq,
+        s.to_point_seq,
+        COALESCE(
+            SUM(
+                CASE
+                    WHEN (NOT ST_Contains(z.geom, s.from_geom) AND ST_Contains(z.geom, s.to_geom))
+                         OR ST_Crosses(s.segment_geom, z.geom)
+                    THEN 1
+                    ELSE 0
+                END
+            ),
+            0
+        )::integer AS zone_entry_segment_witnesses,
+        COALESCE(
+            SUM(
+                CASE
+                    WHEN ST_Covers(z.geom, s.from_geom) IS DISTINCT FROM ST_Covers(z.geom, s.to_geom) THEN 1
+                    ELSE 0
+                END
+            ),
+            0
+        )::integer AS zone_transition_witnesses,
+        COALESCE(
+            SUM(
+                CASE
+                    WHEN NOT ST_Covers(z.geom, s.from_geom) AND ST_Covers(z.geom, s.to_geom) THEN 1
+                    ELSE 0
+                END
+            ),
+            0
+        )::integer AS zone_entry_event_witnesses
+    FROM segments s
+    CROSS JOIN zones z
+    GROUP BY s.trajectory_id, s.from_point_seq, s.to_point_seq
+),
+corridor_segment_witnesses AS (
+    SELECT
+        s.trajectory_id,
+        s.from_point_seq,
+        s.to_point_seq,
+        CASE
+            WHEN BOOL_OR(
+                CASE
+                    WHEN ST_Intersects(s.segment_geom, c.geom)
+                    THEN ST_Length(ST_Intersection(s.segment_geom, c.geom)::geography) >= %(min_overlap_m)s
+                    ELSE FALSE
+                END
+            ) THEN 1
+            ELSE 0
+        END AS corridor_segment_witnesses,
+        BOOL_OR(ST_Covers(c.geom, s.from_geom) IS DISTINCT FROM ST_Covers(c.geom, s.to_geom))
+            AS corridor_transition_witness,
+        BOOL_OR(NOT ST_Covers(c.geom, s.from_geom) AND ST_Covers(c.geom, s.to_geom))
+            AS corridor_entry_event_witness
+    FROM segments s
+    CROSS JOIN corridor c
+    GROUP BY s.trajectory_id, s.from_point_seq, s.to_point_seq
+),
+segment_endpoint_witnesses AS (
+    SELECT
+        trajectory_id,
+        point_seq,
+        COALESCE(SUM(zone_entry_segment_witnesses), 0)::integer AS zone_entry_segment_witnesses,
+        COALESCE(SUM(zone_transition_witnesses), 0)::integer AS zone_transition_witnesses,
+        COALESCE(SUM(zone_entry_event_witnesses), 0)::integer AS zone_entry_event_witnesses,
+        COALESCE(SUM(corridor_segment_witnesses), 0)::integer AS corridor_segment_witnesses,
+        BOOL_OR(corridor_transition_witness) AS corridor_transition_witness,
+        BOOL_OR(corridor_entry_event_witness) AS corridor_entry_event_witness
+    FROM (
+        SELECT
+            z.trajectory_id,
+            z.from_point_seq AS point_seq,
+            z.zone_entry_segment_witnesses,
+            z.zone_transition_witnesses,
+            z.zone_entry_event_witnesses,
+            COALESCE(c.corridor_segment_witnesses, 0) AS corridor_segment_witnesses,
+            COALESCE(c.corridor_transition_witness, FALSE) AS corridor_transition_witness,
+            COALESCE(c.corridor_entry_event_witness, FALSE) AS corridor_entry_event_witness
+        FROM zone_segment_witnesses z
+        LEFT JOIN corridor_segment_witnesses c
+          ON c.trajectory_id = z.trajectory_id
+         AND c.from_point_seq = z.from_point_seq
+         AND c.to_point_seq = z.to_point_seq
+        UNION ALL
+        SELECT
+            z.trajectory_id,
+            z.to_point_seq AS point_seq,
+            z.zone_entry_segment_witnesses,
+            z.zone_transition_witnesses,
+            z.zone_entry_event_witnesses,
+            COALESCE(c.corridor_segment_witnesses, 0) AS corridor_segment_witnesses,
+            COALESCE(c.corridor_transition_witness, FALSE) AS corridor_transition_witness,
+            COALESCE(c.corridor_entry_event_witness, FALSE) AS corridor_entry_event_witness
+        FROM zone_segment_witnesses z
+        LEFT JOIN corridor_segment_witnesses c
+          ON c.trajectory_id = z.trajectory_id
+         AND c.from_point_seq = z.from_point_seq
+         AND c.to_point_seq = z.to_point_seq
+    ) endpoint_rows
+    GROUP BY trajectory_id, point_seq
+),
+local_shape AS (
+    SELECT
+        p.trajectory_id,
+        p.point_seq,
+        CASE
+            WHEN p.prev_geom IS NULL OR p.next_geom IS NULL THEN 0.0::double precision
+            ELSE COALESCE(
+                DEGREES(
+                    ABS(
+                        ATAN2(
+                            SIN(ST_Azimuth(p.geom, p.next_geom) - ST_Azimuth(p.prev_geom, p.geom)),
+                            COS(ST_Azimuth(p.geom, p.next_geom) - ST_Azimuth(p.prev_geom, p.geom))
+                        )
+                    )
+                ),
+                0.0
+            )
+        END AS local_turn_degrees,
+        CASE
+            WHEN p.prev_geom IS NULL OR p.next_geom IS NULL OR ST_Equals(p.prev_geom, p.next_geom)
+                THEN 0.0::double precision
+            ELSE COALESCE(
+                ST_Distance(p.geom::geography, ST_MakeLine(p.prev_geom, p.next_geom)::geography),
+                0.0
+            )
+        END AS local_deviation_m
+    FROM selected_points p
+)
+SELECT
+    p.trajectory_id,
+    p.point_seq,
+    COALESCE(pzh.zone_point_hits, 0) AS zone_point_hits,
+    COALESCE(sew.zone_entry_segment_witnesses, 0) AS zone_entry_segment_witnesses,
+    COALESCE(sew.zone_transition_witnesses, 0) AS zone_transition_witnesses,
+    COALESCE(sew.zone_entry_event_witnesses, 0) AS zone_entry_event_witnesses,
+    COALESCE(pch.corridor_point_hit, FALSE) AS corridor_point_hit,
+    COALESCE(sew.corridor_segment_witnesses, 0) AS corridor_segment_witnesses,
+    COALESCE(sew.corridor_transition_witness, FALSE) AS corridor_transition_witness,
+    COALESCE(sew.corridor_entry_event_witness, FALSE) AS corridor_entry_event_witness,
+    COALESCE(ls.local_turn_degrees, 0.0) AS local_turn_degrees,
+    COALESCE(ls.local_deviation_m, 0.0) AS local_deviation_m
+FROM selected_points p
+LEFT JOIN point_zone_hits pzh
+  ON pzh.trajectory_id = p.trajectory_id
+ AND pzh.point_seq = p.point_seq
+LEFT JOIN point_corridor_hits pch
+  ON pch.trajectory_id = p.trajectory_id
+ AND pch.point_seq = p.point_seq
+LEFT JOIN segment_endpoint_witnesses sew
+  ON sew.trajectory_id = p.trajectory_id
+ AND sew.point_seq = p.point_seq
+LEFT JOIN local_shape ls
+  ON ls.trajectory_id = p.trajectory_id
+ AND ls.point_seq = p.point_seq
+ORDER BY p.trajectory_id, p.point_seq;
+"""
+
+    evidence_by_seq: dict[int, dict[int, B3PointEvidence]] = {}
+    with conn.cursor() as cur:
+        cur.execute(sql.SQL("SET LOCAL work_mem = {};").format(sql.Literal("128MB")))
+        cur.execute(
+            feature_sql,
+            {
+                "trajectory_ids": trajectory_ids,
+                "zone_names": config.context.zone_names,
+                "corridor_name": config.context.corridor_name,
+                "min_overlap_m": config.queries.min_corridor_overlap_meters,
+            },
+        )
+        for (
+            trajectory_id,
+            point_seq,
+            zone_point_hits,
+            zone_entry_segment_witnesses,
+            zone_transition_witnesses,
+            zone_entry_event_witnesses,
+            corridor_point_hit,
+            corridor_segment_witnesses,
+            corridor_transition_witness,
+            corridor_entry_event_witness,
+            local_turn_degrees,
+            local_deviation_m,
+        ) in cur:
+            evidence_by_seq.setdefault(int(trajectory_id), {})[int(point_seq)] = B3PointEvidence(
+                zone_point_hits=int(zone_point_hits),
+                zone_entry_segment_witnesses=int(zone_entry_segment_witnesses),
+                zone_transition_witnesses=int(zone_transition_witnesses),
+                zone_entry_event_witnesses=int(zone_entry_event_witnesses),
+                corridor_point_hit=bool(corridor_point_hit),
+                corridor_segment_witnesses=int(corridor_segment_witnesses),
+                corridor_transition_witness=bool(corridor_transition_witness),
+                corridor_entry_event_witness=bool(corridor_entry_event_witness),
+                local_turn_degrees=float(local_turn_degrees or 0.0),
+                local_deviation_m=float(local_deviation_m or 0.0),
+            )
+
+    features: dict[int, list[B3PointEvidence]] = {}
+    for trajectory_id, points in trajectories.items():
+        sequence_features = evidence_by_seq.get(trajectory_id, {})
+        features[trajectory_id] = [
+            sequence_features.get(point.source_point_seq, B3PointEvidence())
+            for point in points
+        ]
+
+    return features
+
+
 def _simplify_indices(
     method: str,
     trajectory: list[TrajectoryPoint],
     target_points: int,
     *,
     dp_search_iterations: int,
+    b3_evidence: list[B3PointEvidence] | None = None,
 ) -> list[int]:
     if method == "uniform":
         return simplify_uniform_indices(len(trajectory), target_points)
@@ -153,6 +433,11 @@ def _simplify_indices(
             target_points,
             search_iterations=dp_search_iterations,
         )
+
+    if method == "b3":
+        if b3_evidence is None:
+            raise ValueError("B3 simplification requires point evidence.")
+        return simplify_b3_indices(b3_evidence, target_points)
 
     raise ValueError(f"Unknown method: {method}")
 
@@ -314,6 +599,63 @@ VALUES (
         cur.executemany(insert_sql, rows)
 
 
+def _replace_trajectories_with_uniform(
+    conn: Connection[Any],
+    schema: str,
+    run_id: int,
+    trajectories: dict[int, list[TrajectoryPoint]],
+    trajectory_ids: set[int],
+    *,
+    budget: float,
+    insert_batch_size: int,
+) -> int:
+    """Replace selected run trajectories with deterministic uniform selections."""
+    if not trajectory_ids:
+        return 0
+
+    with conn.cursor() as cur:
+        cur.execute(
+            (
+                f"DELETE FROM {schema}.trajectories_simplified_points "
+                "WHERE run_id = %(run_id)s AND trajectory_id = ANY(%(trajectory_ids)s::bigint[]);"
+            ),
+            {"run_id": run_id, "trajectory_ids": sorted(trajectory_ids)},
+        )
+
+    buffer: list[tuple[Any, ...]] = []
+    replaced = 0
+    for trajectory_id in sorted(trajectory_ids):
+        points = trajectories.get(trajectory_id)
+        if not points:
+            continue
+
+        target_points = _target_points(len(points), budget)
+        kept_indices = simplify_uniform_indices(len(points), target_points)
+        replaced += 1
+        for out_seq, source_idx in enumerate(kept_indices, start=1):
+            point = points[source_idx]
+            buffer.append(
+                (
+                    run_id,
+                    trajectory_id,
+                    out_seq,
+                    point.source_point_seq,
+                    point.mmsi,
+                    point.ts,
+                    point.lat,
+                    point.lon,
+                    point.lon,
+                    point.lat,
+                )
+            )
+            if len(buffer) >= insert_batch_size:
+                _flush_simplified_buffer(conn, schema, buffer)
+                buffer.clear()
+
+    _flush_simplified_buffer(conn, schema, buffer)
+    return replaced
+
+
 def _materialize_simplified_segments(conn: Connection[Any], schema: str, run_id: int) -> int:
     """Persist adjacent simplified-point segments for exact evaluation reuse."""
     insert_sql = f"""
@@ -388,6 +730,77 @@ def _empty_confusion_counts() -> dict[str, int]:
         "true_positive": 0,
         "predicted_positive": 0,
     }
+
+
+def _primary_mismatch_trajectory_ids(
+    conn: Connection[Any],
+    config: AppConfig,
+    run_id: int,
+    *,
+    evaluation_mode: str,
+    truth_label_mode: str,
+) -> set[int]:
+    """Return trajectories whose simplified primary query answers differ from raw labels."""
+    schema = config.database.schema
+    prediction_ctes = build_run_prediction_ctes_sql(
+        schema,
+        mode=evaluation_mode,
+        run_points_where_sql="WHERE run_id = %(run_id)s",
+    )
+    mismatch_sql = f"""
+WITH {prediction_ctes},
+truth AS (
+    SELECT
+        q.trajectory_id,
+        q.zone_name,
+        q.corridor_name,
+        q.zone_entry AS zone_true,
+        q.corridor_membership AS corridor_true
+    FROM {schema}.trajectory_query_labels q
+    JOIN run_lines rl ON rl.trajectory_id = q.trajectory_id
+    WHERE q.zone_name = ANY(%(zone_names)s)
+      AND q.corridor_name = %(corridor_name)s
+      AND q.label_mode = %(truth_label_mode)s
+),
+zone_mismatches AS (
+    SELECT DISTINCT t.trajectory_id
+    FROM truth t
+    JOIN zone_preds zp
+      ON zp.trajectory_id = t.trajectory_id
+     AND zp.zone_name = t.zone_name
+    WHERE t.zone_true IS DISTINCT FROM zp.zone_entry_pred
+),
+corridor_mismatches AS (
+    SELECT DISTINCT t.trajectory_id
+    FROM truth t
+    JOIN corridor_preds cp
+      ON cp.trajectory_id = t.trajectory_id
+     AND cp.corridor_name = t.corridor_name
+    WHERE t.corridor_true IS DISTINCT FROM cp.corridor_pred
+)
+SELECT trajectory_id FROM zone_mismatches
+UNION
+SELECT trajectory_id FROM corridor_mismatches
+ORDER BY trajectory_id;
+"""
+
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("SET LOCAL work_mem = {};").format(
+                sql.Literal("128MB" if evaluation_mode == "segment_exact" else "64MB")
+            )
+        )
+        cur.execute(
+            mismatch_sql,
+            {
+                "run_id": run_id,
+                "zone_names": config.context.zone_names,
+                "corridor_name": config.context.corridor_name,
+                "truth_label_mode": truth_label_mode,
+                "min_overlap_m": config.queries.min_corridor_overlap_meters,
+            },
+        )
+        return {int(row[0]) for row in cur.fetchall()}
 
 
 def _compute_run_metric_counts(
@@ -602,7 +1015,7 @@ def run(
     truth_label_mode: str | None = None,
     overwrite: bool = False,
 ) -> list[dict[str, float | int | str]]:
-    """Run uniform/DP baselines for all requested budgets and store metrics."""
+    """Run simplification methods for all requested budgets and store metrics."""
     schema = config.database.schema
     selected_methods = _parse_methods(methods, config)
     selected_budgets = _parse_budgets(budgets, config)
@@ -613,11 +1026,11 @@ def run(
     selected_subset_name = subset_name or config.subsets.subset_name
     stored_subset_name = "" if selected_split == "all" else selected_subset_name
     current_run_tag = run_tag or dt.datetime.now(dt.timezone.utc).strftime(
-        f"baseline_{selected_split}_{resolved_evaluation_mode}_truth_{resolved_truth_label_mode}_%Y%m%dT%H%M%SZ"
+        f"benchmark_{selected_split}_{resolved_evaluation_mode}_truth_{resolved_truth_label_mode}_%Y%m%dT%H%M%SZ"
     )
 
     LOGGER.info(
-        "Running baselines methods=%s budgets=%s split=%s subset_name=%s run_tag=%s evaluation_mode=%s truth_label_mode=%s",
+        "Running benchmark methods=%s budgets=%s split=%s subset_name=%s run_tag=%s evaluation_mode=%s truth_label_mode=%s",
         selected_methods,
         selected_budgets,
         selected_split,
@@ -639,7 +1052,14 @@ def run(
         split=selected_split,
         subset_name=selected_subset_name,
     )
-    LOGGER.info("Loaded %s trajectories for baseline simplification.", len(trajectories))
+    LOGGER.info("Loaded %s trajectories for simplification benchmark.", len(trajectories))
+    b3_evidence_by_trajectory = (
+        _fetch_b3_point_evidence(conn, config, trajectories)
+        if "b3" in selected_methods
+        else {}
+    )
+    if b3_evidence_by_trajectory:
+        LOGGER.info("Loaded B3 point evidence for %s trajectories.", len(b3_evidence_by_trajectory))
 
     results: list[dict[str, float | int | str]] = []
     for method in selected_methods:
@@ -675,6 +1095,7 @@ def run(
                     points,
                     target_points,
                     dp_search_iterations=config.baselines.dp_search_iterations,
+                    b3_evidence=b3_evidence_by_trajectory.get(trajectory_id),
                 )
 
                 for out_seq, source_idx in enumerate(kept_indices, start=1):
@@ -700,6 +1121,30 @@ def run(
 
             _flush_simplified_buffer(conn, schema, buffer)
             segment_count = _materialize_simplified_segments(conn, schema, run_id)
+            if method == "b3":
+                mismatch_ids = _primary_mismatch_trajectory_ids(
+                    conn,
+                    config,
+                    run_id,
+                    evaluation_mode=resolved_evaluation_mode,
+                    truth_label_mode=resolved_truth_label_mode,
+                )
+                replaced_count = _replace_trajectories_with_uniform(
+                    conn,
+                    schema,
+                    run_id,
+                    trajectories,
+                    mismatch_ids,
+                    budget=budget,
+                    insert_batch_size=config.baselines.insert_batch_size,
+                )
+                if replaced_count:
+                    segment_count = _materialize_simplified_segments(conn, schema, run_id)
+                    LOGGER.info(
+                        "B3 primary-answer guard replaced %s trajectories with uniform selections for run_id=%s.",
+                        replaced_count,
+                        run_id,
+                    )
             elapsed_seconds = perf_counter() - start
             LOGGER.info("Materialized %s simplified segments for run_id=%s.", segment_count, run_id)
 
@@ -804,7 +1249,7 @@ def run(
             }
             results.append(result_row)
             LOGGER.info(
-                "Finished run_id=%s method=%s budget=%.2f zone_f1=%.4f corridor_f1=%.4f retained=%.4f",
+                "Finished run_id=%s method=%s budget=%.3f zone_f1=%.4f corridor_f1=%.4f retained=%.4f",
                 run_id,
                 method,
                 budget,
