@@ -1,583 +1,218 @@
-Good. Then build this like an engineering plan, not a paper pitch.
+# AIS-Contextual-QDS Methodology Outline
 
-The core definition should stay the one from the paper: **given a storage budget, simplify trajectories so query results on the simplified database stay close to the original database**. The paper’s version is query-driven rather than error-driven, and it adjusts point importance using query workload after estimating point importance from the trajectory itself. 
+This document is the compact research/methodology outline. The locked implementation choices live in `DefinedChoices-AIS-QueryDrivenSimplification.md`; the active execution plan lives in `TaskBoard-and-SprintPlan.md`.
 
-## Working thesis direction
+## Core Idea
 
-**Geofence-aware query-driven simplification for Danish AIS**
+The project follows the query-driven simplification idea from MLSimp:
 
-That is small enough to finish and still clearly extends the paper.
+> Given a storage budget, simplify trajectories so query results on the simplified database stay close to query results on the original database.
 
-## What you are actually building
+The maritime context is not the goal by itself. It is extra signal for deciding which AIS points matter for the queries we care about.
 
-A simplification pipeline that:
+## Working Objective
 
-1. takes AIS trajectories,
-2. assigns point importance,
-3. boosts points that matter for your target maritime queries,
-4. preserves those points under a compression budget,
-5. evaluates whether query answers are still correct.
+Design and test a context-aware query-driven simplification method for AIS that preserves geofence and corridor query behavior better than context-unaware simplification at the same retained-point budget.
 
-The maritime context is not the goal. It is just extra signal for deciding which points matter for the queries you care about.
+The current implementation is focused on a reproducible Great Belt cargo-vessel iteration before scaling to the broader MVP window.
 
-## Scope lock
+## Research Questions
 
-Do not change this unless you have a working baseline.
+**RQ1:** Can static AIS-relevant context improve query-driven simplification for geofence and corridor queries?
 
-**Region**
+**RQ2:** Which context-sensitive points matter most: boundary-adjacent points, entry/exit points, or corridor-transition points?
 
-* Pick one small Danish area only.
-* Best choice: a constrained area with clear spatial semantics.
-* Example types: port approach, anchorage area, narrow strait, one corridor/fairway zone.
+**RQ3:** At what compression rates does context-aware simplification provide the most useful gain over context-unaware baselines?
 
-**Vessel class**
+## Current Empirical Finding
 
-* Pick one only.
-* Cargo or ferry is fine.
-* Do not mix all vessel types early.
+The first `segment_exact` baseline runs showed that trajectory-level yes/no query F1 can saturate at very low retained-point ratios.
 
-**Time span**
+This is not automatically a methodology flaw. A yes/no query such as "did the vessel enter zone Z?" only needs enough retained geometry to preserve one valid query witness. Once that evidence survives, the final F1 can be perfect even if many query-relevant points or event details are gone.
 
-* Start with 2 to 4 weeks.
-* Enough to get repeated patterns, small enough to debug.
+Therefore:
 
-**Context layers**
-Only these:
+- primary query F1 remains the gate
+- strict point-membership and event-count metrics are used to compare methods after primary F1 saturates
+- method comparisons should be curve-based, not based on one fixed threshold
+- the immediate goal is to find where diminishing returns begin for each simplification strategy
 
-* land/coastline mask
-* 2 to 5 geofenced maritime zones
-* 1 corridor / fairway / TSS-like polygon or polyline buffer
+## Scope
 
-**Query types**
-Start with only two:
+Current active iteration:
 
-* **Q1: zone entry/exit query**
-  Which trajectories entered zone Z during time interval T?
-* **Q2: corridor membership query**
-  Which trajectories passed through corridor C during time interval T?
+- Region: Great Belt / Storebaelt
+- Vessel class: cargo
+- Time window: `2026-01-01` through `2026-01-10`
+- Context: three fixed zones and one main corridor polygon
+- Queries: zone entry and corridor membership
+- Truth/evaluation audit mode: `segment_exact`
 
-Current corridor semantics use covered points or adjacent segment overlap above the configured minimum overlap distance. The active 10-day iteration uses `min_corridor_overlap_meters: 1.0`.
+Broader MVP target:
 
-Only add route similarity later.
+- same design, scaled to a 2-to-4-week window after the method and evaluation pipeline are stable
 
-## What not to do
+Out of scope until the MVP is stable:
 
-Do not start with:
+- weather
+- bathymetry
+- vessel interaction context
+- full Denmark
+- learned GNN/diffusion models
+- full MLSimp reproduction
 
-* weather
-* bathymetry
-* anomaly detection
-* vessel interactions
-* streaming
-* full Denmark
-* full MLSimp reproduction including diffusion
+## Query Workload
 
-That is how you lose the project.
+### Q1: Zone Entry
 
-## Thesis objective
+Trajectory-level yes/no query:
 
-Use this as the internal objective:
+> Which trajectories entered zone Z during the time window?
 
-**Design and test a context-aware query-driven simplification method for AIS that preserves geofence and corridor query answers better than context-unaware simplification at the same compression rate.**
+Rules:
 
-That is tight and testable.
+- starting inside a zone does not count as an entry
+- boundary-only touching does not count unless the path crosses from outside to inside
+- multiple entries collapse to one trajectory-level positive label
 
-## Research questions
+### Q2: Corridor Membership
 
-Use only three.
+Trajectory-level yes/no query:
 
-**RQ1**
-Can static AIS-relevant context improve query-driven simplification for geofence and corridor queries?
+> Which trajectories passed through corridor C during the time window?
 
-**RQ2**
-Which context-sensitive points matter most: near-boundary points, entry/exit points, or corridor-transition points?
+Current `segment_exact` semantics:
 
-**RQ3**
-At what compression rates does context-aware simplification outperform context-unaware simplification the most?
+- corridor-positive if a retained point is covered by the corridor polygon, or
+- one adjacent segment overlaps the corridor polygon by at least `min_corridor_overlap_meters`
+- current active value: `1.0` meter
 
-That is enough.
+## Method Ladder
 
-## Hypotheses
+### B1: Uniform Subsampling
 
-Keep them simple.
+Keeps points uniformly along the trajectory while always keeping first and last point.
 
-**H1**
-Context-aware simplification will improve zone-entry and corridor-query fidelity over geometry-only and context-unaware baselines.
+Purpose: cheap baseline and sanity check.
 
-**H2**
-The gain will come mainly from preserving boundary-adjacent and transition points.
+### B2: Douglas-Peucker
 
-**H3**
-The gain will be largest in constrained waters and at medium/high compression.
+Geometry baseline that optimizes shape rather than query behavior.
 
-## Minimal data specification
+Purpose: show how geometry-preserving simplification behaves under query-driven evaluation.
 
-You want a dataset you can actually inspect manually.
+### B3: Query-Driven Without Static Context
 
-Start with:
+Uses query witnesses and trajectory-local evidence only.
 
-* 5,000 to 20,000 trajectories after cleaning
-* one vessel class
-* one region
-* 2 to 4 weeks
-* static context layers as polygons/lines
+Allowed signals:
 
-For each AIS point, keep only:
+- first and last point
+- local shape importance such as turn/deviation
+- points whose removal changes a primary query answer
+- points whose removal changes strict event-count diagnostics
+- points adjacent to observed raw query state transitions
 
-* MMSI
-* timestamp
-* lat/lon
-* speed
-* course
-* maybe nav status if available
+Not allowed in B3:
 
-For each point, derive:
+- distance to zone boundary
+- distance to corridor boundary or centerline
+- generic boundary-proximity boost
+- generic maritime-context proximity terms
 
-* inside which zone, if any
-* inside corridor or not
-* distance to nearest zone boundary
-* distance to nearest coastline
-* whether zone/corridor membership changes at this point relative to neighbors
+Purpose: test whether query-driven selection helps before adding static maritime context.
 
-That is enough for version 1.
+### B4: Context-Aware Query-Driven Method
 
-## Method plan
+Extends B3 with static context priors.
 
-Do not begin with a heavy model. Build the smallest useful selector first.
+Allowed additions:
 
-### Method v0: baseline simplification
+- distance to zone boundary
+- distance to corridor boundary or centerline
+- inside/outside zone and corridor state
+- static boundary/corridor proximity weights
+- optional static context priors such as distance to land
 
-Implement:
+Purpose: test whether maritime context improves over pure query-driven evidence.
 
-* uniform subsampling
-* Douglas-Peucker or another geometry baseline
-* one simple query-driven baseline without context
+## Evaluation Strategy
 
-The point is to establish that query-driven evaluation changes what “good” means.
+### Primary Metrics
 
-### Method v1: context-unaware query-driven scorer
+These remain the gate:
 
-Build a score per point:
+- zone-entry precision / recall / F1
+- corridor-membership precision / recall / F1
 
-[
-I_{\text{base}}(p) = w_1 \cdot I_{\text{shape}}(p) + w_2 \cdot I_{\text{query}}(p)
-]
+### Strict Development Metrics
 
-Where:
+Used when primary F1 is saturated:
 
-* (I_{\text{shape}}): simple local importance, such as deviation/turning/curvature proxy
-* (I_{\text{query}}): whether the point acts as evidence for preserving the target query answers or strict event counts
+- zone point-membership F1
+- zone entry-count exact rate
+- corridor point-membership F1
+- corridor entry-count exact rate
+- per-zone event exact rates
 
-You do not need a GNN yet.
+### Sanity And Artifact Metrics
 
-A practical version:
+Important for preventing fake wins:
 
-* high score if removing the point changes zone membership outcome
-* high score if removing the point changes corridor membership outcome
-* high score if removing the point changes strict entry-count diagnostics
-* high score if the point is adjacent to an observed raw query state transition
-* medium score if the point is a strong turn / route-shape point
-* low score if redundant
+- trajectory-level false positives and false negatives
+- false zone/corridor crossings created by simplification
+- missed crossings caused by simplification
+- land-crossing or impossible spatial artifacts
 
-B3 must stay context-minimal. It may use query witnesses and trajectory-local shape evidence, but it must not use continuous static context priors such as distance to a zone boundary or distance to a corridor boundary.
+Current implementation already counts trajectory-level false positives and false negatives through metrics such as `zone_entry_fp`, `zone_entry_fn`, `corridor_membership_fp`, and `corridor_membership_fn`. Fine-grained false-crossing artifact counts are planned as part of the error taxonomy and inspection workflow.
 
-### Method v2: context-aware query-driven scorer
+## Budget Strategy
 
-Extend it:
+Standard reporting grid:
 
-[
-I(p) = I_{\text{base}}(p) + \alpha \cdot I_{\text{boundary}}(p) + \beta \cdot I_{\text{transition}}(p)
-]
+- `0.10`, `0.20`, `0.30`, `0.40`, `0.50`
 
-Where:
+Current B3 development grid:
 
-* (I_{\text{boundary}}(p)): higher near zone or corridor boundaries
-* (I_{\text{transition}}(p)): high if the point marks entering/exiting a zone or corridor
-* static context can act as a prior even when a point has not yet been proven query-critical
+- `0.005`, `0.010`, `0.015`, `0.020`, `0.030`, `0.050`
 
-This is your first real method.
+Reason:
 
-### Method v3: optional MLSimp-inspired upgrade
+- `0.005` and `0.010` stress the primary query labels
+- `0.015` and above recover primary F1 on dev but still separate methods through strict metrics
+- `0.030` to `0.050` show diminishing returns and curve shape
 
-Only after v2 works:
+Use `dev` for budget search and method choices. Keep `eval` for confirmation after the comparison protocol is fixed.
 
-* add a better trajectory-level importance term inspired by the paper’s local/global framing
-* maybe approximate “globality” and “uniqueness” without reproducing the whole model 
+## When To Broaden The Query Workload
 
-Do not touch diffusion until the simpler version is already strong.
+Do not broaden the workload just because primary F1 saturates. First use stricter diagnostics and lower budgets.
 
-## How to make it truly query-driven
+If strict diagnostics also saturate after scale-up, broaden deliberately with query variants such as:
 
-Be strict here.
+- entry count as a primary query
+- per-zone entry sequence/order
+- time-of-entry error
+- corridor dwell or distance inside corridor
+- multiple corridors
+- narrower zone variants
+- sub-interval queries within the trajectory time window
 
-A method is not query-driven just because it uses AIS context.
+## Success Criteria
 
-It is query-driven if point selection is driven by whether simplification changes answers to your target queries.
+The MVP is successful if:
 
-So define query-aware labels or penalties like this:
+- raw zone/corridor query labels are trusted
+- B1/B2/B3/B4 run on the fixed budget grid
+- B4 improves over B3 on at least one primary metric, strict diagnostic, or lower-budget threshold
+- results survive manual inspection
+- the method remains simple and reproducible
+- we can explain which preserved points caused the gain
 
-For each original trajectory:
+## Main Risks
 
-* did it enter zone Z?
-* did it pass corridor C?
-
-For a candidate simplified trajectory:
-
-* does it still produce the same yes/no answer?
-
-Then reward points that preserve those answers.
-
-That is the heart of the project.
-
-## Evaluation plan
-
-Use four groups of metrics.
-
-### 1. Query fidelity
-
-Primary metrics:
-
-* zone-entry precision / recall / F1
-* corridor-membership precision / recall / F1
-
-Strict development metrics:
-
-* zone point-membership F1
-* zone entry-count exact rate
-* corridor point-membership F1
-* corridor entry-count exact rate
-
-If the primary yes/no metrics are saturated, use these strict metrics and lower retained-point budgets to compare methods.
-
-Do not set a fixed acceptance threshold before the stress curves are visible. First compare the full metric-vs-budget curves and identify where diminishing returns begin for each simplification strategy.
-
-Interpret early saturation carefully. For trajectory-level yes/no queries, perfect F1 at low retained-point ratios can be normal: the simplified path only needs to preserve enough evidence for the final answer. That does not prove the simplified path preserved all query-relevant behavior, so strict diagnostics remain central.
-
-Optional later:
-
-* time-of-entry error
-* false entry/exit count
-* entry count as a primary query
-* per-zone entry sequence/order
-* corridor dwell/distance inside corridor
-* sub-interval queries inside the trajectory window
-
-### 2. Compression
-
-* retained-point ratio
-* points removed
-
-### 3. Efficiency
-
-* simplification runtime
-* query runtime if you build a simple query engine
-
-### 4. Sanity / spatial validity
-
-* land crossing count
-* false zone crossings created by simplification
-* missed zone crossings caused by simplification
-* false corridor passes created by simplification
-* missed corridor passes caused by simplification
-
-These sanity metrics matter. Otherwise you can get fake wins. The current benchmark already counts trajectory-level false positives and false negatives for zone entry and corridor membership. Fine-grained false crossing artifacts, such as a simplified segment visually crossing a zone that the raw trajectory never entered, should be inspected and later counted as a dedicated artifact taxonomy.
-
-## Baselines you should actually run
-
-You do not need many.
-
-**B1: Uniform subsampling**
-Cheap and surprisingly hard to beat in some settings.
-
-**B2: Douglas-Peucker / geometry baseline**
-Shows what happens when you optimize shape instead of query answers.
-
-**B3: Query-driven without context**
-This is the crucial baseline.
-
-**B4: Your context-aware query-driven method**
-This is the main comparison.
-
-That is enough for a strong first stage.
-
-## First experiment sequence
-
-Do these in order.
-
-### Experiment 0: raw data sanity
-
-Goal:
-
-* verify zone/corridor queries work on raw trajectories
-* manually inspect 50 to 100 trajectories
-
-Output:
-
-* trusted preprocessing pipeline
-
-### Experiment 1: baseline compression vs query fidelity
-
-Compare B1 and B2 across compression rates:
-
-* 10%, 20%, 30%, 40%, 50% retained points
-
-Output:
-
-* proof that geometry-based simplification hurts query fidelity
-
-If the primary query metrics are already perfect at 10%, run a stress grid before implementing B3:
-
-* 1%, 2%, 3%, 5%, 7.5%, 10% retained points
-
-Output:
-
-* the budget range where baselines start to lose query or strict-event fidelity
-* the diminishing-returns point for each baseline
-* the budgets to use for B3/B4 development
-
-Run this stress search on `dev` first. Keep `eval` as a confirmation split after budgets and comparison rules are fixed.
-
-### Experiment 2: query-driven without context
-
-Add B3.
-
-Output:
-
-* proof that query-driven objective helps on the stress budgets
-* or proof that it preserves the same query quality at lower retained-point ratios
-
-### Experiment 3: context-aware query-driven
-
-Add B4.
-
-Output:
-
-* proof that maritime context helps over pure query-driven
-* if primary query F1 is saturated, show the gain through strict metrics, lower budget thresholds, or fewer spatial artifacts
-
-### Experiment 4: ablation
-
-Turn off one context term at a time:
-
-* no boundary term
-* no transition term
-* no corridor context
-* no zone context
-
-Output:
-
-* explanation of where the improvement comes from
-
-### Experiment 5: regional stress test
-
-Split trajectories into:
-
-* constrained area subset
-* less constrained/open subset
-
-Output:
-
-* proof that context helps more where it should
-
-That is a clean progression.
-
-## Deliverables by stage
-
-### Stage 1 deliverable
-
-A small clean AIS dataset with context overlays and working query labels.
-
-### Stage 2 deliverable
-
-Three baseline simplifiers and a reproducible evaluation script.
-
-### Stage 3 deliverable
-
-First context-aware method with results across compression budgets.
-
-### Stage 4 deliverable
-
-Ablation plots and error analysis.
-
-If you do just that, you already have a real thesis core.
-
-## 12-week execution plan
-
-### Weeks 1–2
-
-Lock scope and build data pipeline.
-
-* choose region
-* choose vessel class
-* clean AIS
-* split into trajectories
-* load context polygons
-* implement zone/corridor membership logic
-* manually inspect outputs
-
-Done means:
-
-* you can answer Q1 and Q2 on raw data reliably
-
-### Weeks 3–4
-
-Build evaluation framework.
-
-* define trajectory-level query labels
-* define metrics
-* create train/val/test split or time-based split
-* add visualization for raw vs simplified trajectories
-
-Done means:
-
-* you can evaluate any simplifier consistently
-
-### Weeks 5–6
-
-Implement baselines.
-
-* uniform subsampling
-* DP or similar geometry simplifier
-* simple query-driven scorer without context
-
-Done means:
-
-* baseline comparison table exists
-
-### Weeks 7–8
-
-Implement context-aware scorer.
-
-* boundary distance feature
-* transition detection feature
-* combine with query-aware score
-* run first comparisons
-
-Done means:
-
-* first evidence of gain from context
-
-### Weeks 9–10
-
-Run ablations and debug.
-
-* remove one context feature at a time
-* examine failure cases
-* inspect wrong answers manually
-
-Done means:
-
-* you understand why it works or fails
-
-### Weeks 11–12
-
-Tighten and document.
-
-* rerun best experiments cleanly
-* freeze code
-* write internal notes
-* decide whether to extend with route similarity or better scoring
-
-Done means:
-
-* project is stable enough to become a thesis chapter or paper later
-
-## Success criteria
-
-Be concrete.
-
-A good first success target:
-
-* your context-aware method beats the context-unaware query-driven baseline on zone-entry or corridor F1
-* at the same retained-point ratio
-* without blowing up runtime
-* and with fewer false spatial artifacts
-
-If zone-entry and corridor F1 are already perfect for all methods, the success target shifts to:
-
-* same primary query F1 at a lower retained-point ratio
-* better strict point-membership or event-count fidelity at the same retained-point ratio
-* fewer spatial artifacts at the same retained-point ratio
-* better diminishing-returns behavior across the low-budget stress range
-
-If even strict diagnostics saturate after scale-up, broaden the query workload deliberately rather than adding arbitrary context: entry counts, entry sequence, time-of-entry error, corridor dwell/distance, multiple corridors, narrower zones, or sub-interval queries.
-
-If that happens, the project is working.
-
-## Failure criteria
-
-Also be concrete.
-
-The project is failing if:
-
-* you still do not trust preprocessing after 3 weeks
-* you keep adding context layers instead of finishing evaluation
-* you cannot explain which points your method preserves and why
-* your method only wins at one cherry-picked compression rate
-* the gains disappear after manual inspection
-
-## What to implement first in code
-
-In this exact order:
-
-1. trajectory splitter
-2. polygon / corridor membership checker
-3. raw query evaluator
-4. uniform subsampler
-5. geometry simplifier
-6. query-driven scorer without context
-7. context-aware scorer
-8. batch experiment runner
-9. visual inspection notebook/script
-10. ablation runner
-
-Do not start with model architecture diagrams or thesis text.
-
-## Recommended chapter structure for yourself
-
-Not polished. Just practical.
-
-1. **Problem framing**
-
-   * what query-driven simplification means
-   * why AIS context matters
-
-2. **Data and scope**
-
-   * region, vessel class, context layers, queries
-
-3. **Pipeline**
-
-   * preprocessing
-   * query labeling
-   * simplification methods
-
-4. **Evaluation**
-
-   * metrics
-   * compression budgets
-   * train/test setup
-
-5. **Results**
-
-   * baselines
-   * context-aware method
-   * ablations
-   * failure cases
-
-6. **Next steps**
-
-   * similarity queries
-   * stronger global importance
-   * larger region
-
-## My strongest recommendation
-
-Do **not** make “reproduce MLSimp” your main milestone.
-
-Use the paper for the right lesson:
-
-* optimize for query fidelity, not just trajectory shape
-* point importance should depend on downstream query behavior 
-
-Then build the smallest maritime version of that idea that you can actually finish.
+- Adding more context before B3 exists
+- Treating saturated yes/no F1 as proof that the method is done
+- Tuning on `eval`
+- Trusting aggregate metrics without visual inspection
+- Jumping to learned models before the simple scoring methods are benchmarked and ablated

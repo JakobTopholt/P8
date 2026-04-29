@@ -1,495 +1,287 @@
-# Defined Choices
+# Defined Choices: AIS Query-Driven Simplification
 
-## Project
-**Geofence-aware query-driven simplification for Danish AIS**
+This document is the authoritative set of locked choices for the MVP. Change it only when a later experiment clearly justifies a revision.
 
-**Purpose**
-Lock the implementation choices for the MVP so the project can start without reopening scope questions.
+## 1. Project Definition
 
-**Status rule**
-Anything in this document is treated as fixed unless a later experiment clearly shows it must change.
+**Name:** Geofence-aware query-driven simplification for Danish AIS
 
----
+**Objective:** simplify AIS trajectories under a retained-point budget while preserving the answers and query-relevant behavior of geofence and corridor queries.
 
-## 1. Data source and storage
+**Current active iteration:**
 
-### 1.1 Source data
-**Locked choice**
-- Main source: historical AIS data provided by the Danish Maritime Authority.
-- Data is already cleaned in preprocessing for duplicate removal and outlier removal.
-- Data is imported into SQL tables in a PostGIS database.
+- Config: `configs/iteration1_10days.example.yaml`
+- Region: Great Belt / Storebaelt
+- Vessel class: cargo
+- Time window: `2026-01-01` through `2026-01-10`
+- Default local mode: `optimized`
+- Audit/truth mode: `segment_exact`
 
-**Consequence**
-- No additional external AIS source will be used in the MVP.
-- The raw point tables in PostGIS are treated as the ground-truth source for all query labels and trajectory construction.
+**MVP scale-up target:** same design over a 2-to-4-week window after the method and evaluation pipeline are stable.
 
-### 1.2 Working data tables
-**Locked choice**
-The MVP will use these logical table groups:
-- `ais_points_cleaned`: cleaned AIS point records
-- `trajectories_raw`: trajectories built from cleaned AIS points
-- `context_zones`: maritime geofence polygons
-- `context_corridors`: corridor polygons
-- `trajectories_simplified_*`: one output table per simplification method and budget
+## 2. Data And Storage
 
-**Consequence**
-- The project will be built around reproducible SQL + Python scripts that read/write these tables.
+**Source data**
 
----
+- Historical AIS data from the Danish Maritime Authority.
+- Cleaned source points are stored in PostGIS.
+- `public.ais_points_cleaned` is treated as the raw source for this project.
 
-## 2. Study scope
+**Core table groups**
 
-### 2.1 Study region
-**Locked choice**
-- Region: **Great Belt / Storebælt study area**
-- Region representation: one fixed study polygon stored in PostGIS
+- `trajectories_raw`
+- `trajectory_points_raw`
+- `context_zones`
+- `context_corridors`
+- `trajectory_query_labels`
+- `trajectory_dev_eval_subset`
+- `simplification_runs`
+- `trajectories_simplified_points`
+- `trajectories_simplified_segments`
+- `benchmark_metrics`
 
-**Why this choice**
-- Constrained waterway
-- High relevance for corridor-style traffic
-- Easier to define meaningful corridor and zone queries than open water
-- Simpler than trying to model several different Danish traffic environments at once
+## 3. Study Scope
 
-**Consequence**
-- The MVP will not start with all Danish waters.
-- All trajectories are clipped/selected to the Great Belt study polygon.
+**Region**
 
-### 2.2 Vessel subset
-**Locked choice**
-- Vessel class: **cargo vessels only** for the MVP
+- Great Belt / Storebaelt study area.
+- One fixed study-region polygon.
+- The MVP does not start with all Danish waters.
 
-**Why this choice**
-- Simpler than mixing vessel behaviors
-- Less route repetition noise than ferries
-- More realistic transit behavior for corridor and zone-entry queries
+**Vessel class**
 
-**Consequence**
-- Other vessel classes are excluded from the first phase.
-- Expansion to ferry/tanker/etc. is postponed until after the MVP works.
+- Cargo vessels only.
+- Other vessel classes are postponed.
 
-### 2.3 Time span
-**Locked choice**
-- MVP target window: **2 to 4 consecutive weeks**
-- Current active implementation window: **2026-01-01 through 2026-01-10** in `configs/iteration1_10days.example.yaml`
+**Trajectory construction**
 
-**Why this choice**
-- Large enough to contain repeated traffic patterns
-- Small enough to debug and inspect manually
+- Points ordered by `mmsi, timestamp`.
+- Split on gaps greater than 30 minutes.
+- Split on impossible jumps according to the configured speed sanity threshold.
+- Minimum trajectory size: 20 points.
+- No separate stationary-period removal in the MVP.
 
-**Consequence**
-- The current implementation uses the 10-day Great Belt iteration for day-to-day debugging and method development.
-- The broader 2-to-4-week MVP window remains the scale-up target after the method and evaluation pipeline are stable.
-- Larger time ranges are postponed.
+**Endpoint policy**
 
----
+- Every simplification method must keep the first and last point of each trajectory.
+- No synthetic points are generated.
+- Retained points must come from the original trajectory.
 
-## 3. Trajectory construction
+## 4. Context Layers
 
-### 3.1 Ordering
-**Locked choice**
-- Points are ordered by `mmsi, timestamp`.
+**Zones**
 
-### 3.2 Trajectory splitting rules
-**Locked choice**
-A new trajectory starts when any of the following is true:
-- Time gap between consecutive points is greater than **30 minutes**
-- Implied speed between consecutive points exceeds a conservative sanity threshold after cleaning
-- Vessel leaves the study region and does not reappear within the same continuous track
+The active MVP uses exactly three fixed geofence zones:
 
-### 3.3 Minimum trajectory size
-**Locked choice**
-- Minimum valid trajectory length: **20 points**
-
-### 3.4 Stationary filtering
-**Locked choice**
-- No separate stationary-period removal in the MVP
-- If stationary behavior exists inside the chosen region, it remains part of the trajectory
-
-**Why**
-- Removing stationary behavior adds another source of ambiguity
-- Zone-entry queries can still be meaningful for slow or temporarily stationary vessels
-
-### 3.5 Endpoint policy
-**Locked choice**
-- Every simplification method must always keep the **first and last point** of each trajectory
-
----
-
-## 4. Context layers
-
-### 4.1 Coastline / land mask
-**Locked choice**
-- Use one coastline/land polygon layer for sanity checks and optional feature computation
-
-**Usage in MVP**
-- Validate spatial overlays
-- Count obviously invalid path artifacts
-- Optional distance-to-land feature
-
-### 4.2 Geofence zones
-**Locked choice**
-Use a **small set of fixed geofence polygons** inside the study region:
 - `zone_port_approach`
 - `zone_anchor_or_waiting_area`
 - `zone_narrow_passage_control`
 
-**Rule**
-- Total number of geofence zones in MVP: **3**
+**Corridor**
 
-**Why**
-- Small enough to inspect manually
-- Enough variety to test context-aware behavior
+- One main transit-lane corridor polygon.
+- If a source corridor is a line, it is buffered once and frozen as a polygon.
 
-### 4.3 Corridor layer
-**Locked choice**
-- Use **one corridor polygon** representing the main transit lane through the study region
-- If the source geometry is a line, convert it once to a polygon buffer and freeze it
+**Optional sanity context**
 
-**Rule**
-- Only one corridor is used in the MVP
+- Coastline/land mask may be used for inspection, artifact checks, and optional features.
+- Weather, bathymetry, vessel interactions, anomaly labels, learned embeddings, and dynamic context layers are excluded from the MVP.
 
----
+## 5. Query Semantics
 
-## 5. Query workload
+The MVP optimizes two query families only.
 
-The project remains query-driven. The target of simplification is preserving query answers under storage compression.
+### Q1: Zone Entry
 
-### 5.1 Primary query 1: zone-entry query
-**Locked definition**
-- Query form: “Which trajectories entered zone Z during time interval T?”
-- Output unit: **trajectory-level yes/no**
+Question:
 
-**Semantics**
-A trajectory counts as entering zone Z if:
-- It is outside Z before the entry event, and
-- It later has at least one point inside Z, or one segment that crosses into Z
+> Which trajectories entered zone Z during the time window?
 
-**Additional rules**
-- Starting inside the zone does **not** count as an entry
-- Boundary-only touching does **not** count as entry unless the segment crosses from outside to inside
-- Multiple entries are collapsed to one trajectory-level positive result
+Output unit:
 
-### 5.2 Primary query 2: corridor-membership query
-**Locked definition**
-- Query form: “Which trajectories passed through corridor C during time interval T?”
-- Output unit: **trajectory-level yes/no**
+- trajectory-zone yes/no label
 
-**Semantics**
-A trajectory counts as corridor-positive if:
-- At least one point is covered by the corridor polygon, or
-- One adjacent trajectory segment overlaps the corridor polygon by at least the configured minimum overlap distance
+Rules:
 
-**Additional rules**
-- The current iteration uses `min_corridor_overlap_meters: 1.0`
-- Boundary touch alone does not count unless the segment overlap reaches the configured threshold
-- No minimum dwell time is required in the MVP
+- A trajectory counts as entering a zone if it starts outside and later enters the zone.
+- Starting inside the zone does not count as entry.
+- Boundary-only touching does not count unless the path crosses from outside to inside.
+- Multiple entries are collapsed to one trajectory-level positive result.
 
-### 5.3 Query scope
-**Locked choice**
-- The MVP optimizes only for these two query families
-- Route similarity queries are postponed until after the MVP is stable
+### Q2: Corridor Membership
 
----
+Question:
 
-## 6. Ground truth labeling
+> Which trajectories passed through corridor C during the time window?
 
-### 6.1 Label source
-**Locked choice**
-- Ground truth query labels are generated from the **raw trajectories** in `trajectories_raw`
+Output unit:
 
-### 6.2 Spatial logic
-**Locked choice**
-- Labeling uses both:
-  - point-in-polygon checks
-  - segment-polygon intersection checks
+- trajectory yes/no label, repeated across zone rows for reporting compatibility
 
-**Why**
-- Point-only logic misses crossings between sparse AIS samples
-- Segment-aware labeling is still simple enough to implement and trust
+Rules in `segment_exact` mode:
 
-### 6.3 Time logic
-**Locked choice**
-- The MVP uses trajectory membership within the selected 4-week time window
-- Event timestamp precision is **not** a primary evaluation target in the MVP
+- positive if at least one point is covered by the corridor polygon, or
+- positive if one adjacent segment overlaps the corridor polygon by at least the configured threshold
+- active threshold: `min_corridor_overlap_meters: 1.0`
+- boundary touch alone is not enough unless overlap reaches the threshold
+- no minimum dwell time is required
 
-**Consequence**
-- The query task is classification-oriented, not event-timing-oriented
+## 6. Semantics Modes
 
----
+**`optimized`**
 
-## 7. Compression policy
+- Default development mode.
+- Uses line-level geometry plus point-hit aggregation.
+- Faster and suitable for routine checks.
 
-### 7.1 Budget type
-**Locked choice**
-- Compression is applied **per trajectory**
-- Each trajectory is simplified to a target retained-point ratio
+**`segment_exact`**
 
-**Why**
-- Easier to compare methods fairly in the MVP
-- Simpler than global budget allocation across all trajectories
+- Audit/truth mode.
+- Uses adjacent-segment semantics.
+- Benchmark runs materialize adjacent simplified segments for practical exact evaluation.
+- This is the mode used for the current stress-grid baseline decisions.
 
-### 7.2 Retained-point budgets
-**Locked choice**
-Evaluate these standard retained-point ratios:
-- **10%**
-- **20%**
-- **30%**
-- **40%**
-- **50%**
+Truth labels are stored by `label_mode`, so `optimized` and `segment_exact` labels can coexist.
 
-**Stress-test rule**
-If the standard budgets saturate the primary query metrics, run an additional low-budget stress grid before designing new methods:
-- **1%**
-- **2%**
-- **3%**
-- **5%**
-- **7.5%**
-- **10%**
+## 7. Compression Budgets
 
-**Why**
-- The project goal is maximum useful compression, not just good scores at easy budgets
-- New methods need a budget range where baseline quality starts to deteriorate
-- If primary yes/no query metrics stay perfect, strict diagnostics become the development signal
+**Standard reporting grid**
 
-### 7.3 Output rule
-**Locked choice**
-- Simplified trajectories must preserve point order
-- No synthetic points are generated in the MVP
-- All retained points must come from the original trajectory
+- `0.10`
+- `0.20`
+- `0.30`
+- `0.40`
+- `0.50`
 
----
+**Current B3 development stress grid**
 
-## 8. Methods included in the MVP
+- `0.005`
+- `0.010`
+- `0.015`
+- `0.020`
+- `0.030`
+- `0.050`
 
-### 8.1 Baselines
-**Locked choice**
-The MVP includes exactly these baseline families:
-1. **Uniform subsampling**
-2. **Geometry-based simplification** (Douglas-Peucker or equivalent)
-3. **Query-driven simplification without AIS context**
-4. **Query-driven simplification with AIS context**
+**Budget interpretation**
 
-### 8.2 Model complexity
-**Locked choice**
-- No GNN, no diffusion, and no reproduction of full MLSimp in the MVP
+- Compression is applied per trajectory.
+- The goal is not to pick one fixed acceptance threshold upfront.
+- The current goal is to compare metric-vs-budget curves and identify diminishing returns.
 
-**Why**
-- The first goal is to prove the query-driven and context-aware effect with a controllable method
-- Heavy models are deferred until the simpler approach is benchmarked and trusted
+## 8. Methods
 
----
+**B1: Uniform subsampling**
 
-## 9. Point scoring design for the MVP
+- Baseline that keeps evenly spaced points.
 
-### 9.1 Base score
-**Locked choice**
-The initial non-context query-driven score, B3, combines:
-- simple geometric importance (turning / local deviation proxy)
-- query-witness relevance for preserving zone-entry and corridor-membership results
+**B2: Douglas-Peucker**
 
-**Allowed in B3**
-- first and last point preservation
-- local shape importance from the trajectory itself
-- high score for points whose removal changes a primary query answer
-- high score for points whose removal changes strict event-count diagnostics
-- high score for points adjacent to an observed raw query state transition, treated as query evidence
+- Geometry baseline.
 
-**Not allowed in B3**
-- distance to zone boundary
-- distance to corridor boundary or centerline
-- generic boundary-proximity boosts
-- generic maritime-context proximity terms
-- learned context embeddings
+**B3: Query-driven without static context**
 
-**Reason**
-B3 must test whether query-driven selection helps before static maritime context is added. A point can be important because it is a query witness, but B3 must not use continuous context priors such as "near a boundary."
+- Query-witness and trajectory-local evidence only.
+- Allowed: first/last points, local shape importance, query-answer witnesses, event-count witnesses, observed raw state-transition neighbors.
+- Not allowed: distance to zone boundary, distance to corridor boundary/centerline, generic boundary proximity, or other static maritime-context priors.
 
-### 9.2 Context-aware additions
-**Locked choice**
-The context-aware method, B4, adds only these AIS-relevant terms:
-- **boundary proximity term**: higher score near zone or corridor boundaries
-- **corridor proximity term**: higher score near the corridor boundary or centerline, depending on the final corridor feature representation
-- **transition term**: higher score near entry/exit transitions for zones and corridor
-- **inside/outside state term** if it improves query preservation without duplicating the query-witness term
+**B4: Context-aware query-driven method**
 
-**Separation rule**
-B4 may use static context as a prior for points that have not yet been proven query-critical. B3 may only use query evidence and trajectory-local shape evidence.
+- Extends B3 with static context priors.
+- Allowed: boundary proximity, corridor proximity, inside/outside state, and configurable static context weights.
+- B4 may reuse B3 transition witnesses, but observed trajectory transitions are not what makes B4 context-aware.
 
-### 9.3 Excluded features
-**Locked choice**
-The MVP will not include:
-- weather
-- bathymetry
-- vessel-to-vessel interaction
-- anomaly labels
-- learned embeddings
-- dynamic context layers
+**Model complexity rule**
 
----
+- No GNN, diffusion model, or full MLSimp reproduction in the MVP.
+- Learned methods are deferred until simple B3/B4 scoring is benchmarked, inspected, and ablated.
 
-## 10. Features to compute per point
+## 9. Features
 
-**Locked feature set**
-For each point, compute:
-- `inside_zone_id` (nullable)
-- `inside_corridor` (boolean)
-- `distance_to_nearest_zone_boundary`
-- `distance_to_corridor_boundary_or_centerline`
-- `distance_to_land` (optional but allowed)
-- `zone_transition_flag`
-- `corridor_transition_flag`
-- simple local turn/deviation proxy
+Feature candidates already in scope:
 
-**Rule**
-- No additional feature families are added before the first benchmark is complete
+- inside zone identity
+- inside corridor flag
+- nearest zone boundary distance
+- corridor boundary or centerline distance
+- optional distance to land
+- zone transition flag
+- corridor transition flag
+- local turn/deviation proxy
 
----
+B3 may use only trajectory-local and query-witness features. B4 may use static context features.
 
-## 11. Coordinate system and distance handling
+Transition flags are allowed in B3 only when they are derived from observed trajectory membership changes for the target query workload. Static distance and proximity features remain B4-only.
 
-### 11.1 CRS
-**Locked choice**
-- All distance-based operations must be done in a **projected CRS appropriate for Denmark**
-- Lat/lon storage is allowed, but metric distance calculations must not be performed directly in geographic coordinates
+All metric distance calculations must use an appropriate projected CRS or a metric PostGIS/geography operation, not raw lat/lon distances.
 
-### 11.2 Corridor geometry
-**Locked choice**
-- Corridor logic must operate on a polygon layer
-- If the corridor starts as a line, buffer it once and store the buffered result
+## 10. Evaluation Guardrails
 
----
+**Development and holdout**
 
-## 12. Evaluation setup
+- Use `dev` for stress-budget search, method design, and scoring-weight choices.
+- Use `eval` only for confirmation after budgets, method definitions, and comparison rules are fixed.
+- Do not repeatedly tune B3 or B4 after seeing `eval`.
 
-### 12.1 Development subset
-**Locked choice**
-- Create one small dev subset of **200–500 trajectories** for rapid debugging and manual inspection
+**Primary metrics**
 
-### 12.2 Evaluation subset
-**Locked choice**
-- Create one held-out evaluation subset separated from the dev subset by time or trajectory IDs
-- Tuning happens only on the dev subset
-- Use `eval` only for confirmation after budgets, method definitions, and scoring weights are chosen on `dev`
-- Do not repeatedly tune B3 or B4 after seeing `eval` results
+- zone-entry precision / recall / F1
+- corridor-membership precision / recall / F1
 
-### 12.3 Primary metrics
-**Locked choice**
-Measure for each method and budget:
-- zone-entry precision
-- zone-entry recall
-- zone-entry F1
-- corridor-membership precision
-- corridor-membership recall
-- corridor-membership F1
-- retained-point ratio
-- simplification runtime
+Primary F1 remains the gate: a method that damages the main query labels must not be treated as better just because strict diagnostics improve.
 
-**Discovery rule**
-- Do not choose a fixed acceptance threshold before the stress-budget curves are visible
-- First identify where diminishing returns begin for each method
-- Compare methods by their full metric-vs-budget curves, especially in the low-budget region where baselines begin to degrade
+**Strict diagnostics**
 
-### 12.4 Strict development metrics
-**Locked choice**
-When the primary yes/no metrics are saturated, method development should use stricter diagnostics:
+Used when primary F1 saturates:
+
 - zone point-membership precision / recall / F1
 - zone entry-count exact rate
 - corridor point-membership precision / recall / F1
 - corridor entry-count exact rate
 - per-zone event exact rates
 
-**Rule**
-Primary query F1 remains the gate. Strict metrics are used to compare methods when all methods preserve the primary query answers. During the exploratory phase, strict metrics are ranking and diagnosis signals, not hard acceptance thresholds.
+Perfect primary F1 at low budgets is not a methodology failure by itself. These are coarse trajectory-level yes/no queries, so they can saturate once the simplified trajectory retains enough evidence for the final answer.
 
-**Interpretation**
-Perfect trajectory-level F1 at very low retained-point budgets is not treated as a methodological failure by itself. The current primary queries are coarse yes/no trajectory labels, so they can saturate once a simplified trajectory retains enough evidence for one valid entry or corridor pass. In that case, the experiment shifts to comparing how much query-relevant behavior remains below the final label: event counts, point-membership evidence, false positives, false negatives, and spatial artifacts.
+**Artifact accounting**
 
-### 12.5 Sanity metrics
-**Locked choice**
-Also track:
-- false zone crossing count created by simplification
-- missed zone crossing count caused by simplification
-- obviously invalid spatial artifacts relative to land mask
+Already implemented:
 
-**Current implementation status**
-- Trajectory-level false positives are already counted through `zone_entry_fp` and `corridor_membership_fp`
-- Trajectory-level false negatives are already counted through `zone_entry_fn` and `corridor_membership_fn`
-- Strict point-membership FP/FN and event-count exact/MAE metrics expose additional behavior loss
-- A separate fine-grained artifact taxonomy for false crossings, missed crossings, and land-crossing artifacts remains a planned inspection/evaluation step
+- trajectory-level false positives and false negatives through `zone_entry_fp`, `zone_entry_fn`, `corridor_membership_fp`, and `corridor_membership_fn`
+- strict point-membership FP/FN
+- event-count exact/MAE metrics
 
-### 12.6 Inspection rule
-**Locked choice**
-- Every major benchmark run must include manual inspection of representative trajectories
-- Aggregate metrics alone are not considered sufficient evidence
+Planned:
 
----
+- separate fine-grained taxonomy for false crossings, missed crossings, land crossings, and other spatial artifacts
 
-## 13. Implementation stack
+## 11. Success Criteria
 
-### 13.1 Core stack
-**Locked choice**
-- PostGIS for spatial storage and spatial query support
-- Python for preprocessing scripts, simplification, experiment running, and plotting
-- SQL for data extraction, labeling, and feature generation where sensible
+The MVP is successful if:
 
-### 13.2 Reproducibility
-**Locked choice**
-- Every experiment run must be driven by a config containing:
-  - time window
-  - vessel class
-  - region polygon
-  - budgets
-  - method name
-  - feature toggles
+1. raw zone/corridor query labels are trusted
+2. B1/B2/B3/B4 run on the selected budget grid
+3. B4 improves over B3 on at least one primary metric, strict diagnostic, or lower-budget threshold
+4. the improvement survives manual inspection
+5. the implementation remains simple and reproducible
+6. we can explain which preserved points caused the gain
 
----
+## 12. Deferred Choices
 
-## 14. Success criteria for the MVP
+Do not add these until the MVP is stable:
 
-**Locked success target**
-The MVP is considered successful if:
-1. The raw query engine is trusted on the chosen region
-2. All 4 methods run at the standard budget grid and the selected stress budget grid
-3. The context-aware query-driven method improves at least one primary query metric over the context-unaware query-driven baseline at the same budget
-4. The improvement survives manual inspection
-5. The method remains simple and reproducible
-
-**If primary metrics saturate**
-If all methods reach perfect primary query F1 over the chosen budgets, success can instead be shown by:
-- matching primary query F1 at a lower retained-point budget
-- improving strict point-membership or event-count metrics at the same budget
-- reducing spatial artifacts while preserving the same query answers
-- showing a better diminishing-returns curve, meaning equal or better fidelity over a wider low-budget range
-
----
-
-## 15. Deferred choices
-
-These are explicitly postponed and are **not** allowed to expand the MVP scope yet:
 - second vessel class
 - second study region
 - route similarity query
-- turning entry count into a primary query target rather than a strict diagnostic
+- entry count as a primary query target
 - per-zone entry sequence/order query
 - corridor entry/exit count as a primary query target
 - minimum distance or dwell-time inside corridor
 - time-of-entry error as a primary query target
 - multiple corridors or narrower zones
-- sub-interval queries inside the current trajectory time window
+- sub-interval queries inside the current trajectory window
 - global cross-trajectory budget allocation
 - GNN or diffusion models
 - streaming/online simplification
 - weather and other dynamic context
 - vessel interaction modeling
-- paper/publishing framing
 
----
-
-## 16. Final rule
-
-If a new idea does not directly improve or clarify:
-- zone-entry query fidelity,
-- corridor-membership query fidelity, or
-- simplification under fixed retained-point budgets,
-
-then it is out of scope for the MVP.
+If strict diagnostics also saturate after scale-up, broaden the query workload deliberately from this deferred list rather than adding arbitrary context.

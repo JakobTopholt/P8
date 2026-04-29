@@ -25,6 +25,12 @@ The broader 4-week MVP config still exists as `configs/mvp.example.yaml`, but it
 - Primary query F1 remains the gate; strict point-membership and event-count metrics are used to rank methods when primary query F1 is saturated.
 - B3 is query-witness and trajectory-local only; B4 is the first method allowed to use static context priors such as boundary/corridor distances.
 
+## Planning Docs
+
+- `Context-And-Planning/ContextOutline.md`: methodology narrative, research questions, scope, method ladder, and evaluation strategy.
+- `Context-And-Planning/DefinedChoices-AIS-QueryDrivenSimplification.md`: locked project choices, semantics, metrics, features, and deferred decisions.
+- `Context-And-Planning/TaskBoard-and-SprintPlan.md`: active execution board, current baseline evidence, and next sprint tasks.
+
 ## Workflow
 
 The project is easiest to understand as five layers:
@@ -259,7 +265,7 @@ What is not yet in place:
 - Corridor overlap checks use metric distance through `geography` casts.
 - Context files are expected in EPSG:4326.
 - The current default path is intentionally narrow and reproducible so iteration stays fast.
-- Full `segment_exact` label generation can be slow on the older laptop and is best treated as a stronger-hardware audit step.
+- `segment_exact` is stricter and more expensive than `optimized`. Cached adjacent simplified segments make it practical for current hardcase subsets, while larger windows may still benefit from stronger hardware.
 - If `label-balance` reports very low zone positives, run `create-hardcase-subset` and benchmark with `SUBSET_NAME=<configured>_hardcase`.
 - The headline benchmark F1 values are trajectory-level labels. Use the strict point and event metrics in summary exports when judging whether a simplifier is preserving boundary behavior.
 - Early saturation of trajectory-level F1 is an expected result for coarse yes/no queries. It means the simplified trajectory preserved enough evidence for the final query answer, not that it preserved all query-relevant behavior.

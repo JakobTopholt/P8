@@ -1,710 +1,374 @@
-Good. Here is the task board I would actually work from.
+# Task Board And Sprint Plan
 
-This keeps the project centered on **query-driven simplification under a storage budget**, with maritime context used only when it helps preserve the target queries. That is the right lesson to take from the paper. 
+This is the active execution board for AIS-Contextual-QDS. It should stay short and operational.
 
-# Board structure
+For stable project framing, use:
 
-Use 4 columns only:
+- `ContextOutline.md` for the methodology narrative and research framing.
+- `DefinedChoices-AIS-QueryDrivenSimplification.md` for locked decisions, semantics, metrics, and deferred choices.
+- This file for current status, next tasks, and sprint acceptance criteria.
 
-* **Backlog**
-* **Next**
-* **In progress**
-* **Done**
+## Board Rules
 
-Do not add more workflow than that.
+Use four columns:
 
-Also use 3 labels:
+- Backlog
+- Next
+- In progress
+- Done
 
-* **P0** must do
-* **P1** should do
-* **P2** nice to have
+Use three priorities:
 
----
+- P0: required for the current MVP.
+- P1: useful if the core method is stable.
+- P2: extension work after the current study is reproducible.
 
-# Sprint 1: lock scope and make raw queries work
+## Current Status
 
-## T1. Lock the exact study scope
+The project is past the initial setup and baseline stage. The current work is preparing the B3 method: a query-driven, context-unaware simplifier that can be compared against uniform and Douglas-Peucker before B4 adds maritime-context priors.
 
-**Priority:** P0
+Done:
 
-**Task**
-Choose:
+- Great Belt / Storebaelt first iteration scope is fixed.
+- The default time window is the 10-day cargo-vessel iteration.
+- Study-region, zone, and corridor context geometries have been audited and documented.
+- Raw trajectory construction, dev/eval splitting, and hardcase subset creation are implemented.
+- `optimized` and `segment_exact` query-semantics modes are implemented.
+- Truth labels can coexist by `label_mode`.
+- Segment-exact prediction uses cached adjacent simplified segments when available.
+- Uniform and Douglas-Peucker baselines run across fixed retained-point budgets.
+- Summary exports include primary query metrics and stricter point/event diagnostics.
+- HTML and QGIS inspection exports are available for manual review.
+- Point-context feature computation exists for B4 preparation.
 
-* one region
-* one vessel class
-* one time span
-* 2 query types
-* 2 to 5 context zones
-* 1 corridor layer
+Current method ladder:
 
-**Recommended default**
+- B1: uniform subsampling.
+- B2: Douglas-Peucker geometry baseline.
+- B3: query-driven, context-unaware simplification.
+- B4: query-driven, context-aware simplification.
 
-* region: one constrained Danish area
-* vessel class: cargo or ferry
-* time span: 2 to 4 weeks
-* queries: zone entry, corridor membership
+## Baseline Evidence
 
-**Acceptance criteria**
+Standard segment-exact baseline runs:
 
-* written 1-page scope note exists
-* no open “maybe we also include...” items
-* region polygons and query targets are fixed
+- Dev run tag: `segment_exact_full_grid_20260428T235751`
+- Eval run tag: `segment_exact_eval_full_grid_20260429T010505`
+- Budgets: 10%, 20%, 30%, 40%, 50%
+- Result: primary trajectory-level query F1 is already saturated at these budgets.
 
----
+Stress baseline runs:
 
-## T2. Build raw AIS ingestion
+- Dev run tag: `segment_exact_dev_stress_grid_20260429T013759`
+- Refined dev run tag: `segment_exact_dev_refined_stress_grid_20260429T022828`
+- Refined budgets: 0.5%, 1%, 1.5%, 2%, 3%, 5%
+- Methods: `uniform`, `dp`
+- Evaluation mode: `segment_exact`
+- Truth label mode: `segment_exact`
 
-**Priority:** P0
+Refined stress findings:
 
-**Task**
-Read AIS data and produce clean point records with:
+- At 0.5%, primary query degradation is material.
+- At 1%, uniform has one zone false positive and perfect corridor membership.
+- At 1%, Douglas-Peucker has one zone false positive and one corridor false negative.
+- From 1.5% upward, both baselines preserve primary zone-entry and corridor-membership F1 on the dev split.
+- Strict point-membership and event-count metrics still separate methods across 0.5% to 5%.
+- Uniform is stronger than Douglas-Peucker on strict zone metrics and runtime in the refined stress run.
+- Uniform shows clear diminishing returns after roughly 3% to 5%.
+- Douglas-Peucker keeps improving through the tested range but remains weaker than uniform on strict zone metrics.
 
-* MMSI
-* timestamp
-* lat
-* lon
-* speed
-* course
-* nav status if available
+Current B3 development budgets:
 
-**Acceptance criteria**
+- 0.5% and 1% are the primary-query stress budgets.
+- 1.5%, 2%, 3%, and 5% are the strict-metric comparison budgets.
+- 7.5% and 10% are not current tuning budgets; keep them only for later curve-continuity reports if needed.
+- `eval` should stay held back until B3 scoring and comparison rules are fixed on `dev`.
 
-* one script loads raw data end-to-end
-* output schema is fixed
-* can load a sample and inspect 20 rows cleanly
-* bad rows are counted and logged
+## Next: Sprint 3
 
----
+Sprint 3 creates the first query-driven method without static maritime-context priors. This is the required comparison point before claiming that maritime context helps.
 
-## T3. Split AIS into trajectories
+### T13. Define B3 Point Scoring
 
-**Priority:** P0
+Priority: P0
 
-**Task**
-Define how points become trajectories.
-Use simple rules first:
+Task:
 
-* sort by MMSI + time
-* split on long time gaps
-* optionally split on impossible jumps
+Define a deterministic point-importance score for B3.
 
-**Acceptance criteria**
+B3 may use:
 
-* one trajectory-building script exists
-* output contains trajectory_id
-* summary stats exist: number of trajectories, avg length, median length
-* plot of 10 sample trajectories looks sane
+- First and last point anchors.
+- Points adjacent to raw query state transitions.
+- Points whose neighboring segment relation is query-relevant.
+- Local trajectory-shape signals as tie-breakers, such as turn angle or local deviation.
+- Trajectory-local evidence derived from the target query workload.
 
----
+B3 must not use:
 
-## T4. Load maritime context layers
+- Distance to zone boundary.
+- Distance to corridor boundary or centerline.
+- Generic boundary-proximity boosts.
+- Any static context prior; B3 may use only the trajectory's own query witnesses and local shape evidence.
 
-**Priority:** P0
+Acceptance criteria:
 
-**Task**
-Load:
+- The scoring formula is written down in `DefinedChoices-AIS-QueryDrivenSimplification.md` or a linked method note.
+- The B3/B4 boundary remains clear.
+- The score can be computed for every point.
+- No learned model is required.
+- Tie-breaking and budget handling are deterministic.
 
-* coastline/land mask
-* geofence polygons
-* corridor polygon or buffered line
+### T14. Implement B3 Simplifier
 
-**Acceptance criteria**
+Priority: P0
 
-* all layers are in one CRS
-* can overlay trajectories and context in one map
-* manual visual check passes for 20 cases
+Task:
 
----
+Implement a simplifier that keeps the highest-scoring B3 points under each retained-point budget while always keeping first and last points.
 
-## T5. Implement raw query engine
+Acceptance criteria:
 
-**Priority:** P0
+- B3 runs through the existing benchmark command.
+- B3 respects retained-point budgets.
+- B3 supports the refined stress budgets.
+- B3 can run with `EVALUATION_MODE=segment_exact` and `TRUTH_LABEL_MODE=segment_exact`.
+- B3 preserves primary query F1 at least as well as the stronger baseline in the key stress range, or failures are documented clearly.
+- B3 improves at least one strict metric or reaches the same strict quality at a lower retained-point budget.
 
-**Task**
-Implement on original trajectories:
+### T15. Inspect B3 Failures
 
-* zone entry/exit query
-* corridor membership query
+Priority: P0
 
-At first, simple yes/no per trajectory is enough.
+Task:
 
-**Acceptance criteria**
+Manually inspect B3 failures and compare them against B1/B2 failures.
 
-* can run both queries on raw data
-* returns a set of trajectory_ids
-* manual inspection of 20 trajectories matches expectations
-* edge cases documented: touching boundary, grazing corridor, repeated entries
+Failure categories:
 
----
+- Missed zone entry.
+- False zone entry.
+- Missed corridor membership.
+- False corridor membership.
+- Simplified segment appears to cross a zone or corridor when the raw trajectory did not.
+- Simplified segment removes a crossing present in the raw trajectory.
+- Boundary drift without primary label failure.
+- Redundant kept points.
 
-## T6. Freeze a test subset
+Acceptance criteria:
 
-**Priority:** P0
+- At least 25 failure or near-failure cases are categorized.
+- The top failure modes are written down.
+- Visual examples exist for representative errors.
+- The result gives a clear reason for what B4 should add.
 
-**Task**
-Create a small stable development subset for fast iteration.
+Sprint 3 is done when:
 
-**Acceptance criteria**
+- B3 has been benchmarked on the refined dev stress budgets.
+- B3 has been compared against uniform and Douglas-Peucker.
+- B3 failure cases have been inspected.
+- The project has a defensible context-unaware query-driven baseline.
 
-* one saved subset exists
-* contains 200 to 500 trajectories
-* representative of the chosen region
-* used by default in local experiments
+## Later: Sprint 4
 
----
+Sprint 4 adds maritime context in the smallest useful way. Some feature computation already exists, so this sprint should start by auditing what is present instead of rebuilding it from scratch.
 
-### Sprint 1 done when
+### T16. Audit And Complete Context Features
 
-* you can answer both target queries on raw trajectories
-* context layers are loaded and trusted
-* you have a fixed scope and a stable dev subset
+Priority: P0
 
-If Sprint 1 is not clean, do not move on.
+Task:
 
----
+Verify or complete per-point features for:
 
-# Sprint 2: build evaluation and dumb baselines
+- Distance to nearest zone boundary.
+- Distance to corridor boundary or centerline.
+- Zone and corridor inside/outside state.
+- Nearest zone identifier.
+- Local shape features needed by B3/B4.
 
-## T7. Define compression budgets
+Acceptance criteria:
 
-**Priority:** P0
+- Feature outputs are stable and documented.
+- At least 20 cases are spot-checked visually or numerically.
+- Distances are computed in metric units.
 
-**Task**
-Choose retained-point ratios for all experiments.
+### T17. Audit And Complete Transition Features
 
-**Recommended**
+Priority: P0
 
-* 10%
-* 20%
-* 30%
-* 40%
-* 50%
+Task:
 
-**Acceptance criteria**
+Verify or complete per-point transition indicators derived from observed trajectory membership changes:
 
-* one config file defines all budgets
-* every simplifier uses the same budgets
+- Zone entry.
+- Zone exit.
+- Corridor entry.
+- Corridor exit.
+- Neighboring segment relation relevant to the query workload.
 
----
+B3 may use these trajectory-local query witnesses. Static boundary-distance and corridor-distance features remain B4-only.
 
-## T8. Define evaluation metrics
+Acceptance criteria:
 
-**Priority:** P0
+- Transition flags are deterministic.
+- Edge cases are documented.
+- Manual checks agree with `segment_exact` labels on representative cases.
 
-**Task**
-For each budget, compute:
+### T18. Implement B4 Context-Aware Scorer
 
-* zone-entry precision / recall / F1
-* corridor-membership precision / recall / F1
-* retained-point ratio
-* simplification runtime
-* false spatial artifacts count
+Priority: P0
 
-**Acceptance criteria**
+Task:
 
-* metrics script exists
-* metric outputs are saved in one consistent format
-* one run can evaluate any simplifier
+Extend B3 with static maritime-context priors, for example boundary or corridor distance terms.
 
----
+Acceptance criteria:
 
-## T9. Implement uniform subsampling baseline
+- Context weights are configurable.
+- Static context features are used only in B4, not B3.
+- B4 runs end to end through the benchmark pipeline.
+- The implementation remains explainable without a learned model.
 
-**Priority:** P0
+### T19. Run Context-Aware Benchmark
 
-**Task**
-Keep points uniformly along each trajectory while always keeping first/last point.
+Priority: P0
 
-**Acceptance criteria**
+Task:
 
-* works for all budgets
-* never drops first/last point
-* produces valid simplified trajectories
-
----
-
-## T10. Implement geometry baseline
-
-**Priority:** P0
-
-**Task**
-Use one standard geometry simplifier.
-Douglas-Peucker is fine.
-
-**Acceptance criteria**
-
-* works for all budgets
-* can target retained-point ratio or be tuned to approximate it
-* output is comparable to other methods
-
----
-
-## T11. Build visual comparison tool
-
-**Priority:** P0
-
-**Task**
-For a chosen trajectory, show:
-
-* raw trajectory
-* simplified trajectory
-* context layers
-* query-relevant crossings
-
-**Acceptance criteria**
-
-* one script/notebook generates side-by-side plots
-* can inspect at least 20 examples quickly
-* output is good enough to debug errors
-
----
-
-## T12. Run baseline benchmark v1
-
-**Priority:** P0
-
-**Task**
-Compare raw baselines across all budgets.
-
-**Acceptance criteria**
-
-* one results table exists
-* one plot per query type exists
-* you can state clearly whether geometry preservation helps or hurts query fidelity
-
----
-
-## T12b. Run low-budget stress benchmark
-
-**Priority:** P0
-
-**Task**
-If the 10% to 50% grid preserves the primary query answers too well, run a lower-budget stress grid before implementing B3.
-
-Recommended stress budgets:
-
-* 1%
-* 2%
-* 3%
-* 5%
-* 7.5%
-* 10%
-
-Run this on `dev` first with the trusted label/evaluation mode. Use the result to identify the diminishing-returns region and choose the budgets for B3/B4 development. Run `eval` only after the stress range and comparison protocol are fixed.
-
-**Acceptance criteria**
-
-* one dev stress table exists
-* one dev stress plot or curve summary exists
-* the budget range where baselines begin to deteriorate is identified
-* the first diminishing-returns point is described for each baseline
-* the chosen method-development budgets are written down
-* strict metrics are included: zone point F1, zone event exact rate, corridor event exact rate
-* an eval confirmation run is scheduled but not used for tuning
-
----
-
-**Current status, 2026-04-29**
-
-Completed dev stress runs:
-
-* run tag: `segment_exact_dev_stress_grid_20260429T013759`
-* split: `dev`
-* subset: `great_belt_iter1_10days_hardcase`
-* methods: `uniform`, `dp`
-* budgets: `0.01`, `0.02`, `0.03`, `0.05`, `0.075`, `0.10`
-* evaluation mode: `segment_exact`
-* truth label mode: `segment_exact`
-* refined run tag: `segment_exact_dev_refined_stress_grid_20260429T022828`
-* refined budgets: `0.005`, `0.01`, `0.015`, `0.02`, `0.03`, `0.05`
-
-Observed baseline behavior:
-
-* primary query degradation is material at 0.5% retained points
-* at 1%, uniform has only one zone false positive and perfect corridor membership; DP still has one zone false positive and one corridor false negative
-* from 1.5% upward, both baselines preserve primary zone-entry and corridor-membership F1 on this dev split
-* strict metrics still show useful separation across 0.5% to 5%
-* uniform dominates DP on strict zone metrics and runtime in this stress run
-* uniform shows clear diminishing returns after roughly 3% to 5%
-* DP keeps improving through the tested range, but remains weaker than uniform on strict zone metrics
-
-B3 development focus:
-
-* tune and inspect primarily on `0.5%`, `1%`, `1.5%`, `2%`, `3%`, and `5%`
-* treat `0.5%` and `1%` as the primary-query stress budgets
-* treat `1.5%`, `2%`, `3%`, and `5%` as strict-metric comparison budgets
-* keep `7.5%` and `10%` only for later curve-continuity reports if needed
-* use `eval` only after B3 scoring and comparison choices are fixed
-
----
-
-### Sprint 2 done when
-
-* evaluation pipeline is stable
-* you can compare baselines at fixed budgets
-* you know whether the standard 10% to 50% budgets are too easy
-* if they are too easy, the low-budget stress range has been identified
-* `eval` remains a confirmation split, not a tuning split
-
----
-
-# Sprint 3: first query-driven method without context
-
-## T13. Define point-level query importance
-
-**Priority:** P0
-
-**Task**
-Assign higher importance to points that matter for preserving:
-
-* zone entry result
-* corridor membership result
-
-Simple first version:
-
-* high score if removing a point changes a primary query answer
-* high score if removing a point changes strict event-count diagnostics
-* high score for points adjacent to observed raw query state transitions, treated as query witnesses
-* medium score near strong turns
-* low score if redundant
-
-Do not use static context priors in B3:
-
-* no distance-to-zone-boundary term
-* no distance-to-corridor-boundary term
-* no generic boundary-proximity boost
-
-**Acceptance criteria**
-
-* scoring formula written down clearly
-* B3/B4 feature boundary is documented
-* no learned model required yet
-* score can be computed for every point
-
----
-
-## T14. Implement context-unaware query-driven simplifier
-
-**Priority:** P0
-
-**Task**
-Build simplifier B3:
-
-* compute point scores
-* keep top-scoring points under budget
-* always keep first/last point
-
-This is query-driven, but not yet maritime-context-aware.
-
-**Acceptance criteria**
-
-* runs on all trajectories
-* respects budget
-* preserves primary query F1 at least as well as one dumb baseline
-* improves at least one strict metric or reaches the same strict quality at a lower budget
-
----
-
-## T15. Failure-case inspection for B3
-
-**Priority:** P0
-
-**Task**
-Inspect where B3 fails:
-
-* missed zone entry
-* false corridor pass
-* boundary drift
-* redundant kept points
-
-**Acceptance criteria**
-
-* at least 25 failures categorized manually
-* top 3 failure modes written down
-* clear guess for what context should fix
-
----
-
-### Sprint 3 done when
-
-* you have a non-context query-driven baseline
-* it has been evaluated on the stress budget range
-* you understand where it breaks
-
-This is a real milestone. Do not skip it.
-
----
-
-# Sprint 4: add maritime context in the smallest useful way
-
-## T16. Compute boundary features
-
-**Priority:** P0
-
-**Task**
-For each point compute:
-
-* distance to nearest zone boundary
-* distance to corridor boundary or centerline
-* inside/outside zone
-* inside/outside corridor
-
-**Acceptance criteria**
-
-* features saved per point
-* unit tests or spot checks on 20 cases
-* distances look sane on plots
-
----
-
-## T17. Compute transition features
-
-**Priority:** P0
-
-**Task**
-For each point compute whether it is near:
-
-* zone entry
-* zone exit
-* corridor entry
-* corridor exit
-
-These can be derived from neighboring membership changes.
-
-**Acceptance criteria**
-
-* transition flags exist
-* checked on 20 manually inspected trajectories
-* edge-case behavior documented
-
----
-
-## T18. Implement context-aware scorer
-
-**Priority:** P0
-
-**Task**
-Extend the score:
-
-[
-I(p)=I_{base}(p)+\alpha I_{boundary}(p)+\beta I_{transition}(p)
-]
-
-Keep it simple.
-
-**Acceptance criteria**
-
-* alpha and beta configurable
-* static context features are used only in B4, not B3
-* method runs end-to-end
-* does not require retraining anything expensive
-
----
-
-## T19. Run context-aware benchmark v1
-
-**Priority:** P0
-
-**Task**
 Compare:
 
-* uniform
-* geometry
-* query-driven without context
-* query-driven with context
+- Uniform.
+- Douglas-Peucker.
+- B3 query-driven without context.
+- B4 query-driven with context.
 
-**Acceptance criteria**
+Acceptance criteria:
 
-* one summary table exists
-* one plot per metric exists
-* results include the stress budget range where baseline degradation is visible
-* clear statement on whether context helps and at which budgets
-* if primary query F1 is saturated, conclusion is based on strict metrics and/or lower retained-point budgets
+- Results cover the refined stress budgets.
+- Primary query metrics and strict diagnostics are reported.
+- If primary F1 saturates, conclusions are based on strict metrics and lower-budget behavior.
+- Eval is run only after dev choices are frozen.
 
----
+### T20. Manual Truth-Check Of Wins
 
-## T20. Manual truth-check of wins
+Priority: P0
 
-**Priority:** P0
+Task:
 
-**Task**
-For cases where context-aware wins, verify the win is real.
+Inspect cases where B4 appears to beat B3.
 
-**Acceptance criteria**
+Acceptance criteria:
 
-* manually inspect at least 20 “wins”
-* confirm improvement is not due to label or query bug
-* document 5 representative examples
+- At least 20 wins are manually checked.
+- At least 5 representative wins are documented.
+- Improvements are confirmed as real behavior, not label artifacts.
 
----
+Sprint 4 is done when:
 
-### Sprint 4 done when
+- B4 beats B3 on a primary metric, strict diagnostic, or lower-budget threshold.
+- The improvement survives manual inspection.
+- The explanation of the improvement is tied to specific preserved points or segments.
 
-* the context-aware method beats the context-unaware one on at least one target query
-* and you trust the result after manual inspection
+## Later: Sprint 5
 
----
+Sprint 5 tightens the method and turns the result into a reproducible MVP.
 
-# Sprint 5: ablations and tighten the method
+### T21. Boundary-Only Ablation
 
-## T21. Boundary-only ablation
+Priority: P0
 
-**Priority:** P0
+Run B4 with transition terms removed.
 
-**Task**
-Run with transition term removed.
+Acceptance criteria:
 
-**Acceptance criteria**
+- Result table exists.
+- The contribution of boundary proximity can be stated clearly.
 
-* result table exists
-* can tell whether boundary proximity alone helps
+### T22. Transition-Only Ablation
 
----
+Priority: P0
 
-## T22. Transition-only ablation
+Run B4 with boundary terms removed.
 
-**Priority:** P0
+Acceptance criteria:
 
-**Task**
-Run with boundary term removed.
+- Result table exists.
+- The contribution of transition features can be stated clearly.
 
-**Acceptance criteria**
+### T23. Geography Sensitivity
 
-* result table exists
-* can tell whether explicit transitions matter more than raw distance
+Priority: P1
 
----
+Split results into constrained-water and less-constrained subsets.
 
-## T23. Context sensitivity by geography
+Acceptance criteria:
 
-**Priority:** P1
+- Comparison table exists.
+- The project can state where context helps most.
 
-**Task**
-Split trajectories into:
+### T24. Error Taxonomy
 
-* constrained-water subset
-* less-constrained subset
+Priority: P0
 
-**Acceptance criteria**
+Create a short document ranking remaining failure types.
 
-* comparison table exists
-* can state where context helps most
+Acceptance criteria:
 
----
+- Primary label FP/FN errors are separated from strict point/event errors.
+- False-crossing and missed-crossing artifacts are separated from ordinary point-membership loss.
+- Representative visual examples are linked.
+- A decision is made on whether any artifact category should become a benchmark metric.
 
-## T24. Error taxonomy
+### T25. Freeze MVP
 
-**Priority:** P0
+Priority: P0
 
-**Task**
-Categorize remaining bad outcomes:
+Freeze code, configs, subset, and outputs for the first reproducible study.
 
-* missed entry
-* false entry
-* missed corridor pass
-* false corridor pass
-* simplified segment creates a crossing not present in the raw trajectory
-* simplified segment removes a crossing present in the raw trajectory
-* shape drift near boundary
-* land-crossing or other impossible spatial artifact
-* simplifier kept redundant points
+Acceptance criteria:
 
-**Acceptance criteria**
+- One command sequence reproduces the benchmark.
+- The README explains the command sequence.
+- Dev/eval usage is documented.
+- The final result can explain which kept points caused the observed gain.
 
-* one short error document exists
-* top failure modes ranked
-* trajectory-level FP/FN cases are linked to visual examples
-* false-crossing and missed-crossing artifacts are separated from ordinary point-membership loss
-* decision made on whether any artifact category should become a benchmark metric
-* next-step method ideas grounded in real failures
+## Backlog After MVP
 
----
+P1:
 
-## T25. Freeze MVP
-
-**Priority:** P0
-
-**Task**
-Freeze code, configs, subset, and outputs.
-
-**Acceptance criteria**
-
-* one command runs the full benchmark
-* one README explains how
-* results reproducible on the dev subset
-
----
-
-### Sprint 5 done when
-
-* you know why the method works
-* you know where it still fails
-* the project is stable enough to extend later
-
----
-
-# Backlog after MVP
-
-Do these only after the above is stable.
-
-## P1 extensions
-
-* add route similarity query
-* add simple global importance term inspired by MLSimp
-* test second region
-* test second vessel class
-* add time-of-entry error metric
-* promote entry-count exactness from strict diagnostic to query target
-* add per-zone entry sequence/order query
-* add corridor dwell/distance-inside-corridor query
-* add sub-interval query workload inside the current trajectory time window
-* add multiple corridors or narrower zone variants
-* add land-crossing penalty into scoring
-
-## P2 extensions
-
-* learned scorer
-* GNN approximation of globality/uniqueness
-* streaming version
-* vessel interaction context
-* weather or dynamic context
-
----
-
-# Definition of done for the whole MVP
-
-The MVP is done if all of this is true:
-
-* raw zone/corridor queries are trustworthy
-* all 4 baseline/method variants run at fixed budgets
-* context-aware method improves over context-unaware query-driven simplification on at least one primary query metric, strict diagnostic, or lower-budget threshold
-* results survive manual inspection
-* code is reproducible
-* you can explain exactly which preserved points caused the gain
-
-If you cannot explain the last point, the project is not done.
-
----
-
-# The 3 biggest traps
-
-## Trap 1
-
-Adding more context before proving the basic two-query setup works.
-
-**Counter**
-No new context layer until T20 is done.
-
-## Trap 2
-
-Jumping to a neural model too early.
-
-**Counter**
-No learned model until the simple context-aware scorer is benchmarked and ablated.
-
-## Trap 3
-
-Trusting aggregate metrics without visual inspection.
-
-**Counter**
-Every benchmark run must include manual inspection examples.
+- Add route-similarity query.
+- Add time-of-entry error metric.
+- Promote entry-count exactness from strict diagnostic to a target query.
+- Add per-zone entry sequence or order query.
+- Add corridor dwell or distance-inside-corridor query.
+- Add a second region.
+- Add a second vessel class.
+- Add context sensitivity by geography if not completed in Sprint 5.
+
+P2:
+
+- Learned scorer.
+- Global uniqueness or global-importance term.
+- Streaming version.
+- Vessel-interaction context.
+- Weather or other dynamic context.
+
+## MVP Definition Of Done
+
+The MVP is done when:
+
+- Raw zone and corridor queries are trusted.
+- Uniform, Douglas-Peucker, B3, and B4 run at fixed budgets.
+- B4 improves over B3 on at least one primary metric, strict diagnostic, or lower-budget threshold.
+- Results survive manual inspection.
+- Code and configs are reproducible.
+- The result explains which preserved points or segments caused the gain.
+
+## Guardrails
+
+- Do not add new context layers before B4 has been benchmarked and inspected.
+- Do not tune on `eval`; use it for confirmation after dev choices are fixed.
+- Do not claim a context benefit until B4 is compared against B3.
+- Do not rely only on trajectory-level F1 when it is saturated.
+- Do not move to learned models before the simple explainable scorer has been ablated.
