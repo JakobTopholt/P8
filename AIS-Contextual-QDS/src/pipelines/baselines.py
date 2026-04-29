@@ -1,4 +1,4 @@
-"""Simplification benchmark runner for baseline and B3 methods."""
+"""Simplification benchmark runner for configured simplification methods."""
 
 from __future__ import annotations
 
@@ -17,16 +17,18 @@ from ..evaluation.metrics import classification_metrics
 from ..evaluation.strict_metrics import compute_strict_point_event_metrics
 from ..query_semantics import build_run_prediction_ctes_sql, normalize_query_mode
 from ..simplification import (
-    B3PointEvidence,
-    simplify_b3_indices,
+    METHOD_DOUGLAS_PEUCKER,
+    METHOD_QUERY_WITNESS,
+    METHOD_UNIFORM,
+    QueryWitnessPointEvidence,
+    normalize_method_names,
     simplify_douglas_peucker_indices,
+    simplify_query_witness_indices,
     simplify_uniform_indices,
 )
-from .b3_evidence import fetch_b3_point_evidence
+from .query_witness_evidence import fetch_query_witness_point_evidence
 
 LOGGER = logging.getLogger(__name__)
-
-ALLOWED_METHODS = {"uniform", "dp", "b3"}
 
 
 @dataclass(frozen=True)
@@ -47,21 +49,7 @@ def _target_points(n_points: int, budget_ratio: float) -> int:
 
 def _parse_methods(methods: list[str] | None, config: AppConfig) -> list[str]:
     raw_methods = methods or config.baselines.methods
-    normalized = [method.strip().lower() for method in raw_methods if method.strip()]
-    if not normalized:
-        raise ValueError("No baseline methods configured.")
-
-    unknown = [method for method in normalized if method not in ALLOWED_METHODS]
-    if unknown:
-        raise ValueError(f"Unknown baseline methods: {unknown}. Allowed: {sorted(ALLOWED_METHODS)}")
-
-    ordered_unique: list[str] = []
-    seen: set[str] = set()
-    for method in normalized:
-        if method not in seen:
-            ordered_unique.append(method)
-            seen.add(method)
-    return ordered_unique
+    return normalize_method_names([method for method in raw_methods if method.strip()])
 
 
 def _parse_budgets(budgets: list[float] | None, config: AppConfig) -> list[float]:
@@ -148,12 +136,12 @@ def _simplify_indices(
     target_points: int,
     *,
     dp_search_iterations: int,
-    b3_evidence: list[B3PointEvidence] | None = None,
+    query_witness_evidence: list[QueryWitnessPointEvidence] | None = None,
 ) -> list[int]:
-    if method == "uniform":
+    if method == METHOD_UNIFORM:
         return simplify_uniform_indices(len(trajectory), target_points)
 
-    if method == "dp":
+    if method == METHOD_DOUGLAS_PEUCKER:
         points = [(point.lon, point.lat) for point in trajectory]
         return simplify_douglas_peucker_indices(
             points,
@@ -161,10 +149,10 @@ def _simplify_indices(
             search_iterations=dp_search_iterations,
         )
 
-    if method == "b3":
-        if b3_evidence is None:
-            raise ValueError("B3 simplification requires point evidence.")
-        return simplify_b3_indices(b3_evidence, target_points)
+    if method == METHOD_QUERY_WITNESS:
+        if query_witness_evidence is None:
+            raise ValueError("Query-witness simplification requires point evidence.")
+        return simplify_query_witness_indices(query_witness_evidence, target_points)
 
     raise ValueError(f"Unknown method: {method}")
 
@@ -652,13 +640,16 @@ def run(
         subset_name=selected_subset_name,
     )
     LOGGER.info("Loaded %s trajectories for simplification benchmark.", len(trajectories))
-    b3_evidence_by_trajectory = (
-        fetch_b3_point_evidence(conn, config, trajectories)
-        if "b3" in selected_methods
+    query_witness_evidence_by_trajectory = (
+        fetch_query_witness_point_evidence(conn, config, trajectories)
+        if METHOD_QUERY_WITNESS in selected_methods
         else {}
     )
-    if b3_evidence_by_trajectory:
-        LOGGER.info("Loaded B3 point evidence for %s trajectories.", len(b3_evidence_by_trajectory))
+    if query_witness_evidence_by_trajectory:
+        LOGGER.info(
+            "Loaded query-witness point evidence for %s trajectories.",
+            len(query_witness_evidence_by_trajectory),
+        )
 
     results: list[dict[str, float | int | str]] = []
     for method in selected_methods:
@@ -694,7 +685,7 @@ def run(
                     points,
                     target_points,
                     dp_search_iterations=config.baselines.dp_search_iterations,
-                    b3_evidence=b3_evidence_by_trajectory.get(trajectory_id),
+                    query_witness_evidence=query_witness_evidence_by_trajectory.get(trajectory_id),
                 )
 
                 for out_seq, source_idx in enumerate(kept_indices, start=1):

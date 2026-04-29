@@ -91,17 +91,23 @@ Current `segment_exact` semantics:
 
 ### B1: Uniform Subsampling
 
+Canonical benchmark method name: `uniform`.
+
 Keeps points uniformly along the trajectory while always keeping first and last point.
 
 Purpose: cheap baseline and sanity check.
 
 ### B2: Douglas-Peucker
 
+Canonical benchmark method name: `douglas_peucker`; legacy CLI alias: `dp`.
+
 Geometry baseline that optimizes shape rather than query behavior.
 
 Purpose: show how geometry-preserving simplification behaves under query-driven evaluation.
 
-### B3: Query-Driven Without Static Context
+### B3: Query-Witness Without Static Context
+
+Canonical benchmark method name: `query_witness`; legacy CLI alias: `b3`.
 
 Uses query witnesses and trajectory-local evidence only.
 
@@ -122,7 +128,9 @@ Not allowed in B3:
 
 Purpose: test whether query-driven selection helps before adding static maritime context.
 
-### B4: Context-Aware Query-Driven Method
+### B4: Context-Prior Query-Witness Method
+
+Planned canonical benchmark method name: `context_prior`.
 
 Extends B3 with static context priors.
 

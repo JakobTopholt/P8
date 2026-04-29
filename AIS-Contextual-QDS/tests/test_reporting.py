@@ -52,7 +52,7 @@ def _sample_rows() -> list[dict[str, object]]:
         {
             "run_id": 2,
             "run_tag": "baseline_demo",
-            "method": "dp",
+            "method": "douglas_peucker",
             "budget": 0.1,
             "evaluation_mode": "segment_exact",
             "truth_label_mode": "segment_exact",

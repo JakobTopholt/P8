@@ -52,8 +52,8 @@ paths:
 baselines:
   methods:
     - uniform
-    - dp
-    - b3
+    - douglas_peucker
+    - query_witness
   default_split: dev
   dp_search_iterations: 24
   insert_batch_size: 10000

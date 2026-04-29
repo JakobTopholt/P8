@@ -1,11 +1,44 @@
 """Trajectory simplification algorithms used by baseline pipelines."""
 
 from .douglas_peucker import simplify_douglas_peucker_indices
-from .query_driven import B3PointEvidence, b3_score_components, score_b3_points, simplify_b3_indices
+from .methods import (
+    CANONICAL_METHODS,
+    METHOD_DOUGLAS_PEUCKER,
+    METHOD_QUERY_WITNESS,
+    METHOD_UNIFORM,
+    expand_method_filter,
+    normalize_method_name,
+    normalize_method_names,
+)
+from .query_witness import (
+    B3PointEvidence,
+    B3ScoreComponents,
+    QueryWitnessPointEvidence,
+    QueryWitnessScoreComponents,
+    b3_score_components,
+    query_witness_score_components,
+    score_b3_points,
+    score_query_witness_points,
+    simplify_b3_indices,
+    simplify_query_witness_indices,
+)
 from .uniform import simplify_uniform_indices
 
 __all__ = [
+    "CANONICAL_METHODS",
+    "METHOD_DOUGLAS_PEUCKER",
+    "METHOD_QUERY_WITNESS",
+    "METHOD_UNIFORM",
+    "expand_method_filter",
+    "normalize_method_name",
+    "normalize_method_names",
+    "QueryWitnessPointEvidence",
+    "QueryWitnessScoreComponents",
+    "query_witness_score_components",
+    "score_query_witness_points",
+    "simplify_query_witness_indices",
     "B3PointEvidence",
+    "B3ScoreComponents",
     "b3_score_components",
     "score_b3_points",
     "simplify_b3_indices",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,12 @@ import yaml
 from .paths import resolve_project_path
 from .postgres_tuning import normalize_session_profile
 from .query_semantics import normalize_query_mode
+from .simplification.methods import (
+    METHOD_DOUGLAS_PEUCKER,
+    METHOD_QUERY_WITNESS,
+    METHOD_UNIFORM,
+    normalize_method_names,
+)
 
 _SCHEMA_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TABLE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
@@ -104,7 +110,9 @@ class PathsConfig:
 class BaselineConfig:
     """Simplification benchmark runner settings."""
 
-    methods: list[str] = field(default_factory=lambda: ["uniform", "dp", "b3"])
+    methods: list[str] = field(
+        default_factory=lambda: [METHOD_UNIFORM, METHOD_DOUGLAS_PEUCKER, METHOD_QUERY_WITNESS]
+    )
     default_split: str = "dev"
     dp_search_iterations: int = 24
     insert_batch_size: int = 10_000
@@ -220,6 +228,7 @@ def validate_config(config: AppConfig) -> None:
 
     if not config.baselines.methods:
         raise ValueError("baselines.methods cannot be empty.")
+    normalize_method_names(config.baselines.methods)
 
     valid_splits = {"all", "dev", "eval"}
     if config.baselines.default_split not in valid_splits:
@@ -248,6 +257,9 @@ def load_config(config_path: Path) -> AppConfig:
     if not isinstance(raw, dict):
         raise ValueError("Top-level config must be a mapping.")
 
+    baselines = BaselineConfig(**_section(raw, "baselines"))
+    baselines = replace(baselines, methods=normalize_method_names(baselines.methods))
+
     config = AppConfig(
         project=ProjectConfig(**_section(raw, "project")),
         database=DatabaseConfig(**_section(raw, "database")),
@@ -257,7 +269,7 @@ def load_config(config_path: Path) -> AppConfig:
         queries=QueryConfig(**_section(raw, "queries")),
         subsets=SubsetConfig(**_section(raw, "subsets")),
         paths=PathsConfig(**_section(raw, "paths")),
-        baselines=BaselineConfig(**_section(raw, "baselines")),
+        baselines=baselines,
         performance=PerformanceConfig(**_section(raw, "performance")),
     )
     validate_config(config)

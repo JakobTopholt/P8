@@ -26,7 +26,7 @@ def test_load_default_config() -> None:
     ]
     assert config.queries.retained_point_budgets == [0.10, 0.20, 0.30, 0.40, 0.50]
     assert config.subsets.dev_size == 300
-    assert config.baselines.methods == ["uniform", "dp", "b3"]
+    assert config.baselines.methods == ["uniform", "douglas_peucker", "query_witness"]
     assert config.baselines.default_split == "dev"
     assert config.performance.label_mode == "optimized"
     assert config.performance.evaluation_mode == "optimized"
@@ -68,6 +68,19 @@ def test_invalid_label_mode_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="query mode"):
         load_config(broken_path)
+
+
+def test_legacy_method_aliases_are_normalized(tmp_path: Path) -> None:
+    config_path = PROJECT_ROOT / "configs" / "mvp.example.yaml"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    raw["baselines"]["methods"] = ["uniform", "dp", "b3", "query_witness"]
+
+    legacy_path = tmp_path / "legacy_methods.yaml"
+    legacy_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    config = load_config(legacy_path)
+
+    assert config.baselines.methods == ["uniform", "douglas_peucker", "query_witness"]
 
 
 @pytest.mark.parametrize("legacy_mode", ["exact", "fast"])

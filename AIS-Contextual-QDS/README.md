@@ -23,7 +23,7 @@ The broader 4-week MVP config still exists as `configs/mvp.example.yaml`, but it
 - Do not set a fixed acceptance threshold before the stress curves are visible.
 - Compare methods by metric-vs-budget curves and identify where diminishing returns begin.
 - Primary query F1 remains the gate; strict point-membership and event-count metrics are used to rank methods when primary query F1 is saturated.
-- B3 is query-witness and trajectory-local only; B4 is the first method allowed to use static context priors such as boundary/corridor distances.
+- `query_witness` is the B3-stage method: query-witness and trajectory-local only. B4 is the first stage allowed to use static context priors such as boundary/corridor distances.
 - B5 is optional extension work after B4: adaptive, learned, or interaction-based query-context scoring. It is not part of the current MVP success criteria.
 
 ## Planning Docs
@@ -228,7 +228,7 @@ AIS-Contextual-QDS/
 │   ├── postgres_tuning.py     # local PostgreSQL tuning profiles
 │   ├── query_semantics.py     # optimized vs segment_exact semantics
 │   ├── pipelines/             # runnable pipeline steps
-│   ├── simplification/        # uniform, Douglas-Peucker, and B3 simplifiers
+│   ├── simplification/        # uniform, Douglas-Peucker, and query-witness simplifiers
 │   ├── evaluation/            # metrics and report export
 │   └── visualization/         # HTML and QGIS packaging helpers
 ├── tests/                     # unit tests

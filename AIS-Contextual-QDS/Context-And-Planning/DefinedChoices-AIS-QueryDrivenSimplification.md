@@ -178,17 +178,19 @@ Truth labels are stored by `label_mode`, so `optimized` and `segment_exact` labe
 
 - Geometry baseline.
 
-**B3: Query-driven without static context**
+**B3: Query-witness without static context**
+
+Canonical benchmark method name: `query_witness`; legacy CLI alias and older run-row label: `b3`.
 
 - Query-witness and trajectory-local evidence only.
 - Allowed: first/last points, local shape importance, query-answer witnesses, event-count witnesses, observed raw state-transition neighbors.
 - Not allowed: distance to zone boundary, distance to corridor boundary/centerline, generic boundary proximity, or other static maritime-context priors.
 
-**B3 point-scoring formula**
+**Query-witness point-scoring formula**
 
-B3 assigns a deterministic importance score to each raw point inside one trajectory. The first and last point are forced anchors and are always retained before scores are considered. To avoid query-witness clustering creating long shortcut segments, B3 also keeps a budget-aware temporal guard set: `ceil(0.5 * target_points)` uniformly spaced anchors, including the endpoints. These guards are trajectory-local only; they do not use static context distance or proximity.
+The B3-stage `query_witness` method assigns a deterministic importance score to each raw point inside one trajectory. The first and last point are forced anchors and are always retained before scores are considered. To avoid query-witness clustering creating long shortcut segments, it also keeps a budget-aware temporal guard set: `ceil(0.5 * target_points)` uniformly spaced anchors, including the endpoints. These guards are trajectory-local only; they do not use static context distance or proximity.
 
-For every non-anchor point `i`, B3 uses only raw trajectory query witnesses and local shape evidence:
+For every non-anchor point `i`, `query_witness` uses only raw trajectory query witnesses and local shape evidence:
 
 - `ZE_i`: zone-entry segment witnesses. Each adjacent raw segment endpoint receives one witness per target zone when the segment satisfies the current `segment_exact` zone-entry relation: outside-to-inside endpoint movement or `ST_Crosses(segment, zone)`.
 - `ZH_i`: zone point-membership witnesses. The point receives one witness per target zone that covers the point.
@@ -200,7 +202,7 @@ For every non-anchor point `i`, B3 uses only raw trajectory query witnesses and 
 - `CI_i`: strict corridor entry-event witness. Each endpoint of an adjacent raw segment receives one witness when corridor point state changes from outside to inside.
 - `S_i`: local shape score, `0.65 * normalized_local_deviation + 0.35 * normalized_turn`, where local deviation is normalized by the maximum local deviation within the trajectory and turn is normalized by 180 degrees.
 
-The scalar B3 score is:
+The scalar query-witness score is:
 
 ```text
 primary_zone_entry_i = 3 * ZE_i
@@ -208,7 +210,7 @@ primary_corridor_membership_i = 3 * CS_i + 2 * CH_i
 strict_event_count_i = 2 * ZI_i + ZT_i + 2 * CI_i + CT_i
 point_membership_i = ZH_i + CH_i
 
-B3_score_i =
+query_witness_score_i =
     1000 * primary_zone_entry_i
   + 1000 * primary_corridor_membership_i
   +  100 * strict_event_count_i
@@ -216,9 +218,11 @@ B3_score_i =
   +        S_i
 ```
 
-Budget handling is per trajectory. After forced endpoints and temporal guards, B3 fills remaining slots by ranking interior points by descending `(B3_score_i, primary_query_i, strict_event_count_i, point_membership_i, S_i, -point_seq)`, where `primary_query_i = primary_zone_entry_i + primary_corridor_membership_i`. This gives deterministic tie-breaking under tight budgets while keeping query witnesses ahead of shape-only points. B3 does not inspect its own benchmark outcome and does not fall back to another method when it makes a primary-query error.
+Budget handling is per trajectory. After forced endpoints and temporal guards, `query_witness` fills remaining slots by ranking interior points by descending `(query_witness_score_i, primary_query_i, strict_event_count_i, point_membership_i, S_i, -point_seq)`, where `primary_query_i = primary_zone_entry_i + primary_corridor_membership_i`. This gives deterministic tie-breaking under tight budgets while keeping query witnesses ahead of shape-only points. `query_witness` does not inspect its own benchmark outcome and does not fall back to another method when it makes a primary-query error.
 
-**B4: Context-aware query-driven method**
+**B4: Context-prior query-witness method**
+
+Planned canonical benchmark method name: `context_prior`.
 
 - Extends B3 with static context priors.
 - Allowed: boundary proximity, corridor proximity, inside/outside state, and configurable static context weights.

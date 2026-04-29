@@ -1,16 +1,17 @@
-# T15: B3 Failure Inspection
+# T15: Query-Witness/B3 Failure Inspection
 
 Run inspected: `b3_temporal_guard_dev_refined_stress_grid_20260429T051500`
 
 Scope:
 
 - Split/subset: `dev`, `great_belt_iter1_10days_hardcase`
-- Methods compared: `uniform`, `dp`, `b3`
+- Methods compared in stored run rows: `uniform`, `dp`, `b3`
+- Canonical method names going forward: `uniform`, `douglas_peucker`, `query_witness`
 - Budgets: `0.005`, `0.010`, `0.015`, `0.020`, `0.030`, `0.050`
 - Evaluation mode: `segment_exact`
 - Truth label mode: `segment_exact`
 
-Canonical B3 for this inspection is the temporal-guarded query scorer only. It does not fall back to uniform after primary-query errors.
+Canonical B3 for this inspection is the temporal-guarded `query_witness` scorer only. It does not fall back to uniform after primary-query errors.
 
 ## Metric Summary
 

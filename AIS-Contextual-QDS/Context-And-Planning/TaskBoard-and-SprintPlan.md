@@ -43,10 +43,10 @@ Done:
 
 Current method ladder:
 
-- B1: uniform subsampling.
-- B2: Douglas-Peucker geometry baseline.
-- B3: query-driven, context-unaware simplification.
-- B4: query-driven, context-aware simplification.
+- B1: uniform subsampling, method `uniform`.
+- B2: Douglas-Peucker geometry baseline, method `douglas_peucker`.
+- B3: query-witness context-free simplification, method `query_witness`.
+- B4: context-prior query-witness simplification, planned method `context_prior`.
 - B5: optional advanced query-context method after B4 is complete.
 
 ## Baseline Evidence
@@ -63,7 +63,7 @@ Stress baseline runs:
 - Dev run tag: `segment_exact_dev_stress_grid_20260429T013759`
 - Refined dev run tag: `segment_exact_dev_refined_stress_grid_20260429T022828`
 - Refined budgets: 0.5%, 1%, 1.5%, 2%, 3%, 5%
-- Methods: `uniform`, `dp`
+- Methods: `uniform`, `douglas_peucker`
 - Evaluation mode: `segment_exact`
 - Truth label mode: `segment_exact`
 
@@ -78,17 +78,18 @@ Refined stress findings:
 - Uniform shows clear diminishing returns after roughly 3% to 5%.
 - Douglas-Peucker keeps improving through the tested range but remains weaker than uniform on strict zone metrics.
 
-Current B3 development budgets:
+Current query-witness/B3 development budgets:
 
 - 0.5% and 1% are the primary-query stress budgets.
 - 1.5%, 2%, 3%, and 5% are the strict-metric comparison budgets.
 - 7.5% and 10% are not current tuning budgets; keep them only for later curve-continuity reports if needed.
 - `eval` should stay held back until B3 scoring and comparison rules are fixed on `dev`.
 
-B3 implementation run:
+Query-witness/B3 implementation run:
 
 - Run tag: `b3_temporal_guard_dev_refined_stress_grid_20260429T051500`
-- Methods: `uniform`, `dp`, `b3`
+- Methods in stored run rows: `uniform`, `dp`, `b3`
+- Canonical method names going forward: `uniform`, `douglas_peucker`, `query_witness`
 - Budgets: 0.5%, 1%, 1.5%, 2%, 3%, 5%
 - Split/subset: `dev`, `great_belt_iter1_10days_hardcase`
 - Evaluation mode: `segment_exact`
@@ -100,13 +101,13 @@ B3 implementation run:
 
 Sprint 3 creates the first query-driven method without static maritime-context priors. This is the required comparison point before claiming that maritime context helps.
 
-### T13. Define B3 Point Scoring
+### T13. Define Query-Witness/B3 Point Scoring
 
 Priority: P0
 
 Task:
 
-Define a deterministic point-importance score for B3.
+Define a deterministic point-importance score for the B3-stage `query_witness` method.
 
 B3 may use:
 
@@ -131,13 +132,13 @@ Acceptance criteria:
 - No learned model is required.
 - Tie-breaking and budget handling are deterministic.
 
-### T14. Implement B3 Simplifier
+### T14. Implement Query-Witness/B3 Simplifier
 
 Priority: P0
 
 Task:
 
-Implement a simplifier that keeps the highest-scoring B3 points under each retained-point budget while always keeping first and last points.
+Implement a simplifier that keeps the highest-scoring query-witness points under each retained-point budget while always keeping first and last points.
 
 Acceptance criteria:
 
@@ -148,7 +149,7 @@ Acceptance criteria:
 - B3 preserves primary query F1 at least as well as the stronger baseline in the key stress range, or failures are documented clearly.
 - B3 improves at least one strict metric or reaches the same strict quality at a lower retained-point budget.
 
-### T15. Inspect B3 Failures
+### T15. Inspect Query-Witness/B3 Failures
 
 Priority: P0
 

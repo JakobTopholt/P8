@@ -70,7 +70,7 @@ def _add_run_selector_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--method",
         default=None,
-        help="Optional method filter for selecting a simplification run, e.g. uniform, dp, or b3.",
+        help="Optional method filter for selecting a simplification run, e.g. uniform, douglas_peucker, or query_witness.",
     )
     parser.add_argument(
         "--budget",
@@ -390,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
     baseline_parser.add_argument(
         "--methods",
         default=None,
-        help="Comma-separated methods override, e.g. 'uniform,dp,b3'.",
+        help="Comma-separated methods override, e.g. 'uniform,douglas_peucker,query_witness'. Legacy aliases dp/b3 are accepted.",
     )
     baseline_parser.add_argument(
         "--budgets",
@@ -446,7 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
     summary_parser.add_argument(
         "--methods",
         default=None,
-        help="Optional comma-separated method filter, e.g. 'uniform,dp,b3'.",
+        help="Optional comma-separated method filter, e.g. 'uniform,douglas_peucker,query_witness'. Legacy aliases dp/b3 are accepted.",
     )
 
     inspect_parser = subparsers.add_parser(

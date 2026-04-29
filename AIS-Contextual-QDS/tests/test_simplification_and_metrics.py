@@ -11,7 +11,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.evaluation.metrics import classification_metrics
 from src.simplification.douglas_peucker import simplify_douglas_peucker_indices
-from src.simplification.query_driven import B3PointEvidence, score_b3_points, simplify_b3_indices
+from src.simplification.methods import expand_method_filter, normalize_method_names
+from src.simplification.query_witness import (
+    QueryWitnessPointEvidence,
+    score_query_witness_points,
+    simplify_query_witness_indices,
+)
 from src.simplification.uniform import simplify_uniform_indices
 
 
@@ -34,26 +39,42 @@ def test_dp_keeps_endpoints_and_target_size() -> None:
     assert indices == sorted(indices)
 
 
-def test_b3_keeps_query_witnesses_before_shape_only_points() -> None:
+def test_method_name_aliases_normalize_to_canonical_names() -> None:
+    methods = normalize_method_names(["uniform", "dp", "b3", "query-witness"])
+
+    assert methods == ["uniform", "douglas_peucker", "query_witness"]
+
+
+def test_method_filters_include_legacy_run_row_names() -> None:
+    methods = expand_method_filter(["douglas_peucker", "query_witness"])
+
+    assert methods is not None
+    assert "dp" in methods
+    assert "b3" in methods
+    assert "douglas_peucker" in methods
+    assert "query_witness" in methods
+
+
+def test_query_witness_keeps_query_witnesses_before_shape_only_points() -> None:
     evidence = [
-        B3PointEvidence(),
-        B3PointEvidence(local_turn_degrees=180.0, local_deviation_m=50.0),
-        B3PointEvidence(zone_entry_segment_witnesses=1),
-        B3PointEvidence(corridor_point_hit=True),
-        B3PointEvidence(),
+        QueryWitnessPointEvidence(),
+        QueryWitnessPointEvidence(local_turn_degrees=180.0, local_deviation_m=50.0),
+        QueryWitnessPointEvidence(zone_entry_segment_witnesses=1),
+        QueryWitnessPointEvidence(corridor_point_hit=True),
+        QueryWitnessPointEvidence(),
     ]
 
-    indices = simplify_b3_indices(evidence, target_points=4)
+    indices = simplify_query_witness_indices(evidence, target_points=4)
 
     assert indices == [0, 2, 3, 4]
 
 
-def test_b3_scores_endpoints_as_forced_anchors() -> None:
-    scores = score_b3_points(
+def test_query_witness_scores_endpoints_as_forced_anchors() -> None:
+    scores = score_query_witness_points(
         [
-            B3PointEvidence(),
-            B3PointEvidence(zone_entry_segment_witnesses=1),
-            B3PointEvidence(),
+            QueryWitnessPointEvidence(),
+            QueryWitnessPointEvidence(zone_entry_segment_witnesses=1),
+            QueryWitnessPointEvidence(),
         ]
     )
 
@@ -62,18 +83,18 @@ def test_b3_scores_endpoints_as_forced_anchors() -> None:
     assert scores[1] < float("inf")
 
 
-def test_b3_tie_breaking_is_deterministic_under_tight_budget() -> None:
-    evidence = [B3PointEvidence() for _ in range(6)]
+def test_query_witness_tie_breaking_is_deterministic_under_tight_budget() -> None:
+    evidence = [QueryWitnessPointEvidence() for _ in range(6)]
 
-    indices = simplify_b3_indices(evidence, target_points=4)
+    indices = simplify_query_witness_indices(evidence, target_points=4)
 
     assert indices == [0, 1, 2, 5]
 
 
-def test_b3_keeps_temporal_guards_before_score_fill() -> None:
-    evidence = [B3PointEvidence() for _ in range(10)]
+def test_query_witness_keeps_temporal_guards_before_score_fill() -> None:
+    evidence = [QueryWitnessPointEvidence() for _ in range(10)]
 
-    indices = simplify_b3_indices(evidence, target_points=6)
+    indices = simplify_query_witness_indices(evidence, target_points=6)
 
     assert indices[0] == 0
     assert indices[-1] == 9
