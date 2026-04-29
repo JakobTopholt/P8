@@ -401,12 +401,21 @@ When the primary yes/no metrics are saturated, method development should use str
 **Rule**
 Primary query F1 remains the gate. Strict metrics are used to compare methods when all methods preserve the primary query answers. During the exploratory phase, strict metrics are ranking and diagnosis signals, not hard acceptance thresholds.
 
+**Interpretation**
+Perfect trajectory-level F1 at very low retained-point budgets is not treated as a methodological failure by itself. The current primary queries are coarse yes/no trajectory labels, so they can saturate once a simplified trajectory retains enough evidence for one valid entry or corridor pass. In that case, the experiment shifts to comparing how much query-relevant behavior remains below the final label: event counts, point-membership evidence, false positives, false negatives, and spatial artifacts.
+
 ### 12.5 Sanity metrics
 **Locked choice**
 Also track:
 - false zone crossing count created by simplification
 - missed zone crossing count caused by simplification
 - obviously invalid spatial artifacts relative to land mask
+
+**Current implementation status**
+- Trajectory-level false positives are already counted through `zone_entry_fp` and `corridor_membership_fp`
+- Trajectory-level false negatives are already counted through `zone_entry_fn` and `corridor_membership_fn`
+- Strict point-membership FP/FN and event-count exact/MAE metrics expose additional behavior loss
+- A separate fine-grained artifact taxonomy for false crossings, missed crossings, and land-crossing artifacts remains a planned inspection/evaluation step
 
 ### 12.6 Inspection rule
 **Locked choice**
@@ -460,6 +469,13 @@ These are explicitly postponed and are **not** allowed to expand the MVP scope y
 - second vessel class
 - second study region
 - route similarity query
+- turning entry count into a primary query target rather than a strict diagnostic
+- per-zone entry sequence/order query
+- corridor entry/exit count as a primary query target
+- minimum distance or dwell-time inside corridor
+- time-of-entry error as a primary query target
+- multiple corridors or narrower zones
+- sub-interval queries inside the current trajectory time window
 - global cross-trajectory budget allocation
 - GNN or diffusion models
 - streaming/online simplification

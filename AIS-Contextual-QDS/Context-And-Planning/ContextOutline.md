@@ -251,10 +251,16 @@ If the primary yes/no metrics are saturated, use these strict metrics and lower 
 
 Do not set a fixed acceptance threshold before the stress curves are visible. First compare the full metric-vs-budget curves and identify where diminishing returns begin for each simplification strategy.
 
+Interpret early saturation carefully. For trajectory-level yes/no queries, perfect F1 at low retained-point ratios can be normal: the simplified path only needs to preserve enough evidence for the final answer. That does not prove the simplified path preserved all query-relevant behavior, so strict diagnostics remain central.
+
 Optional later:
 
 * time-of-entry error
 * false entry/exit count
+* entry count as a primary query
+* per-zone entry sequence/order
+* corridor dwell/distance inside corridor
+* sub-interval queries inside the trajectory window
 
 ### 2. Compression
 
@@ -271,8 +277,10 @@ Optional later:
 * land crossing count
 * false zone crossings created by simplification
 * missed zone crossings caused by simplification
+* false corridor passes created by simplification
+* missed corridor passes caused by simplification
 
-These sanity metrics matter. Otherwise you can get fake wins.
+These sanity metrics matter. Otherwise you can get fake wins. The current benchmark already counts trajectory-level false positives and false negatives for zone entry and corridor membership. Fine-grained false crossing artifacts, such as a simplified segment visually crossing a zone that the raw trajectory never entered, should be inspected and later counted as a dedicated artifact taxonomy.
 
 ## Baselines you should actually run
 
@@ -491,6 +499,8 @@ If zone-entry and corridor F1 are already perfect for all methods, the success t
 * better strict point-membership or event-count fidelity at the same retained-point ratio
 * fewer spatial artifacts at the same retained-point ratio
 * better diminishing-returns behavior across the low-budget stress range
+
+If even strict diagnostics saturate after scale-up, broaden the query workload deliberately rather than adding arbitrary context: entry counts, entry sequence, time-of-entry error, corridor dwell/distance, multiple corridors, narrower zones, or sub-interval queries.
 
 If that happens, the project is working.
 

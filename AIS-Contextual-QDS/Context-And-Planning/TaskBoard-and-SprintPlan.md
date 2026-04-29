@@ -603,13 +603,19 @@ Categorize remaining bad outcomes:
 * false entry
 * missed corridor pass
 * false corridor pass
+* simplified segment creates a crossing not present in the raw trajectory
+* simplified segment removes a crossing present in the raw trajectory
 * shape drift near boundary
+* land-crossing or other impossible spatial artifact
 * simplifier kept redundant points
 
 **Acceptance criteria**
 
 * one short error document exists
 * top failure modes ranked
+* trajectory-level FP/FN cases are linked to visual examples
+* false-crossing and missed-crossing artifacts are separated from ordinary point-membership loss
+* decision made on whether any artifact category should become a benchmark metric
 * next-step method ideas grounded in real failures
 
 ---
@@ -648,6 +654,11 @@ Do these only after the above is stable.
 * test second region
 * test second vessel class
 * add time-of-entry error metric
+* promote entry-count exactness from strict diagnostic to query target
+* add per-zone entry sequence/order query
+* add corridor dwell/distance-inside-corridor query
+* add sub-interval query workload inside the current trajectory time window
+* add multiple corridors or narrower zone variants
 * add land-crossing penalty into scoring
 
 ## P2 extensions
