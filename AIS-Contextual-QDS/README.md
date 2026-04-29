@@ -23,8 +23,8 @@ The broader 4-week MVP config still exists as `configs/mvp.example.yaml`, but it
 - Do not set a fixed acceptance threshold before the stress curves are visible.
 - Compare methods by metric-vs-budget curves and identify where diminishing returns begin.
 - Primary query F1 remains the gate; strict point-membership and event-count metrics are used to rank methods when primary query F1 is saturated.
-- `query_witness` is the B3-stage method: query-witness and trajectory-local only. B4 is the first stage allowed to use static context priors such as boundary/corridor distances.
-- B5 is optional extension work after B4: adaptive, learned, or interaction-based query-context scoring. It is not part of the current MVP success criteria.
+- `query_witness` is query-witness and trajectory-local only. `context_aware_query_witness` is the first method allowed to use static context priors such as boundary/corridor distances.
+- Advanced query-context work is optional after `context_aware_query_witness`: adaptive, learned, or interaction-based scoring. It is not part of the current MVP success criteria.
 
 ## Planning Docs
 
@@ -65,8 +65,6 @@ python -m src.cli summarize-baselines
 python -m src.cli inspect-html --method uniform --budget 0.10
 python -m src.cli inspect-qgis --method uniform --budget 0.10
 ```
-
-`prepare-data` is the user-facing replacement for the older `sprint1` command. The old name still works as a compatibility alias.
 
 Before heavy runs, you can now sanity-check the environment with:
 

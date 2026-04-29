@@ -1,4 +1,4 @@
-"""Canonical simplification method names and compatibility aliases."""
+"""Canonical simplification method names."""
 
 from __future__ import annotations
 
@@ -14,44 +14,18 @@ CANONICAL_METHODS = frozenset(
     }
 )
 
-METHOD_ALIASES = {
-    METHOD_UNIFORM: METHOD_UNIFORM,
-    "uniform_subsampling": METHOD_UNIFORM,
-    METHOD_DOUGLAS_PEUCKER: METHOD_DOUGLAS_PEUCKER,
-    "douglas-peucker": METHOD_DOUGLAS_PEUCKER,
-    "douglaspeucker": METHOD_DOUGLAS_PEUCKER,
-    "dp": METHOD_DOUGLAS_PEUCKER,
-    METHOD_QUERY_WITNESS: METHOD_QUERY_WITNESS,
-    "query-witness": METHOD_QUERY_WITNESS,
-    "query_driven": METHOD_QUERY_WITNESS,
-    "query-driven": METHOD_QUERY_WITNESS,
-    "b3": METHOD_QUERY_WITNESS,
-}
-
-METHOD_COMPATIBILITY_ALIASES = {
-    METHOD_UNIFORM: frozenset({METHOD_UNIFORM, "uniform_subsampling"}),
-    METHOD_DOUGLAS_PEUCKER: frozenset(
-        {METHOD_DOUGLAS_PEUCKER, "douglas-peucker", "douglaspeucker", "dp"}
-    ),
-    METHOD_QUERY_WITNESS: frozenset(
-        {METHOD_QUERY_WITNESS, "query-witness", "query_driven", "query-driven", "b3"}
-    ),
-}
-
 
 def normalize_method_name(method: str) -> str:
-    """Return the canonical method name for a configured or CLI method token."""
-    token = method.strip().lower().replace(" ", "_")
+    """Validate and return a canonical method name."""
+    token = method.strip().lower()
     if not token:
         raise ValueError("Method name cannot be empty.")
-    try:
-        return METHOD_ALIASES[token]
-    except KeyError as exc:
+    if token not in CANONICAL_METHODS:
         raise ValueError(
             f"Unknown simplification method {method!r}. "
-            f"Allowed canonical methods: {sorted(CANONICAL_METHODS)}. "
-            f"Compatibility aliases: {sorted(METHOD_ALIASES)}."
-        ) from exc
+            f"Allowed canonical methods: {sorted(CANONICAL_METHODS)}."
+        )
+    return token
 
 
 def normalize_method_names(methods: list[str]) -> list[str]:
@@ -66,15 +40,3 @@ def normalize_method_names(methods: list[str]) -> list[str]:
     if not ordered_unique:
         raise ValueError("No simplification methods configured.")
     return ordered_unique
-
-
-def expand_method_filter(methods: list[str] | None) -> list[str] | None:
-    """Expand a user filter so legacy rows remain discoverable after renames."""
-    if not methods:
-        return None
-
-    expanded: set[str] = set()
-    for raw_method in methods:
-        canonical = normalize_method_name(raw_method)
-        expanded.update(METHOD_COMPATIBILITY_ALIASES[canonical])
-    return sorted(expanded)

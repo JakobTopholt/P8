@@ -190,7 +190,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     subset_parser = subparsers.add_parser(
         "create-dev-subset",
-        aliases=["subset"],
         help="Create deterministic dev/eval subset assignment.",
     )
     subset_parser.add_argument(
@@ -304,7 +303,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", help="Show table counts for current schema.")
     subparsers.add_parser(
         "doctor",
-        aliases=["preflight"],
         help="Run environment and dataset preflight checks before heavy pipeline work.",
     )
 
@@ -338,7 +336,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     compare_parser = subparsers.add_parser(
         "compare-label-modes",
-        aliases=["audit-label-modes"],
         help="Compare stored labels from two semantics modes, e.g. optimized vs segment_exact.",
     )
     compare_parser.add_argument(
@@ -365,17 +362,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional subset split to restrict comparison.",
     )
 
-    sprint1_parser = subparsers.add_parser(
+    prepare_data_parser = subparsers.add_parser(
         "prepare-data",
-        aliases=["sprint1"],
         help="Build the working dataset: bootstrap, trajectories, labels, subset, and status.",
     )
-    sprint1_parser.add_argument(
+    prepare_data_parser.add_argument(
         "--skip-bootstrap",
         action="store_true",
         help="Skip schema bootstrap step.",
     )
-    sprint1_parser.add_argument(
+    prepare_data_parser.add_argument(
         "--label-mode",
         choices=["optimized", "segment_exact"],
         default=None,
@@ -384,13 +380,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     baseline_parser = subparsers.add_parser(
         "benchmark",
-        aliases=["run-baselines"],
         help="Run simplification methods across retained-point budgets.",
     )
     baseline_parser.add_argument(
         "--methods",
         default=None,
-        help="Comma-separated methods override, e.g. 'uniform,douglas_peucker,query_witness'. Legacy aliases dp/b3 are accepted.",
+        help="Comma-separated methods override, e.g. 'uniform,douglas_peucker,query_witness'.",
     )
     baseline_parser.add_argument(
         "--budgets",
@@ -446,12 +441,11 @@ def build_parser() -> argparse.ArgumentParser:
     summary_parser.add_argument(
         "--methods",
         default=None,
-        help="Optional comma-separated method filter, e.g. 'uniform,douglas_peucker,query_witness'. Legacy aliases dp/b3 are accepted.",
+        help="Optional comma-separated method filter, e.g. 'uniform,douglas_peucker,query_witness'.",
     )
 
     inspect_parser = subparsers.add_parser(
         "inspect-html",
-        aliases=["export-visual-inspection"],
         help="Export a self-contained HTML inspection report for raw/context/simplified trajectories.",
     )
     inspect_parser.add_argument(
@@ -478,7 +472,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     qgis_parser = subparsers.add_parser(
         "inspect-qgis",
-        aliases=["export-qgis-inspection"],
         help="Export GeoJSON layers and a QGIS project for trajectory/context inspection.",
     )
     qgis_parser.add_argument(
@@ -562,7 +555,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_json(summary)
             return 0
 
-        if args.command in {"create-dev-subset", "subset"}:
+        if args.command == "create-dev-subset":
             summary = subsets.run(conn, config, truncate=not args.append)
             _print_json(summary)
             return 0
@@ -607,7 +600,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_json(status.run(conn, config))
             return 0
 
-        if args.command in {"doctor", "preflight"}:
+        if args.command == "doctor":
             _print_json(doctor.run(conn, config))
             return 0
 
@@ -624,7 +617,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
 
-        if args.command in {"compare-label-modes", "audit-label-modes"}:
+        if args.command == "compare-label-modes":
             _print_json(
                 diagnostics.compare_label_modes(
                     conn,
@@ -637,7 +630,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
 
-        if args.command in {"prepare-data", "sprint1"}:
+        if args.command == "prepare-data":
             _print_json(
                 _run_prepare_data(
                     conn,
@@ -648,7 +641,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
 
-        if args.command in {"benchmark", "run-baselines"}:
+        if args.command == "benchmark":
             results = benchmarks.run(
                 conn,
                 config,
@@ -683,7 +676,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_json(summary)
             return 0
 
-        if args.command in {"inspect-html", "export-visual-inspection"}:
+        if args.command == "inspect-html":
             summary = visual_inspection.run(
                 conn,
                 config,
@@ -703,7 +696,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_json(summary)
             return 0
 
-        if args.command in {"inspect-qgis", "export-qgis-inspection"}:
+        if args.command == "inspect-qgis":
             summary = qgis_export.run(
                 conn,
                 config,

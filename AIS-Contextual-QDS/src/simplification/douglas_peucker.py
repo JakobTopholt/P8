@@ -110,7 +110,7 @@ def simplify_douglas_peucker_indices(
     *,
     search_iterations: int = 24,
 ) -> list[int]:
-    """Return approximately target-sized DP simplification indices."""
+    """Return approximately target-sized Douglas-Peucker simplification indices."""
     n_points = len(points)
     if n_points <= 2 or target_points >= n_points:
         return list(range(n_points))

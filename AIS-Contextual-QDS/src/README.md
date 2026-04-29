@@ -5,7 +5,7 @@ The source tree is organized by responsibility rather than by sprint:
 ## Entry and Configuration
 
 - `cli.py`
-  User-facing command line workflow. This is where command aliases, defaults, and orchestration live.
+  User-facing command line workflow. This is where command defaults and orchestration live.
 - `config.py`
   Dataclasses and validation for YAML configs.
 - `paths.py`
@@ -39,7 +39,7 @@ The source tree is organized by responsibility rather than by sprint:
 - `pipelines/benchmarks.py`
   Neutral benchmark entrypoint for baseline and query-driven methods.
 - `pipelines/query_witness_evidence.py`
-  PostGIS query-witness extraction for the B3-stage `query_witness` simplifier.
+  PostGIS query-witness extraction for the `query_witness` simplifier.
 - `pipelines/baselines.py`
   Implement the current uniform, Douglas-Peucker, and query-witness benchmark methods and materialize simplified segments for exact evaluation reuse.
 - `pipelines/reports.py`
@@ -57,10 +57,8 @@ The source tree is organized by responsibility rather than by sprint:
   Uniform point-retention baseline.
 - `simplification/douglas_peucker.py`
   Douglas-Peucker baseline with target-point search.
-- `simplification/query_driven.py`
-  Compatibility wrapper for the renamed query-witness simplifier.
 - `simplification/query_witness.py`
-  B3-stage query-witness simplifier using trajectory-local query witnesses and local shape evidence.
+  Query-witness simplifier using trajectory-local query witnesses and local shape evidence.
 
 ## Evaluation and Output
 

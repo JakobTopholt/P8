@@ -13,7 +13,7 @@ from psycopg import Connection
 from ..config import AppConfig
 from ..paths import resolve_project_path
 from ..query_semantics import build_run_prediction_ctes_sql, normalize_query_mode
-from ..simplification import expand_method_filter
+from ..simplification import normalize_method_name
 from ..visualization.inspection import ContextFeature, PointRecord, TrajectoryView, write_inspection_html
 
 LOGGER = logging.getLogger(__name__)
@@ -53,8 +53,8 @@ def _resolve_run(
         clauses.append("run_tag = %(run_tag)s")
         params["run_tag"] = run_tag
     if method is not None:
-        clauses.append("method_name = ANY(%(methods)s)")
-        params["methods"] = expand_method_filter([method])
+        clauses.append("method_name = %(method)s")
+        params["method"] = normalize_method_name(method)
     if budget is not None:
         clauses.append("budget_ratio = %(budget)s")
         params["budget"] = budget

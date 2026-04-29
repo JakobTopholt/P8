@@ -70,26 +70,25 @@ def test_invalid_label_mode_raises(tmp_path: Path) -> None:
         load_config(broken_path)
 
 
-def test_legacy_method_aliases_are_normalized(tmp_path: Path) -> None:
+def test_old_method_names_are_rejected(tmp_path: Path) -> None:
     config_path = PROJECT_ROOT / "configs" / "mvp.example.yaml"
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     raw["baselines"]["methods"] = ["uniform", "dp", "b3", "query_witness"]
 
-    legacy_path = tmp_path / "legacy_methods.yaml"
-    legacy_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    old_names_path = tmp_path / "old_method_names.yaml"
+    old_names_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
 
-    config = load_config(legacy_path)
+    with pytest.raises(ValueError, match="Unknown simplification method"):
+        load_config(old_names_path)
 
-    assert config.baselines.methods == ["uniform", "douglas_peucker", "query_witness"]
 
-
-@pytest.mark.parametrize("legacy_mode", ["exact", "fast"])
-def test_legacy_modes_are_rejected(tmp_path: Path, legacy_mode: str) -> None:
+@pytest.mark.parametrize("old_mode", ["exact", "fast"])
+def test_old_query_modes_are_rejected(tmp_path: Path, old_mode: str) -> None:
     config_path = PROJECT_ROOT / "configs" / "mvp.example.yaml"
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    raw["performance"]["evaluation_mode"] = legacy_mode
+    raw["performance"]["evaluation_mode"] = old_mode
 
-    broken_path = tmp_path / f"broken_legacy_mode_{legacy_mode}.yaml"
+    broken_path = tmp_path / f"broken_old_mode_{old_mode}.yaml"
     broken_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
 
     with pytest.raises(ValueError, match="query mode"):

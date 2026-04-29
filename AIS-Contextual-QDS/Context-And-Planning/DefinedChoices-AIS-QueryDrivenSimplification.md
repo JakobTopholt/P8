@@ -153,7 +153,7 @@ Truth labels are stored by `label_mode`, so `optimized` and `segment_exact` labe
 - `0.40`
 - `0.50`
 
-**Current B3 development stress grid**
+**Current query-witness development stress grid**
 
 - `0.005`
 - `0.010`
@@ -170,17 +170,15 @@ Truth labels are stored by `label_mode`, so `optimized` and `segment_exact` labe
 
 ## 8. Methods
 
-**B1: Uniform subsampling**
+**Uniform subsampling (`uniform`)**
 
 - Baseline that keeps evenly spaced points.
 
-**B2: Douglas-Peucker**
+**Douglas-Peucker (`douglas_peucker`)**
 
 - Geometry baseline.
 
-**B3: Query-witness without static context**
-
-Canonical benchmark method name: `query_witness`; legacy CLI alias and older run-row label: `b3`.
+**Query-witness without static context (`query_witness`)**
 
 - Query-witness and trajectory-local evidence only.
 - Allowed: first/last points, local shape importance, query-answer witnesses, event-count witnesses, observed raw state-transition neighbors.
@@ -188,7 +186,7 @@ Canonical benchmark method name: `query_witness`; legacy CLI alias and older run
 
 **Query-witness point-scoring formula**
 
-The B3-stage `query_witness` method assigns a deterministic importance score to each raw point inside one trajectory. The first and last point are forced anchors and are always retained before scores are considered. To avoid query-witness clustering creating long shortcut segments, it also keeps a budget-aware temporal guard set: `ceil(0.5 * target_points)` uniformly spaced anchors, including the endpoints. These guards are trajectory-local only; they do not use static context distance or proximity.
+The `query_witness` method assigns a deterministic importance score to each raw point inside one trajectory. The first and last point are forced anchors and are always retained before scores are considered. To avoid query-witness clustering creating long shortcut segments, it also keeps a budget-aware temporal guard set: `ceil(0.5 * target_points)` uniformly spaced anchors, including the endpoints. These guards are trajectory-local only; they do not use static context distance or proximity.
 
 For every non-anchor point `i`, `query_witness` uses only raw trajectory query witnesses and local shape evidence:
 
@@ -220,25 +218,23 @@ query_witness_score_i =
 
 Budget handling is per trajectory. After forced endpoints and temporal guards, `query_witness` fills remaining slots by ranking interior points by descending `(query_witness_score_i, primary_query_i, strict_event_count_i, point_membership_i, S_i, -point_seq)`, where `primary_query_i = primary_zone_entry_i + primary_corridor_membership_i`. This gives deterministic tie-breaking under tight budgets while keeping query witnesses ahead of shape-only points. `query_witness` does not inspect its own benchmark outcome and does not fall back to another method when it makes a primary-query error.
 
-**B4: Context-prior query-witness method**
+**Context-aware query-witness (`context_aware_query_witness`)**
 
-Planned canonical benchmark method name: `context_prior`.
-
-- Extends B3 with static context priors.
+- Extends `query_witness` with static context priors.
 - Allowed: boundary proximity, corridor proximity, inside/outside state, and configurable static context weights.
-- B4 may reuse B3 transition witnesses, but observed trajectory transitions are not what makes B4 context-aware.
+- `context_aware_query_witness` may reuse `query_witness` transition witnesses, but observed trajectory transitions are not what makes `context_aware_query_witness` context-aware.
 
-**B5: Optional advanced query-context method**
+**Optional advanced query-context method**
 
 - Not part of the MVP success criteria.
-- Only allowed after B4 has been benchmarked, manually inspected, and ablated.
-- Possible forms: adaptive context weights, learned scorer, explicit query-context interaction terms, global cross-trajectory budget allocation, or failure-recovery logic based on the B4 error taxonomy.
-- B5 must be compared against B4, not used as a substitute for the B3-to-B4 thesis comparison.
+- Only allowed after `context_aware_query_witness` has been benchmarked, manually inspected, and ablated.
+- Possible forms: adaptive context weights, learned scorer, explicit query-context interaction terms, global cross-trajectory budget allocation, or failure-recovery logic based on the `context_aware_query_witness` error taxonomy.
+- It must be compared against `context_aware_query_witness`, not used as a substitute for the `query_witness` to `context_aware_query_witness` thesis comparison.
 
 **Model complexity rule**
 
 - No GNN, diffusion model, or full MLSimp reproduction in the MVP.
-- Learned methods are deferred until simple B3/B4 scoring is benchmarked, inspected, and ablated. If used at all, they belong under optional B5 work.
+- Learned methods are deferred until simple `query_witness` and `context_aware_query_witness` scoring is benchmarked, inspected, and ablated. If used at all, they belong under optional advanced query-context work.
 
 ## 9. Features
 
@@ -253,9 +249,9 @@ Feature candidates already in scope:
 - corridor transition flag
 - local turn/deviation proxy
 
-B3 may use only trajectory-local and query-witness features. B4 may use static context features.
+`query_witness` may use only trajectory-local and query-witness features. `context_aware_query_witness` may use static context features.
 
-Transition flags are allowed in B3 only when they are derived from observed trajectory membership changes for the target query workload. Static distance and proximity features remain B4-only.
+Transition flags are allowed in `query_witness` only when they are derived from observed trajectory membership changes for the target query workload. Static distance and proximity features remain `context_aware_query_witness`-only.
 
 All metric distance calculations must use an appropriate projected CRS or a metric PostGIS/geography operation, not raw lat/lon distances.
 
@@ -265,7 +261,7 @@ All metric distance calculations must use an appropriate projected CRS or a metr
 
 - Use `dev` for stress-budget search, method design, and scoring-weight choices.
 - Use `eval` only for confirmation after budgets, method definitions, and comparison rules are fixed.
-- Do not repeatedly tune B3 or B4 after seeing `eval`.
+- Do not repeatedly tune `query_witness` or `context_aware_query_witness` after seeing `eval`.
 
 **Primary metrics**
 
@@ -303,13 +299,13 @@ Planned:
 The MVP is successful if:
 
 1. raw zone/corridor query labels are trusted
-2. B1/B2/B3/B4 run on the selected budget grid
-3. B4 improves over B3 on at least one primary metric, strict diagnostic, or lower-budget threshold
+2. `uniform`, `douglas_peucker`, `query_witness`, and `context_aware_query_witness` run on the selected budget grid
+3. `context_aware_query_witness` improves over `query_witness` on at least one primary metric, strict diagnostic, or lower-budget threshold
 4. the improvement survives manual inspection
 5. the implementation remains simple and reproducible
 6. we can explain which preserved points caused the gain
 
-B5 is optional extension work and is not required for MVP success.
+The advanced query-context method is optional extension work and is not required for MVP success.
 
 ## 12. Deferred Choices
 
@@ -326,7 +322,7 @@ Do not add these until the MVP is stable:
 - multiple corridors or narrower zones
 - sub-interval queries inside the current trajectory window
 - global cross-trajectory budget allocation
-- adaptive B4 weights or learned scoring as B5
+- adaptive `context_aware_query_witness` weights or learned scoring as optional advanced query-context work
 - GNN or diffusion models
 - streaming/online simplification
 - weather and other dynamic context

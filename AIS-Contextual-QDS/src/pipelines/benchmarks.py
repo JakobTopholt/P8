@@ -1,8 +1,8 @@
 """General simplification benchmark runner.
 
 This module is the neutral entrypoint for benchmark execution. The concrete
-method implementations live behind the current `baselines` module name for
-backward-compatible CLI aliases and report filenames.
+method implementations still live behind the `baselines` module name because
+that file owns benchmark table writes and report metrics.
 """
 
 from __future__ import annotations

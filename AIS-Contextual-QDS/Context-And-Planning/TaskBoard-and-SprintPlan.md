@@ -25,7 +25,7 @@ Use three priorities:
 
 ## Current Status
 
-The project is past the initial setup and baseline stage. The current work is preparing the B3 method: a query-driven, context-unaware simplifier that can be compared against uniform and Douglas-Peucker before B4 adds maritime-context priors.
+The project is past the initial setup and baseline stage. The current work is preparing the `query_witness` method: a query-driven, context-unaware simplifier that can be compared against uniform and Douglas-Peucker before `context_aware_query_witness` adds maritime-context priors.
 
 Done:
 
@@ -39,15 +39,15 @@ Done:
 - Uniform and Douglas-Peucker baselines run across fixed retained-point budgets.
 - Summary exports include primary query metrics and stricter point/event diagnostics.
 - HTML and QGIS inspection exports are available for manual review.
-- Point-context feature computation exists for B4 preparation.
+- Point-context feature computation exists for `context_aware_query_witness` preparation.
 
 Current method ladder:
 
-- B1: uniform subsampling, method `uniform`.
-- B2: Douglas-Peucker geometry baseline, method `douglas_peucker`.
-- B3: query-witness context-free simplification, method `query_witness`.
-- B4: context-prior query-witness simplification, planned method `context_prior`.
-- B5: optional advanced query-context method after B4 is complete.
+- Uniform subsampling: `uniform`.
+- Douglas-Peucker geometry baseline: `douglas_peucker`.
+- Query-witness context-free simplification: `query_witness`.
+- Context-aware query-witness simplification: planned method `context_aware_query_witness`.
+- Optional advanced query-context method after `context_aware_query_witness` is complete.
 
 ## Baseline Evidence
 
@@ -78,38 +78,37 @@ Refined stress findings:
 - Uniform shows clear diminishing returns after roughly 3% to 5%.
 - Douglas-Peucker keeps improving through the tested range but remains weaker than uniform on strict zone metrics.
 
-Current query-witness/B3 development budgets:
+Current query-witness development budgets:
 
 - 0.5% and 1% are the primary-query stress budgets.
 - 1.5%, 2%, 3%, and 5% are the strict-metric comparison budgets.
 - 7.5% and 10% are not current tuning budgets; keep them only for later curve-continuity reports if needed.
-- `eval` should stay held back until B3 scoring and comparison rules are fixed on `dev`.
+- `eval` should stay held back until `query_witness` scoring and comparison rules are fixed on `dev`.
 
-Query-witness/B3 implementation run:
+Query-witness implementation run:
 
-- Run tag: `b3_temporal_guard_dev_refined_stress_grid_20260429T051500`
-- Methods in stored run rows: `uniform`, `dp`, `b3`
-- Canonical method names going forward: `uniform`, `douglas_peucker`, `query_witness`
+- Run tag: `query_witness_temporal_guard_dev_refined_stress_grid_20260429T043835Z`
+- Methods: `uniform`, `douglas_peucker`, `query_witness`
 - Budgets: 0.5%, 1%, 1.5%, 2%, 3%, 5%
 - Split/subset: `dev`, `great_belt_iter1_10days_hardcase`
 - Evaluation mode: `segment_exact`
 - Truth label mode: `segment_exact`
-- Result: canonical B3 keeps the temporal guard and no longer uses the primary-answer fallback. B3 improves strict zone diagnostics across the grid, preserves both primary query families from 3% upward, but trails the stronger primary baseline at 0.5%, 1%, 1.5%, and 2%.
-- T15 note: `Context-And-Planning/B3-Failure-Inspection-T15.md`
+- Result: canonical `query_witness` keeps the temporal guard and no longer uses the primary-answer fallback. `query_witness` improves strict zone diagnostics across the grid, preserves both primary query families from 3% upward, but trails the stronger primary baseline at 0.5%, 1%, 1.5%, and 2%.
+- T15 note: `Context-And-Planning/Query-Witness-Failure-Inspection-T15.md`
 
 ## Next: Sprint 3
 
 Sprint 3 creates the first query-driven method without static maritime-context priors. This is the required comparison point before claiming that maritime context helps.
 
-### T13. Define Query-Witness/B3 Point Scoring
+### T13. Define Query-Witness Point Scoring
 
 Priority: P0
 
 Task:
 
-Define a deterministic point-importance score for the B3-stage `query_witness` method.
+Define a deterministic point-importance score for the `query_witness` method.
 
-B3 may use:
+`query_witness` may use:
 
 - First and last point anchors.
 - Points adjacent to raw query state transitions.
@@ -117,22 +116,22 @@ B3 may use:
 - Local trajectory-shape signals as tie-breakers, such as turn angle or local deviation.
 - Trajectory-local evidence derived from the target query workload.
 
-B3 must not use:
+`query_witness` must not use:
 
 - Distance to zone boundary.
 - Distance to corridor boundary or centerline.
 - Generic boundary-proximity boosts.
-- Any static context prior; B3 may use only the trajectory's own query witnesses and local shape evidence.
+- Any static context prior; `query_witness` may use only the trajectory's own query witnesses and local shape evidence.
 
 Acceptance criteria:
 
 - The scoring formula is written down in `DefinedChoices-AIS-QueryDrivenSimplification.md` or a linked method note.
-- The B3/B4 boundary remains clear.
+- The `query_witness` and `context_aware_query_witness` boundary remains clear.
 - The score can be computed for every point.
 - No learned model is required.
 - Tie-breaking and budget handling are deterministic.
 
-### T14. Implement Query-Witness/B3 Simplifier
+### T14. Implement Query-Witness Simplifier
 
 Priority: P0
 
@@ -142,20 +141,20 @@ Implement a simplifier that keeps the highest-scoring query-witness points under
 
 Acceptance criteria:
 
-- B3 runs through the existing benchmark command.
-- B3 respects retained-point budgets.
-- B3 supports the refined stress budgets.
-- B3 can run with `EVALUATION_MODE=segment_exact` and `TRUTH_LABEL_MODE=segment_exact`.
-- B3 preserves primary query F1 at least as well as the stronger baseline in the key stress range, or failures are documented clearly.
-- B3 improves at least one strict metric or reaches the same strict quality at a lower retained-point budget.
+- `query_witness` runs through the existing benchmark command.
+- `query_witness` respects retained-point budgets.
+- `query_witness` supports the refined stress budgets.
+- `query_witness` can run with `EVALUATION_MODE=segment_exact` and `TRUTH_LABEL_MODE=segment_exact`.
+- `query_witness` preserves primary query F1 at least as well as the stronger baseline in the key stress range, or failures are documented clearly.
+- `query_witness` improves at least one strict metric or reaches the same strict quality at a lower retained-point budget.
 
-### T15. Inspect Query-Witness/B3 Failures
+### T15. Inspect Query-Witness Failures
 
 Priority: P0
 
 Task:
 
-Manually inspect B3 failures and compare them against B1/B2 failures.
+Manually inspect `query_witness` failures and compare them against `uniform` and `douglas_peucker` failures.
 
 Failure categories:
 
@@ -173,13 +172,13 @@ Acceptance criteria:
 - At least 25 failure or near-failure cases are categorized.
 - The top failure modes are written down.
 - Visual examples exist for representative errors.
-- The result gives a clear reason for what B4 should add.
+- The result gives a clear reason for what `context_aware_query_witness` should add.
 
 Sprint 3 is done when:
 
-- B3 has been benchmarked on the refined dev stress budgets.
-- B3 has been compared against uniform and Douglas-Peucker.
-- B3 failure cases have been inspected.
+- `query_witness` has been benchmarked on the refined dev stress budgets.
+- `query_witness` has been compared against uniform and Douglas-Peucker.
+- `query_witness` failure cases have been inspected.
 - The project has a defensible context-unaware query-driven baseline.
 
 ## Later: Sprint 4
@@ -198,7 +197,7 @@ Verify or complete per-point features for:
 - Distance to corridor boundary or centerline.
 - Zone and corridor inside/outside state.
 - Nearest zone identifier.
-- Local shape features needed by B3/B4.
+- Local shape features needed by `query_witness` and `context_aware_query_witness`.
 
 Acceptance criteria:
 
@@ -220,7 +219,7 @@ Verify or complete per-point transition indicators derived from observed traject
 - Corridor exit.
 - Neighboring segment relation relevant to the query workload.
 
-B3 may use these trajectory-local query witnesses. Static boundary-distance and corridor-distance features remain B4-only.
+`query_witness` may use these trajectory-local query witnesses. Static boundary-distance and corridor-distance features remain `context_aware_query_witness`-only.
 
 Acceptance criteria:
 
@@ -228,22 +227,22 @@ Acceptance criteria:
 - Edge cases are documented.
 - Manual checks agree with `segment_exact` labels on representative cases.
 
-### T18. Implement B4 Context-Aware Scorer
+### T18. Implement Context-Aware Query-Witness Scorer
 
 Priority: P0
 
 Task:
 
-Extend B3 with static maritime-context priors, for example boundary or corridor distance terms.
+Extend `query_witness` with static maritime-context priors, for example boundary or corridor distance terms.
 
 Acceptance criteria:
 
 - Context weights are configurable.
-- Static context features are used only in B4, not B3.
-- B4 runs end to end through the benchmark pipeline.
+- Static context features are used only in `context_aware_query_witness`, not `query_witness`.
+- `context_aware_query_witness` runs end to end through the benchmark pipeline.
 - The implementation remains explainable without a learned model.
 
-### T19. Run Context-Aware Benchmark
+### T19. Run Context-Aware Query-Witness Benchmark
 
 Priority: P0
 
@@ -253,8 +252,8 @@ Compare:
 
 - Uniform.
 - Douglas-Peucker.
-- B3 query-driven without context.
-- B4 query-driven with context.
+- `query_witness`.
+- `context_aware_query_witness`.
 
 Acceptance criteria:
 
@@ -269,7 +268,7 @@ Priority: P0
 
 Task:
 
-Inspect cases where B4 appears to beat B3.
+Inspect cases where `context_aware_query_witness` appears to beat `query_witness`.
 
 Acceptance criteria:
 
@@ -279,7 +278,7 @@ Acceptance criteria:
 
 Sprint 4 is done when:
 
-- B4 beats B3 on a primary metric, strict diagnostic, or lower-budget threshold.
+- `context_aware_query_witness` beats `query_witness` on a primary metric, strict diagnostic, or lower-budget threshold.
 - The improvement survives manual inspection.
 - The explanation of the improvement is tied to specific preserved points or segments.
 
@@ -291,7 +290,7 @@ Sprint 5 tightens the method and turns the result into a reproducible MVP.
 
 Priority: P0
 
-Run B4 with transition terms removed.
+Run `context_aware_query_witness` with transition terms removed.
 
 Acceptance criteria:
 
@@ -302,7 +301,7 @@ Acceptance criteria:
 
 Priority: P0
 
-Run B4 with boundary terms removed.
+Run `context_aware_query_witness` with boundary terms removed.
 
 Acceptance criteria:
 
@@ -346,22 +345,22 @@ Acceptance criteria:
 - Dev/eval usage is documented.
 - The final result can explain which kept points caused the observed gain.
 
-## Optional After B4: B5
+## Optional After Context-Aware Query-Witness
 
-B5 is not part of the MVP definition of done. It is worth considering only if B4 is implemented, benchmarked, manually inspected, and ablated with time left.
+An advanced query-context method is not part of the MVP definition of done. It is worth considering only if `context_aware_query_witness` is implemented, benchmarked, manually inspected, and ablated with time left.
 
-Possible B5 directions:
+Possible directions:
 
-- Adaptive B4 weights instead of fixed configured weights.
-- A learned scorer trained on B3/B4 feature signals.
+- Adaptive `context_aware_query_witness` weights instead of fixed configured weights.
+- A learned scorer trained on `query_witness` and `context_aware_query_witness` feature signals.
 - Explicit query-context interaction terms.
 - Global budget allocation across trajectories.
-- Failure-recovery logic based on the B4 error taxonomy.
+- Failure-recovery logic based on the `context_aware_query_witness` error taxonomy.
 
 Acceptance criteria:
 
-- B5 is compared directly against B4.
-- B5 does not replace the B3-to-B4 comparison.
+- The advanced method is compared directly against `context_aware_query_witness`.
+- The advanced method does not replace the `query_witness` to `context_aware_query_witness` comparison.
 - Any added complexity gives a measurable benefit on dev and survives eval confirmation.
 - The result remains explainable enough to support the project argument.
 
@@ -377,7 +376,7 @@ P1:
 - Add a second region.
 - Add a second vessel class.
 - Add context sensitivity by geography if not completed in Sprint 5.
-- Try B5 adaptive or query-context interaction scoring if B4 is already complete.
+- Try adaptive or query-context interaction scoring if `context_aware_query_witness` is already complete.
 
 P2:
 
@@ -392,19 +391,19 @@ P2:
 The MVP is done when:
 
 - Raw zone and corridor queries are trusted.
-- Uniform, Douglas-Peucker, B3, and B4 run at fixed budgets.
-- B4 improves over B3 on at least one primary metric, strict diagnostic, or lower-budget threshold.
+- Uniform, Douglas-Peucker, `query_witness`, and `context_aware_query_witness` run at fixed budgets.
+- `context_aware_query_witness` improves over `query_witness` on at least one primary metric, strict diagnostic, or lower-budget threshold.
 - Results survive manual inspection.
 - Code and configs are reproducible.
 - The result explains which preserved points or segments caused the gain.
 
-B5 is explicitly outside the MVP definition of done.
+The advanced query-context method is explicitly outside the MVP definition of done.
 
 ## Guardrails
 
-- Do not add new context layers before B4 has been benchmarked and inspected.
+- Do not add new context layers before `context_aware_query_witness` has been benchmarked and inspected.
 - Do not tune on `eval`; use it for confirmation after dev choices are fixed.
-- Do not claim a context benefit until B4 is compared against B3.
+- Do not claim a context benefit until `context_aware_query_witness` is compared against `query_witness`.
 - Do not rely only on trajectory-level F1 when it is saturated.
 - Do not move to learned models before the simple explainable scorer has been ablated.
-- Do not start B5 until B4 has a clean result and error analysis.
+- Do not start advanced query-context work until `context_aware_query_witness` has a clean result and error analysis.

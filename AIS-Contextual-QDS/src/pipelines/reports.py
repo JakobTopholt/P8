@@ -12,7 +12,7 @@ from psycopg import Connection
 from ..config import AppConfig
 from ..evaluation.reporting import write_f1_svg, write_summary_csv, write_summary_json, write_summary_markdown
 from ..paths import resolve_project_path
-from ..simplification import expand_method_filter
+from ..simplification import normalize_method_names
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,10 +44,9 @@ def _fetch_rows(
 ) -> list[dict[str, float | int | str]]:
     method_filter_sql = ""
     params: dict[str, object] = {"run_tag": run_tag}
-    expanded_methods = expand_method_filter(methods)
-    if expanded_methods:
+    if methods:
         method_filter_sql = "  AND r.method_name = ANY(%(methods)s)\n"
-        params["methods"] = expanded_methods
+        params["methods"] = normalize_method_names(methods)
 
     sql = f"""
 SELECT

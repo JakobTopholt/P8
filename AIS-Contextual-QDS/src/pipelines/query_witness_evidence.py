@@ -288,6 +288,3 @@ ORDER BY p.trajectory_id, p.point_seq;
         ]
 
     return features
-
-
-fetch_b3_point_evidence = fetch_query_witness_point_evidence

@@ -24,7 +24,7 @@ MIN_CORRIDOR_POSITIVES ?=
 
 CLI = $(PYTHON) -m src.cli --config $(CONFIG)
 
-.PHONY: help bootstrap load-context build-trajectories compute-labels compute-features create-dev-subset create-hardcase-subset label-balance compare-label-modes prepare-data benchmark summarize-baselines inspect-html inspect-qgis tune-postgres doctor status test sprint1 run-baselines export-visual-inspection export-qgis-inspection subset preflight audit-label-modes
+.PHONY: help bootstrap load-context build-trajectories compute-labels compute-features create-dev-subset create-hardcase-subset label-balance compare-label-modes prepare-data benchmark summarize-baselines inspect-html inspect-qgis tune-postgres doctor status test
 
 help:
 	@printf "AIS-Contextual-QDS Make Targets\n\n"
@@ -103,12 +103,3 @@ status:
 
 test:
 	$(PYTHON) -m pytest tests -q
-
-# Backward-compatible aliases
-sprint1: prepare-data
-run-baselines: benchmark
-export-visual-inspection: inspect-html
-export-qgis-inspection: inspect-qgis
-subset: create-dev-subset
-preflight: doctor
-audit-label-modes: compare-label-modes

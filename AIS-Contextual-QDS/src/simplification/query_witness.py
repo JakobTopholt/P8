@@ -142,10 +142,3 @@ def simplify_query_witness_indices(evidence: list[QueryWitnessPointEvidence], ta
             break
         selected.add(idx)
     return sorted(selected)
-
-
-B3PointEvidence = QueryWitnessPointEvidence
-B3ScoreComponents = QueryWitnessScoreComponents
-b3_score_components = query_witness_score_components
-score_b3_points = score_query_witness_points
-simplify_b3_indices = simplify_query_witness_indices

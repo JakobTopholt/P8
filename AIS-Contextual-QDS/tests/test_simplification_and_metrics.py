@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.evaluation.metrics import classification_metrics
 from src.simplification.douglas_peucker import simplify_douglas_peucker_indices
-from src.simplification.methods import expand_method_filter, normalize_method_names
+from src.simplification.methods import normalize_method_name, normalize_method_names
 from src.simplification.query_witness import (
     QueryWitnessPointEvidence,
     score_query_witness_points,
@@ -29,7 +29,7 @@ def test_uniform_keeps_endpoints_and_target_size() -> None:
     assert indices == sorted(indices)
 
 
-def test_dp_keeps_endpoints_and_target_size() -> None:
+def test_douglas_peucker_keeps_endpoints_and_target_size() -> None:
     points = [(0.0, 0.0), (0.2, 0.1), (0.4, 0.5), (0.6, 0.2), (0.8, 0.7), (1.0, 1.0)]
     indices = simplify_douglas_peucker_indices(points, target_points=4)
 
@@ -39,20 +39,19 @@ def test_dp_keeps_endpoints_and_target_size() -> None:
     assert indices == sorted(indices)
 
 
-def test_method_name_aliases_normalize_to_canonical_names() -> None:
-    methods = normalize_method_names(["uniform", "dp", "b3", "query-witness"])
+def test_method_name_validation_accepts_canonical_names() -> None:
+    methods = normalize_method_names(["uniform", "douglas_peucker", "query_witness"])
 
     assert methods == ["uniform", "douglas_peucker", "query_witness"]
 
 
-def test_method_filters_include_legacy_run_row_names() -> None:
-    methods = expand_method_filter(["douglas_peucker", "query_witness"])
-
-    assert methods is not None
-    assert "dp" in methods
-    assert "b3" in methods
-    assert "douglas_peucker" in methods
-    assert "query_witness" in methods
+def test_method_name_validation_rejects_old_labels() -> None:
+    for method in ["dp", "b3", "query-witness"]:
+        try:
+            normalize_method_name(method)
+        except ValueError:
+            continue
+        raise AssertionError(f"Expected {method!r} to be rejected")
 
 
 def test_query_witness_keeps_query_witnesses_before_shape_only_points() -> None:

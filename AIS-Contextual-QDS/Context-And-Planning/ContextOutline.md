@@ -89,25 +89,19 @@ Current `segment_exact` semantics:
 
 ## Method Ladder
 
-### B1: Uniform Subsampling
-
-Canonical benchmark method name: `uniform`.
+### Uniform Subsampling (`uniform`)
 
 Keeps points uniformly along the trajectory while always keeping first and last point.
 
 Purpose: cheap baseline and sanity check.
 
-### B2: Douglas-Peucker
-
-Canonical benchmark method name: `douglas_peucker`; legacy CLI alias: `dp`.
+### Douglas-Peucker (`douglas_peucker`)
 
 Geometry baseline that optimizes shape rather than query behavior.
 
 Purpose: show how geometry-preserving simplification behaves under query-driven evaluation.
 
-### B3: Query-Witness Without Static Context
-
-Canonical benchmark method name: `query_witness`; legacy CLI alias: `b3`.
+### Query-Witness Without Static Context (`query_witness`)
 
 Uses query witnesses and trajectory-local evidence only.
 
@@ -119,7 +113,7 @@ Allowed signals:
 - points whose removal changes strict event-count diagnostics
 - points adjacent to observed raw query state transitions
 
-Not allowed in B3:
+Not allowed in `query_witness`:
 
 - distance to zone boundary
 - distance to corridor boundary or centerline
@@ -128,11 +122,9 @@ Not allowed in B3:
 
 Purpose: test whether query-driven selection helps before adding static maritime context.
 
-### B4: Context-Prior Query-Witness Method
+### Context-Aware Query-Witness (`context_aware_query_witness`)
 
-Planned canonical benchmark method name: `context_prior`.
-
-Extends B3 with static context priors.
+Extends `query_witness` with static context priors.
 
 Allowed additions:
 
@@ -144,19 +136,19 @@ Allowed additions:
 
 Purpose: test whether maritime context improves over pure query-driven evidence.
 
-### B5: Optional Advanced Query-Context Method
+### Optional Advanced Query-Context Method
 
-B5 is not part of the core MVP. It is a possible extension if B4 is implemented, benchmarked, inspected, and ablated with time left.
+This method is not part of the core MVP. It is a possible extension if `context_aware_query_witness` is implemented, benchmarked, inspected, and ablated with time left.
 
 Possible directions:
 
-- adaptive B4 weights instead of fixed configured weights
-- learned scoring using B3/B4 features
+- adaptive `context_aware_query_witness` weights instead of fixed configured weights
+- learned scoring using `query_witness` and `context_aware_query_witness` features
 - explicit query-context interaction terms, such as transition witness plus boundary proximity
 - global budget allocation across trajectories
-- failure-recovery logic based on B4 error taxonomy
+- failure-recovery logic based on `context_aware_query_witness` error taxonomy
 
-Purpose: test whether a more advanced method improves beyond the explainable B4 baseline without replacing B4 as the main thesis method.
+Purpose: test whether a more advanced method improves beyond the explainable `context_aware_query_witness` baseline without replacing `context_aware_query_witness` as the main thesis method.
 
 ## Evaluation Strategy
 
@@ -194,7 +186,7 @@ Standard reporting grid:
 
 - `0.10`, `0.20`, `0.30`, `0.40`, `0.50`
 
-Current B3 development grid:
+Current `query_witness` development grid:
 
 - `0.005`, `0.010`, `0.015`, `0.020`, `0.030`, `0.050`
 
@@ -225,19 +217,19 @@ If strict diagnostics also saturate after scale-up, broaden deliberately with qu
 The MVP is successful if:
 
 - raw zone/corridor query labels are trusted
-- B1/B2/B3/B4 run on the fixed budget grid
-- B4 improves over B3 on at least one primary metric, strict diagnostic, or lower-budget threshold
+- `uniform`, `douglas_peucker`, `query_witness`, and `context_aware_query_witness` run on the fixed budget grid
+- `context_aware_query_witness` improves over `query_witness` on at least one primary metric, strict diagnostic, or lower-budget threshold
 - results survive manual inspection
 - the method remains simple and reproducible
 - we can explain which preserved points caused the gain
 
-B5 is explicitly optional and should not be required for the MVP success claim.
+The advanced query-context method is explicitly optional and should not be required for the MVP success claim.
 
 ## Main Risks
 
-- Adding more context before B3 exists
+- Adding more context before `query_witness` exists
 - Treating saturated yes/no F1 as proof that the method is done
 - Tuning on `eval`
 - Trusting aggregate metrics without visual inspection
 - Jumping to learned models before the simple scoring methods are benchmarked and ablated
-- Letting optional B5 work blur the core B3-to-B4 comparison
+- Letting optional advanced query-context work blur the core `query_witness` to `context_aware_query_witness` comparison
