@@ -84,7 +84,7 @@ LIMIT 1;
     if row is None:
         raise RuntimeError(
             "No simplification run matched the requested filters. "
-            "Run baselines first or pass a valid --run-id."
+            "Run benchmark first or pass a valid --run-id."
         )
 
     return {

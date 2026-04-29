@@ -37,11 +37,9 @@ The source tree is organized by responsibility rather than by sprint:
 - `pipelines/features.py`
   Compute reusable per-point context and local-shape features for contextual methods.
 - `pipelines/benchmarks.py`
-  Neutral benchmark entrypoint for baseline and query-driven methods.
+  Run uniform, Douglas-Peucker, and query-witness benchmark methods and materialize simplified segments for exact evaluation reuse.
 - `pipelines/query_witness_evidence.py`
   PostGIS query-witness extraction for the `query_witness` simplifier.
-- `pipelines/baselines.py`
-  Implement the current uniform, Douglas-Peucker, and query-witness benchmark methods and materialize simplified segments for exact evaluation reuse.
 - `pipelines/reports.py`
   Export benchmark summaries and figures.
 - `pipelines/visual_inspection.py`
@@ -51,7 +49,7 @@ The source tree is organized by responsibility rather than by sprint:
 - `pipelines/status.py`
   Report current table counts for the active schema.
 
-## Baseline Methods
+## Simplification Methods
 
 - `simplification/uniform.py`
   Uniform point-retention baseline.
@@ -82,6 +80,5 @@ If you are re-entering the project after some time away, this is the shortest pa
 5. `pipelines/labels.py`
 6. `pipelines/features.py`
 7. `pipelines/benchmarks.py`
-8. `pipelines/baselines.py`
 
 That gives you the current defaults, workflow shape, semantics modes, raw data construction, truth generation, feature layer, and evaluation path in order.

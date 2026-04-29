@@ -1,4 +1,4 @@
-"""Summary report generation for baseline benchmark runs."""
+"""Summary report generation for simplification benchmark runs."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _resolve_run_tag(conn: Connection[Any], schema: str, run_tag: str | None) ->
         row = cur.fetchone()
 
     if row is None:
-        raise RuntimeError("No simplification runs found. Run baselines first.")
+        raise RuntimeError("No simplification runs found. Run benchmark first.")
     return str(row[0])
 
 
@@ -112,7 +112,7 @@ def run(
     run_tag: str | None = None,
     methods: list[str] | None = None,
 ) -> dict[str, object]:
-    """Generate CSV/JSON/Markdown summary and F1 SVG plot for a baseline run_tag."""
+    """Generate CSV/JSON/Markdown summary and F1 SVG plot for a benchmark run_tag."""
     schema = config.database.schema
     resolved_run_tag = _resolve_run_tag(conn, schema, run_tag)
 
@@ -120,17 +120,17 @@ def run(
     if not rows:
         raise RuntimeError(
             f"No benchmark rows found for run_tag={resolved_run_tag!r}. "
-            "Run baselines first or check filters."
+            "Run benchmark first or check filters."
         )
 
     safe_tag = _sanitize_tag(resolved_run_tag)
     metrics_dir = resolve_project_path(config.paths.metrics_dir)
     figures_dir = resolve_project_path(config.paths.figures_dir)
 
-    csv_path = metrics_dir / f"baseline_summary_{safe_tag}.csv"
-    json_path = metrics_dir / f"baseline_summary_{safe_tag}.json"
-    markdown_path = metrics_dir / f"baseline_summary_{safe_tag}.md"
-    plot_path = figures_dir / f"baseline_f1_{safe_tag}.svg"
+    csv_path = metrics_dir / f"benchmark_summary_{safe_tag}.csv"
+    json_path = metrics_dir / f"benchmark_summary_{safe_tag}.json"
+    markdown_path = metrics_dir / f"benchmark_summary_{safe_tag}.md"
+    plot_path = figures_dir / f"benchmark_f1_{safe_tag}.svg"
 
     write_summary_csv(rows, csv_path)
     write_summary_json(rows, json_path)
@@ -138,7 +138,7 @@ def run(
     write_f1_svg(rows, plot_path, run_tag=resolved_run_tag)
 
     LOGGER.info(
-        "Baseline summary exported for run_tag=%s (%s rows).",
+        "Benchmark summary exported for run_tag=%s (%s rows).",
         resolved_run_tag,
         len(rows),
     )

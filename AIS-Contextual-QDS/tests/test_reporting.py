@@ -17,7 +17,7 @@ def _sample_rows() -> list[dict[str, object]]:
     return [
         {
             "run_id": 1,
-            "run_tag": "baseline_demo",
+            "run_tag": "benchmark_demo",
             "method": "uniform",
             "budget": 0.005,
             "evaluation_mode": "optimized",
@@ -51,7 +51,7 @@ def _sample_rows() -> list[dict[str, object]]:
         },
         {
             "run_id": 2,
-            "run_tag": "baseline_demo",
+            "run_tag": "benchmark_demo",
             "method": "douglas_peucker",
             "budget": 0.1,
             "evaluation_mode": "segment_exact",
@@ -86,7 +86,7 @@ def test_summary_exports(tmp_path: Path) -> None:
     write_summary_csv(rows, csv_path)
     write_summary_json(rows, json_path)
     write_summary_markdown(rows, markdown_path)
-    write_f1_svg(rows, svg_path, run_tag="baseline_demo")
+    write_f1_svg(rows, svg_path, run_tag="benchmark_demo")
 
     assert csv_path.exists()
     assert json_path.exists()
@@ -102,7 +102,7 @@ def test_summary_exports(tmp_path: Path) -> None:
 
     json_rows = json.loads(json_path.read_text(encoding="utf-8"))
     assert len(json_rows) == 2
-    assert json_rows[0]["run_tag"] == "baseline_demo"
+    assert json_rows[0]["run_tag"] == "benchmark_demo"
 
     markdown_text = markdown_path.read_text(encoding="utf-8")
     assert "| method | budget | eval_mode | truth_mode |" in markdown_text
@@ -115,5 +115,5 @@ def test_summary_exports(tmp_path: Path) -> None:
     assert "| uniform | 0.005 |" in markdown_text
 
     svg_text = svg_path.read_text(encoding="utf-8")
-    assert "Baseline Query Fidelity" in svg_text
+    assert "Benchmark Query Fidelity" in svg_text
     assert "Zone Entry F1" in svg_text

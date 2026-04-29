@@ -107,7 +107,7 @@ class PathsConfig:
 
 
 @dataclass(frozen=True)
-class BaselineConfig:
+class BenchmarkConfig:
     """Simplification benchmark runner settings."""
 
     methods: list[str] = field(
@@ -139,7 +139,7 @@ class AppConfig:
     queries: QueryConfig = field(default_factory=QueryConfig)
     subsets: SubsetConfig = field(default_factory=SubsetConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
-    baselines: BaselineConfig = field(default_factory=BaselineConfig)
+    benchmarks: BenchmarkConfig = field(default_factory=BenchmarkConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
 
 
@@ -226,19 +226,19 @@ def validate_config(config: AppConfig) -> None:
     if config.subsets.eval_size <= 0:
         raise ValueError("subsets.eval_size must be > 0.")
 
-    if not config.baselines.methods:
-        raise ValueError("baselines.methods cannot be empty.")
-    normalize_method_names(config.baselines.methods)
+    if not config.benchmarks.methods:
+        raise ValueError("benchmarks.methods cannot be empty.")
+    normalize_method_names(config.benchmarks.methods)
 
     valid_splits = {"all", "dev", "eval"}
-    if config.baselines.default_split not in valid_splits:
-        raise ValueError("baselines.default_split must be one of all/dev/eval.")
+    if config.benchmarks.default_split not in valid_splits:
+        raise ValueError("benchmarks.default_split must be one of all/dev/eval.")
 
-    if config.baselines.dp_search_iterations <= 0:
-        raise ValueError("baselines.dp_search_iterations must be > 0.")
+    if config.benchmarks.dp_search_iterations <= 0:
+        raise ValueError("benchmarks.dp_search_iterations must be > 0.")
 
-    if config.baselines.insert_batch_size <= 0:
-        raise ValueError("baselines.insert_batch_size must be > 0.")
+    if config.benchmarks.insert_batch_size <= 0:
+        raise ValueError("benchmarks.insert_batch_size must be > 0.")
 
     normalize_query_mode(config.performance.label_mode, default="optimized")
     normalize_query_mode(config.performance.evaluation_mode, default="optimized")
@@ -257,8 +257,8 @@ def load_config(config_path: Path) -> AppConfig:
     if not isinstance(raw, dict):
         raise ValueError("Top-level config must be a mapping.")
 
-    baselines = BaselineConfig(**_section(raw, "baselines"))
-    baselines = replace(baselines, methods=normalize_method_names(baselines.methods))
+    benchmarks = BenchmarkConfig(**_section(raw, "benchmarks"))
+    benchmarks = replace(benchmarks, methods=normalize_method_names(benchmarks.methods))
 
     config = AppConfig(
         project=ProjectConfig(**_section(raw, "project")),
@@ -269,7 +269,7 @@ def load_config(config_path: Path) -> AppConfig:
         queries=QueryConfig(**_section(raw, "queries")),
         subsets=SubsetConfig(**_section(raw, "subsets")),
         paths=PathsConfig(**_section(raw, "paths")),
-        baselines=baselines,
+        benchmarks=benchmarks,
         performance=PerformanceConfig(**_section(raw, "performance")),
     )
     validate_config(config)

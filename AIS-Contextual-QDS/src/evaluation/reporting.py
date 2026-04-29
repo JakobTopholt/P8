@@ -1,4 +1,4 @@
-"""Reporting helpers for baseline benchmark outputs."""
+"""Reporting helpers for simplification benchmark outputs."""
 
 from __future__ import annotations
 
@@ -296,7 +296,7 @@ def write_f1_svg(rows: list[dict[str, object]], output_path: Path, *, run_tag: s
         "<rect x='0' y='0' width='100%' height='100%' fill='#fafafa' />",
         (
             f"<text x='18' y='28' font-size='16' font-weight='600' fill='#1f1f1f'>"
-            f"Baseline Query Fidelity - run_tag={_xml_escape(run_tag)}</text>"
+            f"Benchmark Query Fidelity - run_tag={_xml_escape(run_tag)}</text>"
         ),
     ]
 

@@ -172,7 +172,7 @@ Truth labels are stored by `label_mode`, so `optimized` and `segment_exact` labe
 
 **Uniform subsampling (`uniform`)**
 
-- Baseline that keeps evenly spaced points.
+- Reference method that keeps evenly spaced points.
 
 **Douglas-Peucker (`douglas_peucker`)**
 

@@ -342,7 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-mode",
         choices=["optimized", "segment_exact"],
         default="optimized",
-        help="Baseline label mode.",
+        help="Base label mode.",
     )
     compare_parser.add_argument(
         "--candidate-mode",
@@ -378,59 +378,59 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override label semantics mode for the prepare-data label step.",
     )
 
-    baseline_parser = subparsers.add_parser(
+    benchmark_parser = subparsers.add_parser(
         "benchmark",
         help="Run simplification methods across retained-point budgets.",
     )
-    baseline_parser.add_argument(
+    benchmark_parser.add_argument(
         "--methods",
         default=None,
         help="Comma-separated methods override, e.g. 'uniform,douglas_peucker,query_witness'.",
     )
-    baseline_parser.add_argument(
+    benchmark_parser.add_argument(
         "--budgets",
         default=None,
         help="Comma-separated retained-point ratios override, e.g. '0.1,0.2,0.3'.",
     )
-    baseline_parser.add_argument(
+    benchmark_parser.add_argument(
         "--run-tag",
         default=None,
-        help="Optional run tag to group baseline runs.",
+        help="Optional run tag to group benchmark runs.",
     )
-    baseline_parser.add_argument(
+    benchmark_parser.add_argument(
         "--split",
         choices=["all", "dev", "eval"],
         default=None,
-        help="Trajectory split to run (default from config baselines.default_split).",
+        help="Trajectory split to run (default from config benchmarks.default_split).",
     )
-    baseline_parser.add_argument(
+    benchmark_parser.add_argument(
         "--subset-name",
         default=None,
         help="Subset name override (default from config subsets.subset_name).",
     )
-    baseline_parser.add_argument(
+    benchmark_parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing run rows with same run_tag/method/budget.",
     )
-    baseline_parser.add_argument(
+    benchmark_parser.add_argument(
         "--no-export-summary",
         action="store_true",
         help="Skip CSV/JSON/Markdown/SVG summary export after run completion.",
     )
-    baseline_parser.add_argument(
+    benchmark_parser.add_argument(
         "--evaluation-mode",
         choices=["optimized", "segment_exact"],
         default=None,
         help="Override evaluation semantics mode (default from config performance.evaluation_mode).",
     )
     _add_truth_label_mode_arg(
-        baseline_parser,
+        benchmark_parser,
         help_text="Select which stored truth-label mode to score against. Defaults to the evaluation mode.",
     )
 
     summary_parser = subparsers.add_parser(
-        "summarize-baselines",
+        "summarize-benchmark",
         help="Export summary table files and F1 SVG plot from benchmark metrics.",
     )
     summary_parser.add_argument(
@@ -666,7 +666,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_json(payload)
             return 0
 
-        if args.command == "summarize-baselines":
+        if args.command == "summarize-benchmark":
             summary = reports.run(
                 conn,
                 config,

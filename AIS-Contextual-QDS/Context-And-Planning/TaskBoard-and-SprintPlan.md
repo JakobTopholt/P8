@@ -36,7 +36,7 @@ Done:
 - `optimized` and `segment_exact` query-semantics modes are implemented.
 - Truth labels can coexist by `label_mode`.
 - Segment-exact prediction uses cached adjacent simplified segments when available.
-- Uniform and Douglas-Peucker baselines run across fixed retained-point budgets.
+- Uniform and Douglas-Peucker reference methods run across fixed retained-point budgets.
 - Summary exports include primary query metrics and stricter point/event diagnostics.
 - HTML and QGIS inspection exports are available for manual review.
 - Point-context feature computation exists for `context_aware_query_witness` preparation.
@@ -49,7 +49,7 @@ Current method ladder:
 - Context-aware query-witness simplification: planned method `context_aware_query_witness`.
 - Optional advanced query-context method after `context_aware_query_witness` is complete.
 
-## Baseline Evidence
+## Benchmark Evidence
 
 Standard segment-exact baseline runs:
 
@@ -72,7 +72,7 @@ Refined stress findings:
 - At 0.5%, primary query degradation is material.
 - At 1%, uniform has one zone false positive and perfect corridor membership.
 - At 1%, Douglas-Peucker has one zone false positive and one corridor false negative.
-- From 1.5% upward, both baselines preserve primary zone-entry and corridor-membership F1 on the dev split.
+- From 1.5% upward, both reference methods preserve primary zone-entry and corridor-membership F1 on the dev split.
 - Strict point-membership and event-count metrics still separate methods across 0.5% to 5%.
 - Uniform is stronger than Douglas-Peucker on strict zone metrics and runtime in the refined stress run.
 - Uniform shows clear diminishing returns after roughly 3% to 5%.

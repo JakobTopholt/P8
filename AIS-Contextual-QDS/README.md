@@ -61,7 +61,7 @@ python -m src.cli label-balance
 python -m src.cli create-hardcase-subset
 python -m src.cli compute-features
 python -m src.cli benchmark --overwrite
-python -m src.cli summarize-baselines
+python -m src.cli summarize-benchmark
 python -m src.cli inspect-html --method uniform --budget 0.10
 python -m src.cli inspect-qgis --method uniform --budget 0.10
 ```
@@ -156,7 +156,7 @@ That applies the repository’s safe local tuning profile. Some settings, such a
   Report overall and split-level positives for each zone and the corridor.
 - `benchmark`
   Run simplification benchmarks across one or more retained-point budgets.
-- `summarize-baselines`
+- `summarize-benchmark`
   Export CSV, JSON, Markdown, and SVG summaries from stored benchmark metrics.
 - `compare-label-modes`
   Compare stored labels between semantics modes, primarily `optimized` and `segment_exact`.

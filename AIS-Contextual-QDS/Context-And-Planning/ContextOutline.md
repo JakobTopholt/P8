@@ -22,7 +22,7 @@ The current implementation is focused on a reproducible Great Belt cargo-vessel 
 
 **RQ2:** Which context-sensitive points matter most: boundary-adjacent points, entry/exit points, or corridor-transition points?
 
-**RQ3:** At what compression rates does context-aware simplification provide the most useful gain over context-unaware baselines?
+**RQ3:** At what compression rates does context-aware simplification provide the most useful gain over context-unaware methods?
 
 ## Current Empirical Finding
 

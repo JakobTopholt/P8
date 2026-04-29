@@ -49,7 +49,7 @@ paths:
   figures_dir: results/figures
   log_level: INFO
 
-baselines:
+benchmarks:
   methods:
     - uniform
     - douglas_peucker

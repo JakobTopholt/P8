@@ -26,8 +26,8 @@ def test_load_default_config() -> None:
     ]
     assert config.queries.retained_point_budgets == [0.10, 0.20, 0.30, 0.40, 0.50]
     assert config.subsets.dev_size == 300
-    assert config.baselines.methods == ["uniform", "douglas_peucker", "query_witness"]
-    assert config.baselines.default_split == "dev"
+    assert config.benchmarks.methods == ["uniform", "douglas_peucker", "query_witness"]
+    assert config.benchmarks.default_split == "dev"
     assert config.performance.label_mode == "optimized"
     assert config.performance.evaluation_mode == "optimized"
     assert config.performance.session_profile == "laptop_safe"
@@ -73,7 +73,7 @@ def test_invalid_label_mode_raises(tmp_path: Path) -> None:
 def test_old_method_names_are_rejected(tmp_path: Path) -> None:
     config_path = PROJECT_ROOT / "configs" / "mvp.example.yaml"
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    raw["baselines"]["methods"] = ["uniform", "dp", "b3", "query_witness"]
+    raw["benchmarks"]["methods"] = ["uniform", "dp", "b3", "query_witness"]
 
     old_names_path = tmp_path / "old_method_names.yaml"
     old_names_path.write_text(yaml.safe_dump(raw), encoding="utf-8")

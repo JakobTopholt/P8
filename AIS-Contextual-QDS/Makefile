@@ -24,7 +24,7 @@ MIN_CORRIDOR_POSITIVES ?=
 
 CLI = $(PYTHON) -m src.cli --config $(CONFIG)
 
-.PHONY: help bootstrap load-context build-trajectories compute-labels compute-features create-dev-subset create-hardcase-subset label-balance compare-label-modes prepare-data benchmark summarize-baselines inspect-html inspect-qgis tune-postgres doctor status test
+.PHONY: help bootstrap load-context build-trajectories compute-labels compute-features create-dev-subset create-hardcase-subset label-balance compare-label-modes prepare-data benchmark summarize-benchmark inspect-html inspect-qgis tune-postgres doctor status test
 
 help:
 	@printf "AIS-Contextual-QDS Make Targets\n\n"
@@ -42,7 +42,7 @@ help:
 	@printf "  make label-balance [MODE=optimized|segment_exact] [SUBSET_NAME=...]\n"
 	@printf "  make compare-label-modes [BASE_MODE=optimized] [CANDIDATE_MODE=segment_exact] [SUBSET_NAME=...] [SPLIT=dev|eval]\n"
 	@printf "  make benchmark [METHODS=uniform,douglas_peucker,query_witness] [BUDGETS=0.1,0.2] [SUBSET_NAME=...] [EVALUATION_MODE=optimized|segment_exact] [TRUTH_LABEL_MODE=optimized|segment_exact] [RUN_TAG=...]\n"
-	@printf "  make summarize-baselines [RUN_TAG=...]\n"
+	@printf "  make summarize-benchmark [RUN_TAG=...]\n"
 	@printf "  make inspect-html [RUN_TAG=...] [METHOD=...] [BUDGET=...] [SUBSET_NAME=...] [SPLIT=dev|eval]\n"
 	@printf "  make inspect-qgis [RUN_TAG=...] [METHOD=...] [BUDGET=...] [SUBSET_NAME=...] [SPLIT=dev|eval]\n"
 	@printf "  make status\n"
@@ -83,8 +83,8 @@ prepare-data:
 benchmark:
 	$(CLI) benchmark --overwrite $(if $(METHODS),--methods $(METHODS),) $(if $(BUDGETS),--budgets $(BUDGETS),) $(if $(SUBSET_NAME),--subset-name $(SUBSET_NAME),) $(if $(SPLIT),--split $(SPLIT),) $(if $(EVALUATION_MODE),--evaluation-mode $(EVALUATION_MODE),) $(if $(TRUTH_LABEL_MODE),--truth-label-mode $(TRUTH_LABEL_MODE),) $(if $(RUN_TAG),--run-tag $(RUN_TAG),)
 
-summarize-baselines:
-	$(CLI) summarize-baselines $(if $(RUN_TAG),--run-tag $(RUN_TAG),)
+summarize-benchmark:
+	$(CLI) summarize-benchmark $(if $(RUN_TAG),--run-tag $(RUN_TAG),)
 
 inspect-html:
 	$(CLI) inspect-html $(if $(EVALUATION_MODE),--evaluation-mode $(EVALUATION_MODE),) $(if $(TRUTH_LABEL_MODE),--truth-label-mode $(TRUTH_LABEL_MODE),) $(if $(RUN_TAG),--run-tag $(RUN_TAG),) $(if $(METHOD),--method $(METHOD),) $(if $(BUDGET),--budget $(BUDGET),) $(if $(SUBSET_NAME),--subset-name $(SUBSET_NAME),) $(if $(SPLIT),--split $(SPLIT),)
