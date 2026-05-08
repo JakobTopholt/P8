@@ -12,7 +12,13 @@ from src.evaluation.evaluate_methods import (
     print_method_comparison_table,
     score_retained_mask,
 )
-from src.evaluation.metrics import MethodEvaluation, clustering_f1, f1_score
+from src.evaluation.metrics import (
+    MethodEvaluation,
+    clustering_f1,
+    compute_average_length_loss,
+    compute_length_preservation_aggregates,
+    f1_score,
+)
 from src.simplification.simplify_trajectories import simplify_with_temporal_score_hybrid
 
 
@@ -250,6 +256,47 @@ def test_retained_point_gap_stats_measure_original_spacing() -> None:
     assert avg_gap == pytest.approx((3.0 + 2.0 + 2.0) / 3.0)
     assert avg_norm_gap == pytest.approx(((3.0 / 5.0) + (2.0 / 5.0) + (2.0 / 2.0)) / 3.0)
     assert max_gap == pytest.approx(3.0)
+
+
+def test_length_preservation_aggregates_summarise_whole_set_with_one_value() -> None:
+    """One straight (length-preserved) trajectory and one collapsed trajectory.
+
+    Two trajectories of equal original length: traj A keeps its endpoints over a
+    straight chord (ratio 1.0 since intermediate points lie on the chord); traj B
+    keeps only one point so ratio collapses to 0.0. This pins the distributional
+    aggregates against per-trajectory weighting expectations.
+    """
+    traj_a = torch.stack([torch.tensor([float(i), 0.0, float(i), 1.0]) for i in range(5)])
+    traj_b = torch.stack([torch.tensor([float(i), 10.0, float(i), 1.0]) for i in range(5)])
+    points = torch.cat([traj_a, traj_b], dim=0)
+    boundaries = [(0, 5), (5, 10)]
+    retained = torch.tensor(
+        [True, False, False, False, True,
+         True, False, False, False, False],
+        dtype=torch.bool,
+    )
+
+    aggs = compute_length_preservation_aggregates(points, boundaries, retained)
+
+    assert aggs["n_trajectories"] == 2
+    assert aggs["mean_per_traj"] == pytest.approx(0.5)
+    assert aggs["median_per_traj"] == pytest.approx(0.5)
+    assert aggs["min_per_traj"] == pytest.approx(0.0)
+    assert aggs["frac_above_0p9"] == pytest.approx(0.5)
+    assert aggs["frac_above_0p95"] == pytest.approx(0.5)
+    assert aggs["weighted_ratio"] == pytest.approx(
+        compute_average_length_loss(points, boundaries, retained)
+    )
+
+
+def test_length_preservation_aggregates_handle_empty_eval_set() -> None:
+    """All-singleton trajectories: nothing is evaluable, so default to 1.0."""
+    points = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
+    aggs = compute_length_preservation_aggregates(points, [(0, 1)], torch.tensor([True]))
+
+    assert aggs["n_trajectories"] == 0
+    assert aggs["mean_per_traj"] == pytest.approx(1.0)
+    assert aggs["median_per_traj"] == pytest.approx(1.0)
 
 
 def test_method_comparison_table_labels_f1() -> None:

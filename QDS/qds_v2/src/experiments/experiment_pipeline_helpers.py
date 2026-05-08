@@ -33,6 +33,7 @@ from src.evaluation.baselines import (
 from src.evaluation.evaluate_methods import (
     evaluate_method,
     print_geometric_distortion_table,
+    print_length_preservation_table,
     print_method_comparison_table,
     print_shift_table,
 )
@@ -53,6 +54,7 @@ class ExperimentOutputs:
     shift_table: str
     metrics_dump: dict
     geometric_table: str = ""
+    length_preservation_table: str = ""
 
 
 def split_trajectories(
@@ -350,6 +352,7 @@ def run_experiment_pipeline(
 
     matched_table = print_method_comparison_table(matched)
     geometric_table = print_geometric_distortion_table(matched)
+    length_preservation_table = print_length_preservation_table(matched)
 
     with _phase("evaluate-shift"):
         train_name = _mix_name(train_mix)
@@ -399,6 +402,7 @@ def run_experiment_pipeline(
                 "max_retained_point_gap": m.max_retained_point_gap,
                 "geometric_distortion": m.geometric_distortion,
                 "avg_length_preserved": m.avg_length_preserved,
+                "length_preservation_aggregates": m.length_preservation_aggregates,
                 "combined_query_shape_score": m.combined_query_shape_score,
             }
             for name, m in matched.items()
@@ -416,6 +420,7 @@ def run_experiment_pipeline(
         (out_dir / "matched_table.txt").write_text(matched_table + "\n", encoding="utf-8")
         (out_dir / "shift_table.txt").write_text(shift_table + "\n", encoding="utf-8")
         (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
+        (out_dir / "length_preservation_table.txt").write_text(length_preservation_table + "\n", encoding="utf-8")
         with open(out_dir / "example_run.json", "w", encoding="utf-8") as f:
             json.dump(dump, f, indent=2)
         print(f"  wrote results to {out_dir}", flush=True)
@@ -465,6 +470,7 @@ def run_experiment_pipeline(
         shift_table=shift_table,
         metrics_dump=dump,
         geometric_table=geometric_table,
+        length_preservation_table=length_preservation_table,
     )
 
 

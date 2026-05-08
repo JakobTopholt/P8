@@ -1,0 +1,44 @@
+Method                      AnswerF1  CombinedF1 Compression    AvgPtGap   Latency(ms)        Type
+--------------------------------------------------------------------------------------------------
+MLQDS                       0.575677    0.072637      0.0203       50.21     179700.65         all
+  - range                   0.038350    0.038350                                             range
+  - knn                     0.879085    0.035835                                               knn
+  - similarity              0.631373    0.051900                                        similarity
+  - clustering              0.753901    0.164463                                        clustering
+uniform                     0.576955    0.071544      0.0203       50.21         80.17         all
+  - range                   0.039484    0.039484                                             range
+  - knn                     0.877451    0.034916                                               knn
+  - similarity              0.627451    0.047031                                        similarity
+  - clustering              0.763434    0.164743                                        clustering
+DouglasPeucker              0.535890    0.070391      0.0203       50.21       4389.67         all
+  - range                   0.034979    0.034979                                             range
+  - knn                     0.854575    0.036091                                               knn
+  - similarity              0.572549    0.047782                                        similarity
+  - clustering              0.681458    0.162712                                        clustering
+Oracle                      0.627207    0.380996      0.0210       48.52        249.38         all
+  - range                   0.390535    0.390535                                             range
+  - knn                     0.705882    0.378274                                               knn
+  - similarity              0.647930    0.487876                                        similarity
+  - clustering              0.764480    0.267296                                        clustering
+--------------------------------------------------------------------------------------------------
+Diff vs MLQDS (AnswerF1 / CombinedF1; abs and % vs baseline)
+  vs uniform               -0.001278   +0.001093                                               all
+      (% vs baseline)          -0.2%       +1.5%                                               all
+    - range                -0.001135   -0.001135                                             range
+      (% vs baseline)          -2.9%       -2.9%                                             range
+    - knn                  +0.001634   +0.000918                                               knn
+      (% vs baseline)          +0.2%       +2.6%                                               knn
+    - similarity           +0.003922   +0.004869                                        similarity
+      (% vs baseline)          +0.6%      +10.4%                                        similarity
+    - clustering           -0.009534   -0.000280                                        clustering
+      (% vs baseline)          -1.2%       -0.2%                                        clustering
+  vs DouglasPeucker        +0.039787   +0.002246                                               all
+      (% vs baseline)          +7.4%       +3.2%                                               all
+    - range                +0.003370   +0.003370                                             range
+      (% vs baseline)          +9.6%       +9.6%                                             range
+    - knn                  +0.024510   -0.000256                                               knn
+      (% vs baseline)          +2.9%       -0.7%                                               knn
+    - similarity           +0.058824   +0.004118                                        similarity
+      (% vs baseline)         +10.3%       +8.6%                                        similarity
+    - clustering           +0.072443   +0.001751                                        clustering
+      (% vs baseline)         +10.6%       +1.1%                                        clustering

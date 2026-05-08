@@ -12,6 +12,7 @@ from src.evaluation.metrics import (
     clustering_f1,
     compute_average_length_loss,
     compute_geometric_distortion,
+    compute_length_preservation_aggregates,
     f1_score,
 )
 from src.queries.query_executor import execute_typed_query
@@ -296,7 +297,8 @@ def evaluate_method(
     comp = float(retained_mask.float().mean().item())
     avg_gap, avg_norm_gap, max_gap = _retained_point_gap_stats(retained_mask, boundaries)
     geometric = compute_geometric_distortion(points, boundaries, retained_mask)
-    avg_length_preserved = compute_average_length_loss(points, boundaries, retained_mask)
+    length_aggs = compute_length_preservation_aggregates(points, boundaries, retained_mask)
+    avg_length_preserved = float(length_aggs.get("weighted_ratio", 1.0))
     combined = float(aggregate) * max(0.0, min(1.0, avg_length_preserved))
 
     return MethodEvaluation(
@@ -311,6 +313,7 @@ def evaluate_method(
         max_retained_point_gap=max_gap,
         geometric_distortion=geometric,
         avg_length_preserved=avg_length_preserved,
+        length_preservation_aggregates=length_aggs,
         combined_query_shape_score=combined,
         retained_mask=retained_mask if return_mask else None,
     )
@@ -456,6 +459,46 @@ def print_geometric_distortion_table(results: dict[str, MethodEvaluation]) -> st
             f"{g.get('max_ped_km', 0.0):>{col5}.2f}"
             f"{metrics.avg_length_preserved:>{col6}.4f}"
             f"{metrics.combined_query_shape_score:>{col7}.6f}"
+        )
+    return "\n".join(lines)
+
+
+def print_length_preservation_table(results: dict[str, MethodEvaluation]) -> str:
+    """Render whole-eval-set length-preservation distributional summary.
+
+    Each row reports one method; every column is a single number computed once
+    over all evaluable trajectories (no per-query-type breakdown). Higher is
+    better in every column. Weighted is the headline length-weighted ratio
+    (sum_simp_km / sum_orig_km, same as LengthPres on the geometric table);
+    Mean / Median / P10 / Min summarise the distribution of per-trajectory
+    ratios; Frac>=0.9 / Frac>=0.95 are tail-coverage indicators. NTraj is the
+    number of trajectories that contributed (length >= 2 points and non-zero km).
+    """
+    col1, col2, col3, col4, col5, col6, col7, col8, col9 = 24, 11, 11, 11, 11, 11, 11, 11, 8
+    header = (
+        f"{'Method':<{col1}}"
+        f"{'Weighted':>{col2}}"
+        f"{'Mean':>{col3}}"
+        f"{'Median':>{col4}}"
+        f"{'P10':>{col5}}"
+        f"{'Min':>{col6}}"
+        f"{'Frac>=0.9':>{col7}}"
+        f"{'Frac>=.95':>{col8}}"
+        f"{'NTraj':>{col9}}"
+    )
+    lines = [header, "-" * len(header)]
+    for name, metrics in results.items():
+        a = metrics.length_preservation_aggregates or {}
+        lines.append(
+            f"{name:<{col1}}"
+            f"{a.get('weighted_ratio', metrics.avg_length_preserved):>{col2}.4f}"
+            f"{a.get('mean_per_traj', 0.0):>{col3}.4f}"
+            f"{a.get('median_per_traj', 0.0):>{col4}.4f}"
+            f"{a.get('p10_per_traj', 0.0):>{col5}.4f}"
+            f"{a.get('min_per_traj', 0.0):>{col6}.4f}"
+            f"{a.get('frac_above_0p9', 0.0):>{col7}.4f}"
+            f"{a.get('frac_above_0p95', 0.0):>{col8}.4f}"
+            f"{int(a.get('n_trajectories', 0)):>{col9}d}"
         )
     return "\n".join(lines)
 

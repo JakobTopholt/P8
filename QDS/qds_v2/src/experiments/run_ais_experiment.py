@@ -161,6 +161,8 @@ def main() -> None:
     print(out.matched_table)
     print("\nGeometric-distortion table (lower is better; SED = time-synchronous, PED = perpendicular, in km)")
     print(out.geometric_table)
+    print("\nLength-preservation table (whole-set distributional summary; higher is better)")
+    print(out.length_preservation_table)
     print("\nDistribution-shift table")
     print(out.shift_table)
 

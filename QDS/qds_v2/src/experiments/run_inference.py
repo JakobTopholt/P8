@@ -39,6 +39,7 @@ from src.evaluation.baselines import (
 from src.evaluation.evaluate_methods import (
     evaluate_method,
     print_geometric_distortion_table,
+    print_length_preservation_table,
     print_method_comparison_table,
 )
 from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
@@ -250,15 +251,19 @@ def main() -> None:
 
     table = print_method_comparison_table(results)
     geometric_table = print_geometric_distortion_table(results)
+    length_preservation_table = print_length_preservation_table(results)
     print("\nMatched-workload table (inference on new CSV)")
     print(table)
     print("\nGeometric-distortion table (lower is better; SED = time-synchronous, PED = perpendicular, in km)")
     print(geometric_table)
+    print("\nLength-preservation table (whole-set distributional summary; higher is better)")
+    print(length_preservation_table)
 
     out_dir = Path(args.results_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "matched_table.txt").write_text(table + "\n", encoding="utf-8")
     (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
+    (out_dir / "length_preservation_table.txt").write_text(length_preservation_table + "\n", encoding="utf-8")
 
     dump = {
         "checkpoint": str(args.checkpoint),
@@ -281,6 +286,7 @@ def main() -> None:
                 "max_retained_point_gap": m.max_retained_point_gap,
                 "geometric_distortion": m.geometric_distortion,
                 "avg_length_preserved": m.avg_length_preserved,
+                "length_preservation_aggregates": m.length_preservation_aggregates,
                 "combined_query_shape_score": m.combined_query_shape_score,
             }
             for name, m in results.items()
