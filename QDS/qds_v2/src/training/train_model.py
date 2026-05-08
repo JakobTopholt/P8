@@ -13,7 +13,12 @@ from src.experiments.experiment_config import ModelConfig, TypedQueryWorkload
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
 from src.queries.query_types import ID_TO_QUERY_NAME, NUM_QUERY_TYPES
-from src.simplification.simplify_trajectories import evenly_spaced_indices, simplify_with_temporal_score_hybrid
+from src.simplification.simplify_trajectories import (
+    evenly_spaced_indices,
+    simplify_with_score_and_coverage,
+    simplify_with_scores,
+    simplify_with_temporal_score_hybrid,
+)
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.scaler import FeatureScaler
 from src.training.trajectory_batching import TrajectoryBatch, batch_windows, build_trajectory_windows
@@ -416,13 +421,25 @@ def _validation_query_f1(
         model_config=model_config,
         device=device,
     )
-    retained_mask = simplify_with_temporal_score_hybrid(
-        scores,
-        boundaries,
-        model_config.compression_ratio,
-        temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
-        diversity_bonus=float(getattr(model_config, "mlqds_diversity_bonus", 0.05)),
-    )
+    mode = str(getattr(model_config, "simplification_mode", "score_coverage")).lower()
+    if mode == "score_coverage":
+        retained_mask = simplify_with_score_and_coverage(
+            scores,
+            boundaries,
+            model_config.compression_ratio,
+            coverage_lambda=float(getattr(model_config, "coverage_lambda", 0.5)),
+            coverage_sigma_fraction=float(getattr(model_config, "coverage_sigma_fraction", 0.5)),
+        )
+    elif mode == "topk":
+        retained_mask = simplify_with_scores(scores, boundaries, model_config.compression_ratio)
+    else:
+        retained_mask = simplify_with_temporal_score_hybrid(
+            scores,
+            boundaries,
+            model_config.compression_ratio,
+            temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
+            diversity_bonus=float(getattr(model_config, "mlqds_diversity_bonus", 0.05)),
+        )
     answer_agg, answer_pt, combined_agg, combined_pt = score_retained_mask(
         points=points,
         boundaries=boundaries,
@@ -522,6 +539,7 @@ def train_model(
         type_embed_dim=model_config.type_embed_dim,
         query_chunk_size=model_config.query_chunk_size,
         dropout=model_config.dropout,
+        use_cls_token=bool(getattr(model_config, "use_cls_token", True)),
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

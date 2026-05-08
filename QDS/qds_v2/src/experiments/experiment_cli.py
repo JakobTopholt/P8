@@ -142,9 +142,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--residual_label_mode",
         type=str,
-        default="temporal",
+        default="none",
         choices=["none", "temporal"],
-        help="Use labels directly, or train only on points not already kept by the temporal base.",
+        help="Use labels directly (default), or train only on points not already kept by the temporal base. 'none' is required for the 'score_coverage' simplifier.",
+    )
+    parser.add_argument(
+        "--simplification_mode",
+        type=str,
+        default="score_coverage",
+        choices=["score_coverage", "hybrid", "topk"],
+        help="How learned scores are converted to a retained mask. 'score_coverage' (default): per-trajectory greedy with Gaussian density penalty (coverage-aware top-k). 'hybrid': temporal base + learned residual fill. 'topk': pure top-k.",
+    )
+    parser.add_argument(
+        "--coverage_lambda",
+        type=float,
+        default=0.5,
+        help="Weight of the density penalty in score_coverage selection. 0.0 reduces to top-k; larger values approach uniform spacing.",
+    )
+    parser.add_argument(
+        "--coverage_sigma_fraction",
+        type=float,
+        default=0.5,
+        help="Gaussian kernel width as a fraction of expected spacing (n/k). Larger values spread the penalty more broadly.",
+    )
+    parser.add_argument(
+        "--use_cls_token",
+        type=str,
+        default="true",
+        choices=["true", "false"],
+        help="Whether the trajectory transformer uses a learnable CLS summary token consumed by cross-attention.",
     )
     parser.add_argument(
         "--save_model",

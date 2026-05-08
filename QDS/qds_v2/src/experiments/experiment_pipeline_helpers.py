@@ -308,6 +308,9 @@ def run_experiment_pipeline(
             workload_mix=eval_mix,
             temporal_fraction=config.model.mlqds_temporal_fraction,
             diversity_bonus=config.model.mlqds_diversity_bonus,
+            simplification_mode=getattr(config.model, "simplification_mode", "score_coverage"),
+            coverage_lambda=float(getattr(config.model, "coverage_lambda", 0.5)),
+            coverage_sigma_fraction=float(getattr(config.model, "coverage_sigma_fraction", 0.5)),
         ),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
@@ -364,6 +367,9 @@ def run_experiment_pipeline(
                         workload_mix=train_mix,
                         temporal_fraction=config.model.mlqds_temporal_fraction,
                         diversity_bonus=config.model.mlqds_diversity_bonus,
+                        simplification_mode=getattr(config.model, "simplification_mode", "score_coverage"),
+                        coverage_lambda=float(getattr(config.model, "coverage_lambda", 0.5)),
+                        coverage_sigma_fraction=float(getattr(config.model, "coverage_sigma_fraction", 0.5)),
                     ),
                     points=test_points,
                     boundaries=test_boundaries,
@@ -426,6 +432,9 @@ def run_experiment_pipeline(
                     workload_mix=eval_mix,
                     temporal_fraction=config.model.mlqds_temporal_fraction,
                     diversity_bonus=config.model.mlqds_diversity_bonus,
+                    simplification_mode=getattr(config.model, "simplification_mode", "score_coverage"),
+                    coverage_lambda=float(getattr(config.model, "coverage_lambda", 0.5)),
+                    coverage_sigma_fraction=float(getattr(config.model, "coverage_sigma_fraction", 0.5)),
                 )
                 eval_mask = eval_mlqds.simplify(test_points, test_boundaries, config.model.compression_ratio)
             write_simplified_csv(

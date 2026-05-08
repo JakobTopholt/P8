@@ -13,6 +13,7 @@ import torch
 from src.experiments.experiment_config import TypedQueryWorkload
 from src.simplification.simplify_trajectories import (
     evenly_spaced_indices,
+    simplify_with_score_and_coverage,
     simplify_with_scores,
     simplify_with_temporal_score_hybrid,
 )
@@ -44,6 +45,9 @@ class MLQDSMethod:
     workload_mix: dict[str, float]
     temporal_fraction: float = 0.75
     diversity_bonus: float = 0.05
+    simplification_mode: str = "score_coverage"
+    coverage_lambda: float = 0.5
+    coverage_sigma_fraction: float = 0.5
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
         """Simplify using workload-weighted typed scores.
@@ -91,6 +95,17 @@ class MLQDSMethod:
                 head = pred[s:e, t_idx]
                 ranks = head.argsort().argsort().to(torch.float32) / denom
                 score[s:e] = score[s:e] + w * ranks
+        mode = str(self.simplification_mode).lower()
+        if mode == "score_coverage":
+            return simplify_with_score_and_coverage(
+                score,
+                boundaries,
+                compression_ratio,
+                coverage_lambda=self.coverage_lambda,
+                coverage_sigma_fraction=self.coverage_sigma_fraction,
+            )
+        if mode == "topk":
+            return simplify_with_scores(score, boundaries, compression_ratio)
         return simplify_with_temporal_score_hybrid(
             score,
             boundaries,

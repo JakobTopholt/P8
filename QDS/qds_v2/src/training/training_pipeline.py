@@ -63,8 +63,18 @@ def load_checkpoint(path: str) -> ModelArtifacts:
         num_layers=cfg.model.num_layers,
         type_embed_dim=cfg.model.type_embed_dim,
         dropout=cfg.model.dropout,
+        use_cls_token=bool(getattr(cfg.model, "use_cls_token", True)),
     )
-    model.load_state_dict(payload["model_state"])
+    # strict=False so older checkpoints (saved before CLS token / per-head
+    # temperature were added) still load — the new parameters fall back to
+    # their identity-at-init values, giving deterministic and unchanged
+    # behaviour for those checkpoints.
+    missing, unexpected = model.load_state_dict(payload["model_state"], strict=False)
+    if missing or unexpected:
+        print(
+            f"  [load_checkpoint] state_dict mismatch  missing={list(missing)}  unexpected={list(unexpected)}",
+            flush=True,
+        )
     model.eval()
     scaler = FeatureScaler.from_dict(payload["scaler"])
     return ModelArtifacts(

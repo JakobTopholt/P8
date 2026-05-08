@@ -103,7 +103,11 @@ class ModelConfig:
     checkpoint_f1_variant: str = "answer"
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.05
-    residual_label_mode: str = "temporal"
+    residual_label_mode: str = "none"
+    simplification_mode: str = "score_coverage"
+    coverage_lambda: float = 0.5
+    coverage_sigma_fraction: float = 0.5
+    use_cls_token: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -258,7 +262,11 @@ def build_experiment_config(
     knn_k: int = 12,
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.05,
-    residual_label_mode: str = "temporal",
+    residual_label_mode: str = "none",
+    simplification_mode: str = "score_coverage",
+    coverage_lambda: float = 0.5,
+    coverage_sigma_fraction: float = 0.5,
+    use_cls_token: bool = True,
     **_ignored_kwargs: Any,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
@@ -301,6 +309,10 @@ def build_experiment_config(
             mlqds_temporal_fraction=mlqds_temporal_fraction,
             mlqds_diversity_bonus=mlqds_diversity_bonus,
             residual_label_mode=residual_label_mode,
+            simplification_mode=simplification_mode,
+            coverage_lambda=coverage_lambda,
+            coverage_sigma_fraction=coverage_sigma_fraction,
+            use_cls_token=use_cls_token,
         ),
     )
 

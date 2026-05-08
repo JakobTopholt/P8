@@ -77,6 +77,10 @@ def main() -> None:
         mlqds_temporal_fraction=args.mlqds_temporal_fraction,
         mlqds_diversity_bonus=args.mlqds_diversity_bonus,
         residual_label_mode=args.residual_label_mode,
+        simplification_mode=args.simplification_mode,
+        coverage_lambda=args.coverage_lambda,
+        coverage_sigma_fraction=args.coverage_sigma_fraction,
+        use_cls_token=str(args.use_cls_token).lower() == "true",
     )
 
     coverage_msg = (
@@ -97,7 +101,9 @@ def main() -> None:
         f"f1_variant={args.checkpoint_f1_variant}  "
         f"range_spatial_fraction={args.range_spatial_fraction}  range_time_fraction={args.range_time_fraction}  "
         f"knn_k={args.knn_k}  mlqds_temporal_fraction={args.mlqds_temporal_fraction}  "
-        f"residual_label_mode={args.residual_label_mode}",
+        f"residual_label_mode={args.residual_label_mode}  "
+        f"simplification_mode={args.simplification_mode}  coverage_lambda={args.coverage_lambda}  "
+        f"coverage_sigma_fraction={args.coverage_sigma_fraction}  use_cls_token={args.use_cls_token}",
         flush=True,
     )
 
