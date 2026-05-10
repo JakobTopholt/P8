@@ -39,10 +39,10 @@ from src.evaluation.baselines import (
 from src.evaluation.evaluate_methods import (
     evaluate_method,
     print_geometric_distortion_table,
-    print_length_preservation_table,
+    print_length_retention_whole_set_table,
     print_method_comparison_table,
 )
-from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
+from src.experiments.geojson_writers import write_queries_geojson, write_simplified_csv
 from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import NUM_QUERY_TYPES
 from src.training.train_model import TrainingOutputs
@@ -224,6 +224,7 @@ def main() -> None:
             simplification_mode=str(getattr(saved_cfg.model, "simplification_mode", "score_coverage")),
             coverage_lambda=float(getattr(saved_cfg.model, "coverage_lambda", 0.5)),
             coverage_sigma_fraction=float(getattr(saved_cfg.model, "coverage_sigma_fraction", 0.5)),
+            length_preservation_weight=float(getattr(saved_cfg.model, "length_preservation_weight", 0.0)),
         ),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
@@ -251,19 +252,18 @@ def main() -> None:
 
     table = print_method_comparison_table(results)
     geometric_table = print_geometric_distortion_table(results)
-    length_preservation_table = print_length_preservation_table(results)
+    length_retention_whole_set_table = print_length_retention_whole_set_table(results, points, boundaries)
     print("\nMatched-workload table (inference on new CSV)")
     print(table)
     print("\nGeometric-distortion table (lower is better; SED = time-synchronous, PED = perpendicular, in km)")
     print(geometric_table)
-    print("\nLength-preservation table (whole-set distributional summary; higher is better)")
-    print(length_preservation_table)
+    print("\n" + length_retention_whole_set_table)
 
     out_dir = Path(args.results_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "matched_table.txt").write_text(table + "\n", encoding="utf-8")
     (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
-    (out_dir / "length_preservation_table.txt").write_text(length_preservation_table + "\n", encoding="utf-8")
+    (out_dir / "length_retention_whole_set_table.txt").write_text(length_retention_whole_set_table + "\n", encoding="utf-8")
 
     dump = {
         "checkpoint": str(args.checkpoint),
@@ -296,12 +296,6 @@ def main() -> None:
         json.dump(dump, f, indent=2)
     print(f"[write] results -> {out_dir}", flush=True)
 
-    t0 = time.perf_counter()
-    print("[trajectory-length-loss] starting...", flush=True)
-    try:
-        report_trajectory_length_loss(points, boundaries, mlqds_mask, top_k=25, trajectory_mmsis=trajectory_mmsis)
-    finally:
-        print(f"[trajectory-length-loss] done in {time.perf_counter() - t0:.2f}s", flush=True)
 
     if args.save_simplified_dir:
         out_dir_simp = Path(args.save_simplified_dir)

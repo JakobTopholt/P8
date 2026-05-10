@@ -112,6 +112,7 @@ class ModelConfig:
     use_cls_token: bool = True
     knn_label_variant: str = "legacy"
     range_label_variant: str = "legacy"
+    length_preservation_weight: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -275,6 +276,7 @@ def build_experiment_config(
     use_cls_token: bool = True,
     knn_label_variant: str = "legacy",
     range_label_variant: str = "legacy",
+    length_preservation_weight: float = 0.0,
     **_ignored_kwargs: Any,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
@@ -325,6 +327,7 @@ def build_experiment_config(
             use_cls_token=use_cls_token,
             knn_label_variant=knn_label_variant,
             range_label_variant=range_label_variant,
+            length_preservation_weight=length_preservation_weight,
         ),
     )
 

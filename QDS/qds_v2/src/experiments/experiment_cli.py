@@ -199,6 +199,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="range label weighting. 'legacy' boosts boundary-crossing points 2x and adds cross-trajectory proximity prior; 'uniform' gives every in-box point equal label mass (matches range AnswerF1 = point-recall, doesn't reward boundary detection).",
     )
     parser.add_argument(
+        "--length_preservation_weight",
+        type=float,
+        default=0.0,
+        help="Weight (mu) on the polyline-detour shape bonus inside the score_coverage simplifier. 0 = no shape signal (current behaviour). Positive values push MLQDS toward Douglas-Peucker-style retention of shape-defining points while keeping the learned score and coverage terms; the bonus is normalised by the trajectory's mean inter-point step so mu=0.5-1.0 is a reasonable starting range.",
+    )
+    parser.add_argument(
         "--save_model",
         type=str,
         default=None,

@@ -85,6 +85,7 @@ def main() -> None:
         use_cls_token=str(args.use_cls_token).lower() == "true",
         knn_label_variant=args.knn_label_variant,
         range_label_variant=args.range_label_variant,
+        length_preservation_weight=args.length_preservation_weight,
     )
 
     coverage_msg = (
@@ -166,9 +167,9 @@ def main() -> None:
     print(out.matched_table)
     print("\nGeometric-distortion table (lower is better; SED = time-synchronous, PED = perpendicular, in km)")
     print(out.geometric_table)
-    print("\nLength-preservation table (whole-set distributional summary; higher is better)")
-    print(out.length_preservation_table)
-    print("\n" + out.eval_query_length_table)
+    print("\n" + out.length_retention_whole_set_table)
+    print("\n" + out.length_retention_eval_query_table)
+    print("\n" + out.length_retention_in_query_table)
     print("\n" + out.top_best_queries_table)
     print("\n" + out.top_worst_queries_table)
     print("\nDistribution-shift table")

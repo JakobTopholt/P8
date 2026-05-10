@@ -213,6 +213,75 @@ def compute_average_length_loss(
     return float(max(0.0, min(1.0, total_simp_km / total_orig_km)))
 
 
+def compute_in_query_length_retention(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+    support_mask: torch.Tensor,
+) -> dict[str, float]:
+    """Length retention restricted to the in-query segment of each touched trajectory.
+
+    For each trajectory that contains at least one in-query point (per support_mask),
+    the segment evaluated runs from `first_in_query_point - 1` to `last_in_query_point + 1`
+    (clipped at trajectory ends). This is the third scope: not the whole eval set,
+    not the whole trajectory of any-touched-query, but the slice the query actually
+    cares about plus one anchor point on each side so the polyline length is
+    well-defined (the chord that enters/leaves the query region is counted).
+
+    Returns avg_orig_km, avg_simp_km, and the ratio (length_retention) over the
+    set of in-query segments. Trajectories with <2 in-query points or zero
+    original km are excluded.
+    """
+    points_cpu = points.detach().cpu()
+    retained_cpu = retained_mask.detach().cpu().bool()
+    support_cpu = support_mask.detach().cpu().bool()
+    lats = points_cpu[:, 1]
+    lons = points_cpu[:, 2]
+
+    orig_kms: list[float] = []
+    simp_kms: list[float] = []
+    for s, e in boundaries:
+        if e - s < 2:
+            continue
+        traj_support = support_cpu[s:e]
+        if int(traj_support.sum().item()) <= 0:
+            continue
+        in_idx = torch.where(traj_support)[0]
+        first_in = int(in_idx.min().item())
+        last_in = int(in_idx.max().item())
+        seg_start = max(0, first_in - 1)
+        seg_end = min((e - s) - 1, last_in + 1)
+        if seg_end - seg_start < 1:
+            continue
+        # Original polyline within the segment (always uses every original point in segment).
+        seg_lat = lats[s + seg_start : s + seg_end + 1]
+        seg_lon = lons[s + seg_start : s + seg_end + 1]
+        orig_km = _polyline_length_km(seg_lat, seg_lon)
+        if orig_km <= 1e-9:
+            continue
+        # Simplified polyline within the segment: only retained points in [seg_start, seg_end].
+        seg_retained = retained_cpu[s + seg_start : s + seg_end + 1]
+        if int(seg_retained.sum().item()) >= 2:
+            simp_km = _polyline_length_km(seg_lat[seg_retained], seg_lon[seg_retained])
+        else:
+            simp_km = 0.0
+        orig_kms.append(float(orig_km))
+        simp_kms.append(float(simp_km))
+
+    n = len(orig_kms)
+    if n == 0:
+        return {"avg_orig_km": 0.0, "avg_simp_km": 0.0, "retention": 1.0, "n_segments": 0}
+    sum_orig = sum(orig_kms)
+    sum_simp = sum(simp_kms)
+    retention = 1.0 if sum_orig <= 1e-9 else max(0.0, min(1.0, sum_simp / sum_orig))
+    return {
+        "avg_orig_km": float(sum_orig / n),
+        "avg_simp_km": float(sum_simp / n),
+        "retention": float(retention),
+        "n_segments": n,
+    }
+
+
 def compute_length_preserved_for_trajectories(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],

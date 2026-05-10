@@ -48,6 +48,7 @@ class MLQDSMethod:
     simplification_mode: str = "score_coverage"
     coverage_lambda: float = 0.5
     coverage_sigma_fraction: float = 0.5
+    length_preservation_weight: float = 0.0
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
         """Simplify using workload-weighted typed scores.
@@ -103,6 +104,8 @@ class MLQDSMethod:
                 compression_ratio,
                 coverage_lambda=self.coverage_lambda,
                 coverage_sigma_fraction=self.coverage_sigma_fraction,
+                points=points if self.length_preservation_weight > 0.0 else None,
+                length_preservation_weight=self.length_preservation_weight,
             )
         if mode == "topk":
             return simplify_with_scores(score, boundaries, compression_ratio)

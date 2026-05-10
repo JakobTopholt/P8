@@ -12,6 +12,7 @@ from src.evaluation.metrics import (
     clustering_f1,
     compute_average_length_loss,
     compute_geometric_distortion,
+    compute_in_query_length_retention,
     compute_length_preservation_aggregates,
     compute_length_preserved_for_trajectories,
     f1_score,
@@ -429,25 +430,22 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
 
 
 def print_geometric_distortion_table(results: dict[str, MethodEvaluation]) -> str:
-    """Render geometric-distortion + shape-aware utility comparison.
+    """Render geometric-distortion table (SED + PED in km; lower is better).
 
-    SED (Meratnia & de By 2004) and PED (Imai & Iri 1988; what Douglas-Peucker
-    minimises) are reported in km — lower is better. LengthPres is the fraction of
-    total path length preserved (sum_simp_km / sum_orig_km) in [0, 1] — higher is better.
-    F1xLen combines aggregate query F1 with shape preservation: equals F1 when shape
-    is perfect (length_preserved=1.0) and 0 when simplified trajectory collapses
-    (length_preserved=0.0) — higher is better. Use this column as the single
-    shape-aware utility number when comparing methods.
+    SED (Meratnia & de By 2004) is the time-synchronous distance from each
+    removed point to the linearly-interpolated chord between the two retained
+    points that bracket it in time. PED (Imai & Iri 1988; what Douglas-Peucker
+    minimises) is the perpendicular distance to the chord. Both are reported as
+    point-weighted averages over every removed point, plus the global maximum.
+    Length-retention numbers live in the dedicated 3-scope tables.
     """
-    col1, col2, col3, col4, col5, col6, col7 = 24, 11, 11, 11, 11, 13, 13
+    col1, col2, col3, col4, col5 = 24, 11, 11, 11, 11
     header = (
         f"{'Method':<{col1}}"
         f"{'AvgSED_km':>{col2}}"
         f"{'MaxSED_km':>{col3}}"
         f"{'AvgPED_km':>{col4}}"
         f"{'MaxPED_km':>{col5}}"
-        f"{'LengthPres':>{col6}}"
-        f"{'F1xLen':>{col7}}"
     )
     lines = [header, "-" * len(header)]
     for name, metrics in results.items():
@@ -458,8 +456,6 @@ def print_geometric_distortion_table(results: dict[str, MethodEvaluation]) -> st
             f"{g.get('max_sed_km', 0.0):>{col3}.2f}"
             f"{g.get('avg_ped_km', 0.0):>{col4}.4f}"
             f"{g.get('max_ped_km', 0.0):>{col5}.2f}"
-            f"{metrics.avg_length_preserved:>{col6}.4f}"
-            f"{metrics.combined_query_shape_score:>{col7}.6f}"
         )
     return "\n".join(lines)
 
@@ -637,14 +633,23 @@ def compute_per_query_diagnostics(
             mask = retained_masks_by_method[name]
             simp_pts, simp_bnd, simp_traj = simp_cache[name]
             n_retained_in = int((mask & support).sum().item())
-            length = compute_length_preserved_for_trajectories(points, boundaries, mask, trajectory_indices=traj_idx)
+            # Scope 2 view: full polyline of trajectories the query touches.
+            length_full = compute_length_preserved_for_trajectories(points, boundaries, mask, trajectory_indices=traj_idx)
+            # Scope 3 view: in-query segments (first_in-1 to last_in+1).
+            length_inquery = compute_in_query_length_retention(points, boundaries, mask, support)
             f1 = _query_answer_f1(points, boundaries, mask, query, full_traj, simp_pts, simp_bnd, simp_traj)
             per_method[name] = {
                 "answer_f1": float(f1),
-                "length_preserved": float(length["weighted_ratio"]),
+                # Backwards-compat field — Scope-2 retention (full trajectories of touched queries).
+                "length_preserved": float(length_full["weighted_ratio"]),
+                # New: Scope-3 retention restricted to in-query segments only.
+                "in_query_retention": float(length_inquery["retention"]),
+                "in_query_orig_km": float(length_inquery["avg_orig_km"] * max(1, length_inquery["n_segments"])),
+                "in_query_simp_km": float(length_inquery["avg_simp_km"] * max(1, length_inquery["n_segments"])),
+                "in_query_n_segments": int(length_inquery["n_segments"]),
                 "n_retained_in_query": n_retained_in,
                 "n_removed_in_query": int(n_in - n_retained_in),
-                "n_trajectories_touched": int(length["n_trajectories"]),
+                "n_trajectories_touched": int(length_full["n_trajectories"]),
             }
         out.append({
             "query_idx": q_idx,
@@ -674,26 +679,40 @@ def _gap_vs_baselines(diag_per_method: dict[str, dict[str, float]]) -> tuple[flo
     return float(mlqds - best_f1), best_name
 
 
-def print_top_queries_table(diagnostics: list[dict], k: int = 15, mode: str = "best") -> str:
-    """Render the top-K best (or worst) queries by MLQDS-vs-best-baseline gap.
+def _retention_gap_vs_baselines(diag_per_method: dict[str, dict[str, float]]) -> tuple[float, str]:
+    """For one query, return (gap, best_baseline_name) where gap = MLQDS_in_query_retention − best_baseline.
 
-    "best" sorts by gap descending — queries where MLQDS beats the better of
-    uniform/DP, plus close ties. "worst" sorts by gap ascending — where
-    MLQDS loses by the most. Each row reports the per-query AnswerF1 for
-    MLQDS / uniform / DP, the length-preservation comparison restricted to
-    the query's touched trajectories, the support size, and how many of those
-    points each method removed.
+    Mirrors _gap_vs_baselines but on Scope-3 length retention. Used to rank
+    queries when the user cares about length preservation more than F1.
     """
-    scored = [(d, *_gap_vs_baselines(d.get("per_method", {}))) for d in diagnostics]
+    if "MLQDS" not in diag_per_method:
+        return 0.0, ""
+    mlqds = diag_per_method["MLQDS"].get("in_query_retention", 0.0)
+    candidates = [(name, diag_per_method[name].get("in_query_retention", 0.0)) for name in ("uniform", "DouglasPeucker") if name in diag_per_method]
+    if not candidates:
+        return 0.0, ""
+    best_name, best_r = max(candidates, key=lambda x: x[1])
+    return float(mlqds - best_r), best_name
+
+
+def print_top_queries_table(diagnostics: list[dict], k: int = 15, mode: str = "best") -> str:
+    """Render the top-K best (or worst) queries by MLQDS Scope-3 retention gap.
+
+    "best" = top-K queries where MLQDS-in-query-retention exceeds the better of
+    uniform/DP by the most. "worst" = bottom-K (where MLQDS loses by the most).
+    Each row reports per-query AnswerF1 (for context, doesn't drive the rank)
+    and the in-query retention numbers that drive the ranking.
+    """
+    scored = [(d, *_retention_gap_vs_baselines(d.get("per_method", {}))) for d in diagnostics]
     if mode == "best":
         ranked = sorted(scored, key=lambda x: x[1], reverse=True)[:k]
-        title = f"Top {k} BEST queries (MLQDS gap vs best baseline; positive = MLQDS won)"
+        title = f"Top {k} BEST queries (MLQDS in-query retention gap vs best baseline; positive = MLQDS won)"
     else:
         ranked = sorted(scored, key=lambda x: x[1])[:k]
-        title = f"Top {k} WORST queries (MLQDS gap vs best baseline; negative = MLQDS lost)"
+        title = f"Top {k} WORST queries (MLQDS in-query retention gap vs best baseline; negative = MLQDS lost)"
 
-    cols = ["rank", "qid", "type", "gap", "MLQDS", "unif", "DP", "L_M", "L_U", "L_DP", "in_q", "rm_M", "rm_U", "rm_DP"]
-    widths = [4, 5, 11, 8, 8, 8, 8, 7, 7, 7, 6, 6, 6, 6]
+    cols = ["rank", "qid", "type", "gap_R", "R_M", "R_U", "R_DP", "F1_M", "F1_U", "F1_DP", "in_q", "rm_M", "rm_U", "rm_DP"]
+    widths = [4, 5, 11, 8, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6]
     header = "  ".join(f"{c:>{w}}" for c, w in zip(cols, widths))
     lines = [title, header, "-" * len(header)]
     for rank, (d, gap, _) in enumerate(ranked, start=1):
@@ -704,12 +723,12 @@ def print_top_queries_table(diagnostics: list[dict], k: int = 15, mode: str = "b
         row = [
             f"{rank}", f"{d['query_idx']}", d["type"],
             f"{gap:+.4f}",
+            f"{m.get('in_query_retention', 0.0):.3f}",
+            f"{u.get('in_query_retention', 0.0):.3f}",
+            f"{dp.get('in_query_retention', 0.0):.3f}",
             f"{m.get('answer_f1', 0.0):.4f}",
             f"{u.get('answer_f1', 0.0):.4f}",
             f"{dp.get('answer_f1', 0.0):.4f}",
-            f"{m.get('length_preserved', 0.0):.3f}",
-            f"{u.get('length_preserved', 0.0):.3f}",
-            f"{dp.get('length_preserved', 0.0):.3f}",
             f"{d['n_points_in_query']}",
             f"{m.get('n_removed_in_query', 0)}",
             f"{u.get('n_removed_in_query', 0)}",
@@ -720,25 +739,28 @@ def print_top_queries_table(diagnostics: list[dict], k: int = 15, mode: str = "b
 
 
 def write_top_queries_csv(diagnostics: list[dict], out_path: str, k: int = 15, mode: str = "best") -> None:
-    """Persist the top-K best (or worst) per-query rows with geometry for plotting.
+    """Persist the top-K best (or worst) per-query rows ranked by Scope-3 retention gap.
 
-    Same ranking as print_top_queries_table but the CSV carries the unified
-    spatial/temporal summary (center_lat/center_lon/t_center plus type-specific
-    extents) so plotting code can render each query's region on a map without
-    re-parsing the original query dicts. Empty cells where a field doesn't
-    apply (knn/similarity have no bbox; clustering has no time window).
+    Ranking metric: MLQDS_in_query_retention − max(uniform, DP) in_query_retention.
+    F1 columns are kept as context but don't drive the ordering. The CSV carries
+    the unified spatial/temporal summary (center_lat/center_lon/t_center plus
+    type-specific extents) so plotting code can render each query's region on a
+    map without re-parsing the original query dicts.
     """
-    scored = [(d, *_gap_vs_baselines(d.get("per_method", {}))) for d in diagnostics]
+    scored = [(d, *_retention_gap_vs_baselines(d.get("per_method", {}))) for d in diagnostics]
     if mode == "best":
         ranked = sorted(scored, key=lambda x: x[1], reverse=True)[:k]
     else:
         ranked = sorted(scored, key=lambda x: x[1])[:k]
     cols = [
-        "rank", "query_idx", "type", "gap_vs_best_baseline",
+        "rank", "query_idx", "type", "retention_gap_vs_best_baseline",
+        "MLQDS_in_query_retention", "uniform_in_query_retention", "DP_in_query_retention",
         "MLQDS_F1", "uniform_F1", "DP_F1",
-        "MLQDS_length_preserved", "uniform_length_preserved", "DP_length_preserved",
         "n_points_in_query", "n_trajectories_touched",
         "MLQDS_n_removed", "uniform_n_removed", "DP_n_removed",
+        "MLQDS_in_query_orig_km", "MLQDS_in_query_simp_km",
+        "uniform_in_query_orig_km", "uniform_in_query_simp_km",
+        "DP_in_query_orig_km", "DP_in_query_simp_km",
         "center_lat", "center_lon", "t_center",
         "lat_min", "lat_max", "lon_min", "lon_max",
         "t_start", "t_end", "radius", "t_half_window",
@@ -760,10 +782,13 @@ def write_top_queries_csv(diagnostics: list[dict], out_path: str, k: int = 15, m
             row = [
                 str(rank), str(d.get("query_idx", "")), str(d.get("type", "")),
                 _fmt(gap, 6),
+                _fmt(m.get("in_query_retention"), 6), _fmt(u.get("in_query_retention"), 6), _fmt(dp.get("in_query_retention"), 6),
                 _fmt(m.get("answer_f1"), 6), _fmt(u.get("answer_f1"), 6), _fmt(dp.get("answer_f1"), 6),
-                _fmt(m.get("length_preserved"), 6), _fmt(u.get("length_preserved"), 6), _fmt(dp.get("length_preserved"), 6),
                 str(int(d.get("n_points_in_query", 0))), str(int(d.get("n_trajectories_touched", 0))),
                 str(int(m.get("n_removed_in_query", 0))), str(int(u.get("n_removed_in_query", 0))), str(int(dp.get("n_removed_in_query", 0))),
+                _fmt(m.get("in_query_orig_km"), 4), _fmt(m.get("in_query_simp_km"), 4),
+                _fmt(u.get("in_query_orig_km"), 4), _fmt(u.get("in_query_simp_km"), 4),
+                _fmt(dp.get("in_query_orig_km"), 4), _fmt(dp.get("in_query_simp_km"), 4),
                 _fmt(g.get("center_lat"), 6), _fmt(g.get("center_lon"), 6), _fmt(g.get("t_center"), 3),
                 _fmt(g.get("lat_min"), 6), _fmt(g.get("lat_max"), 6), _fmt(g.get("lon_min"), 6), _fmt(g.get("lon_max"), 6),
                 _fmt(g.get("t_start"), 3), _fmt(g.get("t_end"), 3),
@@ -772,44 +797,103 @@ def write_top_queries_csv(diagnostics: list[dict], out_path: str, k: int = 15, m
             f.write(",".join(row) + "\n")
 
 
-def print_length_preservation_table(results: dict[str, MethodEvaluation]) -> str:
-    """Render whole-eval-set length-preservation distributional summary.
-
-    Each row reports one method; every column is a single number computed once
-    over all evaluable trajectories (no per-query-type breakdown). Higher is
-    better in every column. Weighted is the headline length-weighted ratio
-    (sum_simp_km / sum_orig_km, same as LengthPres on the geometric table);
-    Mean / Median / P10 / Min summarise the distribution of per-trajectory
-    ratios; Frac>=0.9 / Frac>=0.95 are tail-coverage indicators. NTraj is the
-    number of trajectories that contributed (length >= 2 points and non-zero km).
-    """
-    col1, col2, col3, col4, col5, col6, col7, col8, col9 = 24, 11, 11, 11, 11, 11, 11, 11, 8
+def _retention_rows(
+    method_aggs: dict[str, dict[str, float]],
+    n_field: str,
+    n_label: str,
+) -> str:
+    """Shared 4-column rendering for the 3 length-retention scope tables."""
+    col1, col2, col3, col4, col5 = 24, 13, 13, 11, 8
     header = (
         f"{'Method':<{col1}}"
-        f"{'Weighted':>{col2}}"
-        f"{'Mean':>{col3}}"
-        f"{'Median':>{col4}}"
-        f"{'P10':>{col5}}"
-        f"{'Min':>{col6}}"
-        f"{'Frac>=0.9':>{col7}}"
-        f"{'Frac>=.95':>{col8}}"
-        f"{'NTraj':>{col9}}"
+        f"{'avg_orig_km':>{col2}}"
+        f"{'avg_simp_km':>{col3}}"
+        f"{'Retention':>{col4}}"
+        f"{n_label:>{col5}}"
     )
     lines = [header, "-" * len(header)]
-    for name, metrics in results.items():
-        a = metrics.length_preservation_aggregates or {}
+    for name, agg in method_aggs.items():
         lines.append(
             f"{name:<{col1}}"
-            f"{a.get('weighted_ratio', metrics.avg_length_preserved):>{col2}.4f}"
-            f"{a.get('mean_per_traj', 0.0):>{col3}.4f}"
-            f"{a.get('median_per_traj', 0.0):>{col4}.4f}"
-            f"{a.get('p10_per_traj', 0.0):>{col5}.4f}"
-            f"{a.get('min_per_traj', 0.0):>{col6}.4f}"
-            f"{a.get('frac_above_0p9', 0.0):>{col7}.4f}"
-            f"{a.get('frac_above_0p95', 0.0):>{col8}.4f}"
-            f"{int(a.get('n_trajectories', 0)):>{col9}d}"
+            f"{agg.get('avg_orig_km', 0.0):>{col2}.4f}"
+            f"{agg.get('avg_simp_km', 0.0):>{col3}.4f}"
+            f"{agg.get('retention', 0.0):>{col4}.4f}"
+            f"{int(agg.get(n_field, 0)):>{col5}d}"
         )
     return "\n".join(lines)
+
+
+def print_length_retention_whole_set_table(
+    results: dict[str, MethodEvaluation],
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+) -> str:
+    """Length retention scope 1: every trajectory ≥2 points in the eval set.
+
+    Per method: avg_orig_km, avg_simp_km, retention (= sum_simp_km / sum_orig_km;
+    1.0 = perfect). Higher retention is better. NTraj is the count of
+    trajectories that contributed (length ≥ 2 points and non-zero km).
+    """
+    aggs: dict[str, dict[str, float]] = {}
+    for name, metrics in results.items():
+        if metrics.retained_mask is None:
+            aggs[name] = {"avg_orig_km": 0.0, "avg_simp_km": 0.0, "retention": metrics.avg_length_preserved, "n_trajectories": 0}
+            continue
+        agg = compute_length_preserved_for_trajectories(points, boundaries, metrics.retained_mask)
+        n = int(agg.get("n_trajectories", 0))
+        aggs[name] = {
+            "avg_orig_km": (agg["sum_orig_km"] / n) if n > 0 else 0.0,
+            "avg_simp_km": (agg["sum_simp_km"] / n) if n > 0 else 0.0,
+            "retention": float(agg["weighted_ratio"]),
+            "n_trajectories": n,
+        }
+    return "Length retention — Scope 1: whole eval set (every trajectory ≥2 points)\n" + _retention_rows(aggs, "n_trajectories", "NTraj")
+
+
+def print_length_retention_eval_query_table(per_method_aggs: dict[str, dict[str, float]]) -> str:
+    """Length retention scope 2: trajectories any eval query touches (full polyline)."""
+    aggs: dict[str, dict[str, float]] = {}
+    for name, agg in per_method_aggs.items():
+        n = int(agg.get("n_trajectories", 0))
+        aggs[name] = {
+            "avg_orig_km": float(agg.get("sum_orig_km", 0.0)) / n if n > 0 else 0.0,
+            "avg_simp_km": float(agg.get("sum_simp_km", 0.0)) / n if n > 0 else 0.0,
+            "retention": float(agg.get("weighted_ratio", 0.0)),
+            "n_trajectories": n,
+        }
+    return "Length retention — Scope 2: trajectories any eval query touches (full polyline)\n" + _retention_rows(aggs, "n_trajectories", "NTraj")
+
+
+def aggregate_in_query_retention_across_diagnostics(
+    diagnostics: list[dict],
+    method_names: list[str],
+) -> dict[str, dict[str, float]]:
+    """Sum per-query Scope-3 numbers into per-method aggregates."""
+    out: dict[str, dict[str, float]] = {n: {"sum_orig_km": 0.0, "sum_simp_km": 0.0, "n_segments": 0} for n in method_names}
+    for d in diagnostics:
+        for name in method_names:
+            pm = d.get("per_method", {}).get(name, {})
+            out[name]["sum_orig_km"] += float(pm.get("in_query_orig_km", 0.0))
+            out[name]["sum_simp_km"] += float(pm.get("in_query_simp_km", 0.0))
+            out[name]["n_segments"] += int(pm.get("in_query_n_segments", 0))
+    return out
+
+
+def print_length_retention_in_query_table(in_query_aggs: dict[str, dict[str, float]]) -> str:
+    """Length retention scope 3: in-query segments only (first_in-1 to last_in+1)."""
+    aggs: dict[str, dict[str, float]] = {}
+    for name, agg in in_query_aggs.items():
+        n = int(agg.get("n_segments", 0))
+        sum_orig = float(agg.get("sum_orig_km", 0.0))
+        sum_simp = float(agg.get("sum_simp_km", 0.0))
+        retention = 1.0 if sum_orig <= 1e-9 else max(0.0, min(1.0, sum_simp / sum_orig))
+        aggs[name] = {
+            "avg_orig_km": sum_orig / n if n > 0 else 0.0,
+            "avg_simp_km": sum_simp / n if n > 0 else 0.0,
+            "retention": retention,
+            "n_segments": n,
+        }
+    return "Length retention — Scope 3: in-query segments (first_in-1 to last_in+1)\n" + _retention_rows(aggs, "n_segments", "NSeg")
 
 
 def print_shift_table(shift_grid: dict[str, dict[str, float]]) -> str:

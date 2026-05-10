@@ -98,6 +98,77 @@ knob settings. None of the explored variants beats defaults universally — and
 many lose by big margins. The current code's defaults are at a clear local
 optimum across this knob space.
 
+## Length-preservation lever (2026-05-10) — beats DP on **both** F1 and length
+
+The new `--length_preservation_weight` (μ) knob in `simplify_with_score_and_coverage`
+adds a polyline-detour bonus to the greedy. Sweep on B1 mixed 1-day cr=0.05:
+
+| μ | MLQDS Answer | MLQDS LengthPres | ΔDP Answer | ΔDP LengthPres | Verdict |
+|---|---|---|---|---|---|
+| 0 (baseline) | 0.6275 | 0.989 | **+0.0368** | **−0.006** | F1 wins, length-pres loses |
+| 0.25 | 0.6184 | 0.9946 | +0.0277 | −0.0005 | almost ties on length-pres |
+| **0.50** | **0.6143** | **0.9949** | **+0.0236** | **−0.0002** | balanced sweet spot |
+| 1.00 | 0.6178 | **0.9951** | +0.0271 | **0.0000** | **TIES** DP on length-pres, F1 still well above |
+| 2.00 | 0.6140 | **0.9954** | +0.0233 | **+0.0003** | **BEATS DP on BOTH metrics** |
+
+**Result**: μ ≥ 1.0 ties or beats DP on length-pres while keeping F1 at +0.023–+0.027
+above DP. The μ=2.0 run beats DP on both metrics simultaneously — the goal you
+wanted. Recommendation: set μ=1.0 as the new default for mixed workload (best
+balance of F1 advantage + length-pres parity); use μ=2.0 if dual-dominance over
+DP on every metric is critical.
+
+The defaults table at the top of this doc still applies for everything else;
+just add `--length_preservation_weight=1.0` to the python invocation.
+
+## kNN collapse — known instability, scale-dependent
+
+Documented behaviour after 47 → 56 runs:
+
+| Setting | Collapse? | Outcome |
+|---|---|---|
+| 1-day kNN-only | NO | clean |
+| 1-day mixed B1 | NO | clean |
+| 3-day kNN-only | YES (transient ep 5, terminal ep 26) | survives via early-stop |
+| 6-day kNN-only k=12 (no AMP) | YES (terminal ep 7) | useless |
+| 6-day kNN-only k=12 (AMP+DDP) | YES (late) | survives, val_f1=0.988 |
+| 6-day kNN-only k=17 | YES (terminal ep 5) | trip-wire saves compute, worse final |
+| Any mixed B1 | NO | clean |
+
+**Root cause**: kNN labels are very sparse (~1.5% positive). On multi-day data,
+many windows have zero kNN positives — those are skipped, so the optimiser drifts
+toward the all-zero degenerate mode. Mixed workload prevents this because other
+types provide signal in those windows.
+
+**Workaround in code today**: collapse trip-wire (`COLLAPSE_TRIP_WIRE_DIAGS = 3`)
+in `train_model.py` aborts training when `pred_std < 1e-3` for 3 consecutive
+diag epochs and restores the best pre-collapse checkpoint.
+
+**Operational rule**: prefer mixed-workload training over kNN-only at multi-day
+scale. Mixed gives a kNN-head sub-score that **beats** dedicated kNN-only training:
+
+| day count | knn-only val_f1 | mixed knn-head val | winner |
+|---|---|---|---|
+| 1 | 0.892 | 0.900 | mixed |
+| 3 | 0.851 | 0.881 | mixed |
+| 6 | 0.843 | 0.873 | mixed |
+
+## Range cr sweep (2026-05-10) — confirms regime, not model bound
+
+Range MLQDS-vs-DP gap stays tiny across cr — confirming range is regime-bound:
+
+| cr | MLQDS | uniform | DP | Oracle | ΔDP | MLQDS / Oracle |
+|---|---|---|---|---|---|---|
+| 0.05 | 0.0953 | 0.0952 | 0.0948 | 0.391 | +0.0004 | 24% |
+| 0.10 | 0.1822 | 0.1819 | 0.1810 | 0.584 | +0.0012 | 31% |
+| 0.20 | 0.3341 | 0.3333 | 0.3312 | 0.789 | +0.0030 | 42% |
+| 0.30 | 0.4615 | 0.4616 | 0.4585 | 0.886 | +0.0030 | 52% |
+
+MLQDS stays glued to uniform at every cr (within 0.001). Margin over DP grows
+linearly with cr but max +0.003. **Range is fundamentally regime-bound**: it's
+not a "MLQDS can't differentiate" problem, it's "uniform is already near-optimal
+here and DP is slightly worse than uniform". No knob fixes range without changing
+the labels — confirmed.
+
 ## How to regenerate this analysis
 
 ```bash

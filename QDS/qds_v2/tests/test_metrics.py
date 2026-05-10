@@ -16,10 +16,14 @@ from src.evaluation.metrics import (
     MethodEvaluation,
     clustering_f1,
     compute_average_length_loss,
+    compute_in_query_length_retention,
     compute_length_preservation_aggregates,
     f1_score,
 )
-from src.simplification.simplify_trajectories import simplify_with_temporal_score_hybrid
+from src.simplification.simplify_trajectories import (
+    simplify_with_score_and_coverage,
+    simplify_with_temporal_score_hybrid,
+)
 
 
 class KeepAllMethod:
@@ -337,3 +341,119 @@ def test_method_comparison_table_shows_close_f1_values() -> None:
 
     assert "0.182369" in table
     assert "0.182423" in table
+
+
+def test_in_query_length_retention_uses_first_in_minus_one_to_last_in_plus_one() -> None:
+    """Scope 3 length retention covers in-query points plus 1 anchor on each side.
+
+    Build a single trajectory with 6 sequential points along a straight line. The
+    support_mask marks points 2 and 3 as in-query (query "touches" idx 2-3). The
+    in-query segment must therefore run idx 1..4 (one outside on each side, clipped
+    at trajectory ends). Original polyline length over idx 1..4 = 3 km × deg
+    factor; retention with all retained = 1.0; retention with only idx 1 and 4
+    retained ≈ 1.0 too (chord between same endpoints, same length on a straight
+    line); retention with only idx 1 retained = 0 (need ≥2 retained for any length).
+    """
+    # 6 points along constant-lon meridian, lat steps of 0.001 degrees so haversine
+    # distances are non-zero but small.
+    points = torch.tensor([
+        [0.0, 55.000, 12.0, 1.0],
+        [1.0, 55.001, 12.0, 1.0],
+        [2.0, 55.002, 12.0, 1.0],   # in_query
+        [3.0, 55.003, 12.0, 1.0],   # in_query
+        [4.0, 55.004, 12.0, 1.0],
+        [5.0, 55.005, 12.0, 1.0],
+    ], dtype=torch.float32)
+    boundaries = [(0, 6)]
+    support = torch.tensor([False, False, True, True, False, False])
+    # Retention = 1.0 when all in-segment points are kept (idx 1..4 retained).
+    retained_full = torch.tensor([False, True, True, True, True, False])
+    out_full = compute_in_query_length_retention(points, boundaries, retained_full, support)
+    assert out_full["n_segments"] == 1
+    assert out_full["retention"] == pytest.approx(1.0, abs=1e-4)
+
+    # Retention also = 1.0 when ONLY the two endpoints of the segment are kept,
+    # because the trajectory is straight (chord length == sum of step lengths).
+    retained_chord = torch.tensor([False, True, False, False, True, False])
+    out_chord = compute_in_query_length_retention(points, boundaries, retained_chord, support)
+    assert out_chord["retention"] == pytest.approx(1.0, abs=1e-4)
+
+    # When fewer than 2 retained points fall in the segment, simp_km is treated as 0.
+    retained_one = torch.tensor([False, True, False, False, False, False])
+    out_one = compute_in_query_length_retention(points, boundaries, retained_one, support)
+    assert out_one["retention"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_in_query_length_retention_handles_no_query_touched_trajectories() -> None:
+    """Trajectory with empty support mask is excluded from the aggregate."""
+    points = torch.tensor([
+        [0.0, 55.0, 12.0, 1.0],
+        [1.0, 55.001, 12.0, 1.0],
+    ], dtype=torch.float32)
+    boundaries = [(0, 2)]
+    support = torch.zeros(2, dtype=torch.bool)
+    retained = torch.ones(2, dtype=torch.bool)
+    out = compute_in_query_length_retention(points, boundaries, retained, support)
+    assert out["n_segments"] == 0
+    assert out["retention"] == pytest.approx(1.0)
+
+
+def test_score_coverage_simplifier_length_weight_zero_is_legacy_behaviour() -> None:
+    """With length_preservation_weight=0 the simplifier output is bit-identical to legacy.
+
+    This guards the opt-in nature of the length term: if the user doesn't ask for it,
+    nothing should change in the existing score+coverage code path.
+    """
+    n = 40
+    scores = torch.linspace(0.0, 1.0, n)
+    points = torch.stack([
+        torch.arange(n, dtype=torch.float32),       # t
+        torch.zeros(n, dtype=torch.float32),         # lat
+        torch.linspace(0.0, 1.0, n),                 # lon
+    ], dim=1)
+    boundaries = [(0, n)]
+    legacy = simplify_with_score_and_coverage(
+        scores, boundaries, compression_ratio=0.20,
+        coverage_lambda=0.5, coverage_sigma_fraction=0.5,
+    )
+    with_zero_mu = simplify_with_score_and_coverage(
+        scores, boundaries, compression_ratio=0.20,
+        coverage_lambda=0.5, coverage_sigma_fraction=0.5,
+        points=points, length_preservation_weight=0.0,
+    )
+    assert torch.equal(legacy, with_zero_mu)
+
+
+def test_score_coverage_simplifier_length_weight_prefers_off_chord_points() -> None:
+    """When length term is enabled, off-chord points get retained over on-chord ones.
+
+    Build a 5-point trajectory: 4 collinear (on-chord) + 1 off-chord 'detour' point.
+    With cr that picks one interior point, the length term should select the off-chord
+    point instead of the highest-score on-chord one.
+    """
+    # Indices 0,1,2,3 are colinear lat=0; index 2 is a detour at lat=1 (off chord).
+    # Score gives index 1 the highest score so legacy would pick it; length term
+    # should override and pick index 2 because it's off the chord.
+    points = torch.tensor([
+        [0.0, 0.0, 0.0],   # 0 endpoint
+        [1.0, 0.0, 0.25],  # 1 on chord, but high score
+        [2.0, 1.0, 0.50],  # 2 off chord — geometric detour
+        [3.0, 0.0, 0.75],  # 3 on chord
+        [4.0, 0.0, 1.00],  # 4 endpoint
+    ], dtype=torch.float32)
+    scores = torch.tensor([0.0, 1.0, 0.5, 0.0, 0.0], dtype=torch.float32)
+    boundaries = [(0, 5)]
+    # Pick exactly 3 of 5: 2 endpoints + 1 interior.
+    legacy = simplify_with_score_and_coverage(
+        scores, boundaries, compression_ratio=0.6,
+        coverage_lambda=0.0, coverage_sigma_fraction=0.5,
+    )
+    weighted = simplify_with_score_and_coverage(
+        scores, boundaries, compression_ratio=0.6,
+        coverage_lambda=0.0, coverage_sigma_fraction=0.5,
+        points=points, length_preservation_weight=10.0,
+    )
+    # Legacy with no coverage prefers the high-score index 1 (on-chord).
+    assert legacy[1].item() and not legacy[2].item()
+    # With length weight, the off-chord index 2 wins instead.
+    assert weighted[2].item() and not weighted[1].item()

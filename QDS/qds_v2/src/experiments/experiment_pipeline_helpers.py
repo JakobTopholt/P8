@@ -33,10 +33,13 @@ from src.evaluation.baselines import (
 from src.evaluation.evaluate_methods import (
     evaluate_method,
     build_query_support_masks,
+    aggregate_in_query_retention_across_diagnostics,
     compute_eval_query_length_preservation,
     compute_per_query_diagnostics,
     print_geometric_distortion_table,
-    print_length_preservation_table,
+    print_length_retention_eval_query_table,
+    print_length_retention_in_query_table,
+    print_length_retention_whole_set_table,
     print_method_comparison_table,
     print_top_queries_table,
     write_top_queries_csv,
@@ -44,7 +47,6 @@ from src.evaluation.evaluate_methods import (
 )
 from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorkload, derive_seed_bundle
 from src.experiments.geojson_writers import (
-    report_trajectory_length_loss,
     write_queries_geojson,
     write_query_points_csv,
     write_simplified_csv,
@@ -64,8 +66,9 @@ class ExperimentOutputs:
     shift_table: str
     metrics_dump: dict
     geometric_table: str = ""
-    length_preservation_table: str = ""
-    eval_query_length_table: str = ""
+    length_retention_whole_set_table: str = ""
+    length_retention_eval_query_table: str = ""
+    length_retention_in_query_table: str = ""
     top_best_queries_table: str = ""
     top_worst_queries_table: str = ""
 
@@ -330,6 +333,7 @@ def run_experiment_pipeline(
             simplification_mode=getattr(config.model, "simplification_mode", "score_coverage"),
             coverage_lambda=float(getattr(config.model, "coverage_lambda", 0.5)),
             coverage_sigma_fraction=float(getattr(config.model, "coverage_sigma_fraction", 0.5)),
+            length_preservation_weight=float(getattr(config.model, "length_preservation_weight", 0.0)),
         ),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
@@ -371,9 +375,8 @@ def run_experiment_pipeline(
 
     matched_table = print_method_comparison_table(matched)
     geometric_table = print_geometric_distortion_table(matched)
-    length_preservation_table = print_length_preservation_table(matched)
 
-    diag_methods = ["MLQDS", "uniform", "DouglasPeucker"]
+    diag_methods = ["MLQDS", "uniform", "DouglasPeucker", "Oracle"]
     masks_for_diag: dict[str, Any] = {}
     for name in diag_methods:
         m = matched.get(name)
@@ -385,17 +388,17 @@ def run_experiment_pipeline(
     per_query_diagnostics = compute_per_query_diagnostics(
         test_points, test_boundaries, masks_for_diag, eval_workload.typed_queries,
     )
+    in_query_aggs = aggregate_in_query_retention_across_diagnostics(per_query_diagnostics, list(masks_for_diag.keys()))
+
+    # Three length-retention scope tables (Scope 1 = whole eval set, Scope 2 =
+    # trajectories any eval query touches with full polyline, Scope 3 = in-query
+    # segments only with ±1 outside-anchor point).
+    length_retention_whole_set_table = print_length_retention_whole_set_table(matched, test_points, test_boundaries)
+    length_retention_eval_query_table = print_length_retention_eval_query_table(eval_query_length_pres)
+    length_retention_in_query_table = print_length_retention_in_query_table(in_query_aggs)
+
     top_best_table = print_top_queries_table(per_query_diagnostics, k=15, mode="best")
     top_worst_table = print_top_queries_table(per_query_diagnostics, k=15, mode="worst")
-    eval_query_lp_lines = ["Eval-query-points length preservation (trajectories any eval query touches)",
-                           f"{'Method':<24}{'Weighted':>11}{'orig_km':>12}{'simp_km':>12}{'NTraj':>8}",
-                           "-" * 67]
-    for name, agg in eval_query_length_pres.items():
-        eval_query_lp_lines.append(
-            f"{name:<24}{agg.get('weighted_ratio', 0.0):>11.4f}{agg.get('sum_orig_km', 0.0):>12.2f}"
-            f"{agg.get('sum_simp_km', 0.0):>12.2f}{int(agg.get('n_trajectories', 0)):>8d}"
-        )
-    eval_query_length_table = "\n".join(eval_query_lp_lines)
 
     with _phase("evaluate-shift"):
         train_name = _mix_name(train_mix)
@@ -416,6 +419,7 @@ def run_experiment_pipeline(
                         simplification_mode=getattr(config.model, "simplification_mode", "score_coverage"),
                         coverage_lambda=float(getattr(config.model, "coverage_lambda", 0.5)),
                         coverage_sigma_fraction=float(getattr(config.model, "coverage_sigma_fraction", 0.5)),
+            length_preservation_weight=float(getattr(config.model, "length_preservation_weight", 0.0)),
                     ),
                     points=test_points,
                     boundaries=test_boundaries,
@@ -465,8 +469,9 @@ def run_experiment_pipeline(
         (out_dir / "matched_table.txt").write_text(matched_table + "\n", encoding="utf-8")
         (out_dir / "shift_table.txt").write_text(shift_table + "\n", encoding="utf-8")
         (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
-        (out_dir / "length_preservation_table.txt").write_text(length_preservation_table + "\n", encoding="utf-8")
-        (out_dir / "eval_query_length_table.txt").write_text(eval_query_length_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_whole_set_table.txt").write_text(length_retention_whole_set_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_eval_query_table.txt").write_text(length_retention_eval_query_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_in_query_table.txt").write_text(length_retention_in_query_table + "\n", encoding="utf-8")
         (out_dir / "top_best_queries_table.txt").write_text(top_best_table + "\n", encoding="utf-8")
         (out_dir / "top_worst_queries_table.txt").write_text(top_worst_table + "\n", encoding="utf-8")
         write_top_queries_csv(per_query_diagnostics, str(out_dir / "top_best_queries.csv"), k=15, mode="best")
@@ -490,6 +495,7 @@ def run_experiment_pipeline(
                     simplification_mode=getattr(config.model, "simplification_mode", "score_coverage"),
                     coverage_lambda=float(getattr(config.model, "coverage_lambda", 0.5)),
                     coverage_sigma_fraction=float(getattr(config.model, "coverage_sigma_fraction", 0.5)),
+                    length_preservation_weight=float(getattr(config.model, "length_preservation_weight", 0.0)),
                 )
                 eval_mask = eval_mlqds.simplify(test_points, test_boundaries, config.model.compression_ratio)
             write_simplified_csv(
@@ -523,17 +529,15 @@ def run_experiment_pipeline(
                 trajectory_mmsis=test_mmsis,
             )
 
-        with _phase("trajectory-length-loss"):
-            report_trajectory_length_loss(test_points, test_boundaries, eval_mask, top_k=25, trajectory_mmsis=test_mmsis)
-
     print(f"[pipeline] total runtime {time.perf_counter() - pipeline_t0:.2f}s", flush=True)
     return ExperimentOutputs(
         matched_table=matched_table,
         shift_table=shift_table,
         metrics_dump=dump,
         geometric_table=geometric_table,
-        length_preservation_table=length_preservation_table,
-        eval_query_length_table=eval_query_length_table,
+        length_retention_whole_set_table=length_retention_whole_set_table,
+        length_retention_eval_query_table=length_retention_eval_query_table,
+        length_retention_in_query_table=length_retention_in_query_table,
         top_best_queries_table=top_best_table,
         top_worst_queries_table=top_worst_table,
     )
