@@ -46,6 +46,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=12,
         help="Number of nearest trajectories returned by generated kNN queries.",
     )
+    parser.add_argument(
+        "--knn_t_half_window_fraction",
+        type=float,
+        default=0.25,
+        help="kNN time half-window as a fraction of dataset time span. Default 0.25 (=6h on 1-day data) reproduces the legacy hardcoded behaviour. Lower this on multi-day data to keep absolute window size constant.",
+    )
+    parser.add_argument(
+        "--similarity_time_fraction",
+        type=float,
+        default=0.04,
+        help="Similarity query time half-window as a fraction of dataset time span. Default 0.04 (=~58min on 1-day) matches the legacy hardcoded constant. Scale down on multi-day data to keep absolute window size constant.",
+    )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument(
@@ -171,6 +183,20 @@ def build_parser() -> argparse.ArgumentParser:
         default="true",
         choices=["true", "false"],
         help="Whether the trajectory transformer uses a learnable CLS summary token consumed by cross-attention.",
+    )
+    parser.add_argument(
+        "--knn_label_variant",
+        type=str,
+        default="legacy",
+        choices=["legacy", "distance_weighted"],
+        help="kNN label distribution. 'legacy' spreads gain equally across all in-window representatives of an answer trajectory; 'distance_weighted' concentrates label mass on the closest-to-anchor representative (matches what kNN F1 actually rewards: keeping at least one near-anchor point).",
+    )
+    parser.add_argument(
+        "--range_label_variant",
+        type=str,
+        default="legacy",
+        choices=["legacy", "uniform"],
+        help="range label weighting. 'legacy' boosts boundary-crossing points 2x and adds cross-trajectory proximity prior; 'uniform' gives every in-box point equal label mass (matches range AnswerF1 = point-recall, doesn't reward boundary detection).",
     )
     parser.add_argument(
         "--save_model",

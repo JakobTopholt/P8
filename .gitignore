@@ -90,3 +90,29 @@ dmypy.json
 .DS_Store
 .pypirc
 .vscode/settings.json
+
+# ---------------------------------
+# Experiment outputs (qds_v2)
+# Each run writes these under results/<phase>/<run_tag>_<jobid>/ — generated,
+# not source. Saved model checkpoints are also generated and large.
+# ---------------------------------
+QDS/qds_v2/results/
+QDS/qds_v2/src/models/saved_models/
+
+# Per-run output files in case any leak into other directories
+example_run.json
+inference_run.json
+matched_table.txt
+shift_table.txt
+geometric_distortion_table.txt
+length_preservation_table.txt
+eval_query_length_table.txt
+top_best_queries_table.txt
+top_worst_queries_table.txt
+top_best_queries.csv
+top_worst_queries.csv
+query_points_*.csv
+ML_simplified_eval.csv
+uniform_simplified_eval.csv
+DP_simplified_eval.csv
+*.pt

@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 import math
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+
+# How many consecutive diagnostic epochs of pred_std<1e-3 trigger an abort.
+# kNN training has historically collapsed terminally and burned 4+ GPU-hours
+# producing no useful checkpoint; this trip-wire stops the run as soon as the
+# selector signal goes negative-collapse for this many diag rounds in a row.
+COLLAPSE_TRIP_WIRE_DIAGS = 3
 
 from src.experiments.experiment_config import ModelConfig, TypedQueryWorkload
 from src.models.trajectory_qds_model import TrajectoryQDSModel
@@ -509,6 +517,8 @@ def train_model(
         boundaries=train_boundaries,
         typed_queries=workload.typed_queries,
         seed=seed,
+        knn_label_variant=str(getattr(model_config, "knn_label_variant", "legacy")),
+        range_label_variant=str(getattr(model_config, "range_label_variant", "legacy")),
     )
     residual_label_mode = str(getattr(model_config, "residual_label_mode", "none")).lower()
     if residual_label_mode not in {"none", "temporal"}:
@@ -544,6 +554,28 @@ def train_model(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
+
+    # Multi-GPU training via nn.DataParallel when 2+ visible GPUs.
+    # We wrap only for the training loop; diagnostics + inference still use the
+    # underlying module (model.module) for unchanged behaviour. DataParallel is
+    # math-equivalent to single-GPU at the same effective batch size, so no
+    # quality regression — purely a wall-clock speedup.
+    n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    use_data_parallel = n_gpus >= 2 and bool(getattr(model_config, "use_data_parallel", True))
+    train_model_handle = nn.DataParallel(model) if use_data_parallel else model
+    if use_data_parallel:
+        print(f"  [training] using nn.DataParallel across {n_gpus} GPUs", flush=True)
+
+    # Mixed-precision (AMP) for ~1.3-1.5x training speedup on supported GPUs.
+    # Forward+loss are computed in fp16 under autocast; gradients are scaled by
+    # GradScaler so small fp16 grads don't underflow. Master weights stay fp32 in
+    # the optimizer, so convergence is numerically unchanged for the transformer
+    # + BCE/ranking losses we use here.
+    use_amp = bool(getattr(model_config, "use_amp", True)) and torch.cuda.is_available()
+    scaler_amp = torch.cuda.amp.GradScaler(enabled=use_amp)
+    if use_amp:
+        print(f"  [training] using torch.cuda.amp mixed-precision training", flush=True)
+
     norm_points_dev = norm_points.to(device)
     norm_queries_dev = norm_queries.to(device)
     type_ids_dev = workload.type_ids.to(device)
@@ -630,6 +662,7 @@ def train_model(
     best_epoch = 0
     best_state_dict: dict[str, torch.Tensor] | None = None
     epochs_no_improve = 0
+    consecutive_collapse_diags = 0
     epoch_w = len(str(effective_epochs))
     epochs_trained = 0
     for epoch in range(effective_epochs):
@@ -643,58 +676,65 @@ def train_model(
         ranking_pair_counts = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
 
         for w in windows:
-            pred_batch = model(
-                points=w.points,
-                queries=norm_queries_dev,
-                query_type_ids=type_ids_dev,
-                padding_mask=w.padding_mask,
-            )
-            # pred_batch: (B, L, T).  Accumulate per-window loss terms across
-            # the batch and backprop once per batch — this is what makes the
-            # GPU actually saturated compared to the old batch=1 loop.
-            loss_terms: list[torch.Tensor] = []
-            B = pred_batch.shape[0]
-            for b in range(B):
-                idx = w.global_indices[b]
-                valid_window = idx >= 0
-                global_idx = idx[valid_window]
-                pred_valid = pred_batch[b][valid_window]
-
-                for t in range(NUM_QUERY_TYPES):
-                    type_weight = epoch_type_weights[t]
-                    if float(type_weight.item()) <= 0.0:
-                        continue
-                    t_labels = training_targets_dev[global_idx, t]
-                    t_mask = labelled_mask_dev[global_idx, t]
-                    if not bool((t_mask & (t_labels > 0)).any().item()):
-                        skipped_zero_windows[t] += 1
-                        continue
-                    t_pred = pred_valid[:, t]
-                    positive_windows[t] += 1
-                    rank_loss, pair_count = _ranking_loss_for_type(
-                        pred=t_pred,
-                        target=t_labels,
-                        valid_mask=t_mask,
-                        pairs_per_type=model_config.ranking_pairs_per_type,
-                        top_quantile=model_config.ranking_top_quantile,
-                        margin=model_config.rank_margin,
-                        generator=g,
-                    )
-                    ranking_pair_counts[t] += int(pair_count)
-                    pointwise_term = _balanced_pointwise_loss(t_pred, t_labels, t_mask, generator=g)
-                    loss_terms.append(type_weight * (rank_loss + model_config.pointwise_loss_weight * pointwise_term))
-
-            if loss_terms:
-                loss = (
-                    torch.stack(loss_terms).sum() / float(B)
-                    + model_config.l2_score_weight * (pred_batch ** 2).mean()
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                pred_batch = train_model_handle(
+                    points=w.points,
+                    queries=norm_queries_dev,
+                    query_type_ids=type_ids_dev,
+                    padding_mask=w.padding_mask,
                 )
+                # pred_batch: (B, L, T).  Accumulate per-window loss terms across
+                # the batch and backprop once per batch — this is what makes the
+                # GPU actually saturated compared to the old batch=1 loop.
+                loss_terms: list[torch.Tensor] = []
+                B = pred_batch.shape[0]
+                for b in range(B):
+                    idx = w.global_indices[b]
+                    valid_window = idx >= 0
+                    global_idx = idx[valid_window]
+                    pred_valid = pred_batch[b][valid_window]
+
+                    for t in range(NUM_QUERY_TYPES):
+                        type_weight = epoch_type_weights[t]
+                        if float(type_weight.item()) <= 0.0:
+                            continue
+                        t_labels = training_targets_dev[global_idx, t]
+                        t_mask = labelled_mask_dev[global_idx, t]
+                        if not bool((t_mask & (t_labels > 0)).any().item()):
+                            skipped_zero_windows[t] += 1
+                            continue
+                        t_pred = pred_valid[:, t]
+                        positive_windows[t] += 1
+                        rank_loss, pair_count = _ranking_loss_for_type(
+                            pred=t_pred,
+                            target=t_labels,
+                            valid_mask=t_mask,
+                            pairs_per_type=model_config.ranking_pairs_per_type,
+                            top_quantile=model_config.ranking_top_quantile,
+                            margin=model_config.rank_margin,
+                            generator=g,
+                        )
+                        ranking_pair_counts[t] += int(pair_count)
+                        pointwise_term = _balanced_pointwise_loss(t_pred, t_labels, t_mask, generator=g)
+                        loss_terms.append(type_weight * (rank_loss + model_config.pointwise_loss_weight * pointwise_term))
+
+                if loss_terms:
+                    loss = (
+                        torch.stack(loss_terms).sum() / float(B)
+                        + model_config.l2_score_weight * (pred_batch ** 2).mean()
+                    )
+                else:
+                    loss = None
+
+            if loss is not None:
                 opt.zero_grad()
-                loss.backward()
+                scaler_amp.scale(loss).backward()
                 clip_norm = float(getattr(model_config, "gradient_clip_norm", 0.0) or 0.0)
                 if clip_norm > 0.0:
+                    scaler_amp.unscale_(opt)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
-                opt.step()
+                scaler_amp.step(opt)
+                scaler_amp.update()
                 epoch_loss = epoch_loss + loss.detach()
 
         # Diagnostic pass only on selected epochs (every `diag_every` epochs and
@@ -908,6 +948,19 @@ def train_model(
                 best_f1 = float(stats.get("val_query_f1", best_f1))
                 best_epoch = epoch + 1
                 best_state_dict = _model_state_on_cpu(model)
+
+            if stats.get("collapse_warning", 0.0) > 0.0:
+                consecutive_collapse_diags += 1
+            else:
+                consecutive_collapse_diags = 0
+            if consecutive_collapse_diags >= COLLAPSE_TRIP_WIRE_DIAGS:
+                print(
+                    f"  [{run_tag}] collapse trip-wire at epoch {epoch + 1:0{epoch_w}d}: "
+                    f"pred_std<1e-3 for {consecutive_collapse_diags} consecutive diag epochs — "
+                    f"aborting training and restoring best checkpoint to avoid wasted compute",
+                    flush=True,
+                )
+                break
 
             if patience > 0:
                 if is_new_best_model:

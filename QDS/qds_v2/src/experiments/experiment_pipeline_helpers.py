@@ -32,13 +32,23 @@ from src.evaluation.baselines import (
 )
 from src.evaluation.evaluate_methods import (
     evaluate_method,
+    build_query_support_masks,
+    compute_eval_query_length_preservation,
+    compute_per_query_diagnostics,
     print_geometric_distortion_table,
     print_length_preservation_table,
     print_method_comparison_table,
+    print_top_queries_table,
+    write_top_queries_csv,
     print_shift_table,
 )
 from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorkload, derive_seed_bundle
-from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
+from src.experiments.geojson_writers import (
+    report_trajectory_length_loss,
+    write_queries_geojson,
+    write_query_points_csv,
+    write_simplified_csv,
+)
 from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import parse_workload_mix
 from src.training.importance_labels import compute_typed_importance_labels
@@ -55,6 +65,9 @@ class ExperimentOutputs:
     metrics_dump: dict
     geometric_table: str = ""
     length_preservation_table: str = ""
+    eval_query_length_table: str = ""
+    top_best_queries_table: str = ""
+    top_worst_queries_table: str = ""
 
 
 def split_trajectories(
@@ -213,6 +226,8 @@ def run_experiment_pipeline(
             range_spatial_fraction=config.query.range_spatial_fraction,
             range_time_fraction=config.query.range_time_fraction,
             knn_k=config.query.knn_k,
+            knn_t_half_window_fraction=config.query.knn_t_half_window_fraction,
+            similarity_time_fraction=config.query.similarity_time_fraction,
             front_load_knn=knn_front_load,
         )
         eval_workload = generate_typed_query_workload(
@@ -225,6 +240,8 @@ def run_experiment_pipeline(
             range_spatial_fraction=config.query.range_spatial_fraction,
             range_time_fraction=config.query.range_time_fraction,
             knn_k=config.query.knn_k,
+            knn_t_half_window_fraction=config.query.knn_t_half_window_fraction,
+            similarity_time_fraction=config.query.similarity_time_fraction,
         )
         selection_workload = None
         if selection_traj:
@@ -330,7 +347,7 @@ def run_experiment_pipeline(
                     typed_queries=eval_workload.typed_queries,
                     workload_mix=eval_mix,
                     compression_ratio=config.model.compression_ratio,
-                    return_mask=method.name == "MLQDS" or save_masks,
+                    return_mask=method.name in {"MLQDS", "uniform", "DouglasPeucker"} or save_masks,
                 )
 
         eval_labels, _ = compute_typed_importance_labels(
@@ -338,6 +355,8 @@ def run_experiment_pipeline(
             boundaries=test_boundaries,
             typed_queries=eval_workload.typed_queries,
             seed=seeds.eval_query_seed,
+            knn_label_variant=str(getattr(config.model, "knn_label_variant", "legacy")),
+            range_label_variant=str(getattr(config.model, "range_label_variant", "legacy")),
         )
         oracle = OracleMethod(labels=eval_labels, workload_mix=eval_mix)
         with _phase(f"  eval {oracle.name}"):
@@ -353,6 +372,30 @@ def run_experiment_pipeline(
     matched_table = print_method_comparison_table(matched)
     geometric_table = print_geometric_distortion_table(matched)
     length_preservation_table = print_length_preservation_table(matched)
+
+    diag_methods = ["MLQDS", "uniform", "DouglasPeucker"]
+    masks_for_diag: dict[str, Any] = {}
+    for name in diag_methods:
+        m = matched.get(name)
+        if m is not None and m.retained_mask is not None:
+            masks_for_diag[name] = m.retained_mask
+    eval_query_length_pres = compute_eval_query_length_preservation(
+        test_points, test_boundaries, masks_for_diag, eval_workload.typed_queries,
+    )
+    per_query_diagnostics = compute_per_query_diagnostics(
+        test_points, test_boundaries, masks_for_diag, eval_workload.typed_queries,
+    )
+    top_best_table = print_top_queries_table(per_query_diagnostics, k=15, mode="best")
+    top_worst_table = print_top_queries_table(per_query_diagnostics, k=15, mode="worst")
+    eval_query_lp_lines = ["Eval-query-points length preservation (trajectories any eval query touches)",
+                           f"{'Method':<24}{'Weighted':>11}{'orig_km':>12}{'simp_km':>12}{'NTraj':>8}",
+                           "-" * 67]
+    for name, agg in eval_query_length_pres.items():
+        eval_query_lp_lines.append(
+            f"{name:<24}{agg.get('weighted_ratio', 0.0):>11.4f}{agg.get('sum_orig_km', 0.0):>12.2f}"
+            f"{agg.get('sum_simp_km', 0.0):>12.2f}{int(agg.get('n_trajectories', 0)):>8d}"
+        )
+    eval_query_length_table = "\n".join(eval_query_lp_lines)
 
     with _phase("evaluate-shift"):
         train_name = _mix_name(train_mix)
@@ -408,6 +451,8 @@ def run_experiment_pipeline(
             for name, m in matched.items()
         },
         "shift": shift_pairs,
+        "eval_query_length_preservation": eval_query_length_pres,
+        "per_query_diagnostics": per_query_diagnostics,
         "training_history": trained.history,
         "best_epoch": trained.best_epoch,
         "best_loss": trained.best_loss,
@@ -421,6 +466,11 @@ def run_experiment_pipeline(
         (out_dir / "shift_table.txt").write_text(shift_table + "\n", encoding="utf-8")
         (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
         (out_dir / "length_preservation_table.txt").write_text(length_preservation_table + "\n", encoding="utf-8")
+        (out_dir / "eval_query_length_table.txt").write_text(eval_query_length_table + "\n", encoding="utf-8")
+        (out_dir / "top_best_queries_table.txt").write_text(top_best_table + "\n", encoding="utf-8")
+        (out_dir / "top_worst_queries_table.txt").write_text(top_worst_table + "\n", encoding="utf-8")
+        write_top_queries_csv(per_query_diagnostics, str(out_dir / "top_best_queries.csv"), k=15, mode="best")
+        write_top_queries_csv(per_query_diagnostics, str(out_dir / "top_worst_queries.csv"), k=15, mode="worst")
         with open(out_dir / "example_run.json", "w", encoding="utf-8") as f:
             json.dump(dump, f, indent=2)
         print(f"  wrote results to {out_dir}", flush=True)
@@ -461,6 +511,18 @@ def run_experiment_pipeline(
                         trajectory_mmsis=test_mmsis,
                     )
 
+        with _phase("write-query-points-csv"):
+            support_masks = build_query_support_masks(test_points, test_boundaries, eval_workload.typed_queries)
+            write_query_points_csv(
+                str(out_dir),
+                test_points,
+                test_boundaries,
+                eval_workload.typed_queries,
+                support_masks,
+                masks_for_diag,
+                trajectory_mmsis=test_mmsis,
+            )
+
         with _phase("trajectory-length-loss"):
             report_trajectory_length_loss(test_points, test_boundaries, eval_mask, top_k=25, trajectory_mmsis=test_mmsis)
 
@@ -471,6 +533,9 @@ def run_experiment_pipeline(
         metrics_dump=dump,
         geometric_table=geometric_table,
         length_preservation_table=length_preservation_table,
+        eval_query_length_table=eval_query_length_table,
+        top_best_queries_table=top_best_table,
+        top_worst_queries_table=top_worst_table,
     )
 
 

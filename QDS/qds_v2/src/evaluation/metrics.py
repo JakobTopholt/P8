@@ -213,6 +213,38 @@ def compute_average_length_loss(
     return float(max(0.0, min(1.0, total_simp_km / total_orig_km)))
 
 
+def compute_length_preserved_for_trajectories(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+    trajectory_indices: list[int] | None = None,
+) -> dict[str, float]:
+    """Length-weighted preservation for an explicit subset of trajectories.
+
+    Used when restricting the metric to query-relevant trajectories — pass the
+    list of trajectory indices that any eval query touches, and this returns
+    the same sum_simp_km / sum_orig_km ratio computed only over those. With
+    trajectory_indices=None falls back to all trajectories (matches the global
+    compute_average_length_loss).
+    """
+    if trajectory_indices is None:
+        sub_boundaries = boundaries
+    else:
+        sub_boundaries = [boundaries[i] for i in trajectory_indices if 0 <= i < len(boundaries)]
+        if not sub_boundaries:
+            return {"weighted_ratio": 1.0, "sum_orig_km": 0.0, "sum_simp_km": 0.0, "n_trajectories": 0}
+    orig_kms, simp_kms, _ = _per_trajectory_length_preserved(points, sub_boundaries, retained_mask)
+    total_orig = sum(orig_kms)
+    total_simp = sum(simp_kms)
+    ratio = 1.0 if total_orig <= 1e-9 else max(0.0, min(1.0, total_simp / total_orig))
+    return {
+        "weighted_ratio": float(ratio),
+        "sum_orig_km": float(total_orig),
+        "sum_simp_km": float(total_simp),
+        "n_trajectories": len(orig_kms),
+    }
+
+
 def compute_length_preservation_aggregates(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],

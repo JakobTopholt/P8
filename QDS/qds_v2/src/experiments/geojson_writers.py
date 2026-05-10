@@ -127,6 +127,63 @@ def write_simplified_csv(
           f"{int(mask_np.reshape(-1).sum())} samples to {out}", flush=True)
 
 
+def write_query_points_csv(
+    out_dir: str,
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    typed_queries: list[dict[str, Any]],
+    support_masks_per_query: list[torch.Tensor],
+    retained_masks_by_method: dict[str, torch.Tensor],
+    trajectory_mmsis: list[int] | None = None,
+) -> None:
+    """Write one CSV per query type listing every point that participates in any query.
+
+    Mirrors the per-type split of write_queries_geojson — query_points_<type>.csv
+    has one row per (query, support_point) pair so a row appears once per query
+    that touches it. Columns: query_idx, mmsi, t, lat, lon, plus a
+    retained_<method> bool for each method passed in. This is the artifact the
+    user inspects when cross-referencing the per-query top-15 tables to the
+    actual data points each method kept or dropped.
+    """
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    points_np = points.detach().cpu().numpy()
+    method_names = list(retained_masks_by_method.keys())
+    method_masks_np = {name: retained_masks_by_method[name].detach().cpu().bool().numpy() for name in method_names}
+
+    point_to_traj = [-1] * int(points.shape[0])
+    for traj_id, (s, e) in enumerate(boundaries):
+        for i in range(s, e):
+            point_to_traj[i] = traj_id
+
+    by_type: dict[str, list[tuple[int, int]]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
+    for q_idx, q in enumerate(typed_queries):
+        qtype = str(q["type"]).lower()
+        if qtype in by_type:
+            by_type[qtype].append((q_idx, q_idx))
+
+    for qtype, entries in by_type.items():
+        path = out / f"query_points_{qtype}.csv"
+        rows = 0
+        with open(path, "w", encoding="utf-8") as f:
+            header = ["query_idx", "mmsi", "t", "lat", "lon", "sog", "cog"] + [f"retained_{m}" for m in method_names]
+            f.write(",".join(header) + "\n")
+            for q_idx, _ in entries:
+                support_np = support_masks_per_query[q_idx].detach().cpu().bool().numpy()
+                idxs = support_np.nonzero()[0]
+                for pi in idxs:
+                    traj_id = point_to_traj[int(pi)]
+                    mmsi = trajectory_mmsis[traj_id] if (trajectory_mmsis is not None and 0 <= traj_id < len(trajectory_mmsis)) else 100000000 + max(0, traj_id)
+                    row = points_np[pi]
+                    cells = [str(q_idx), str(mmsi),
+                             f"{float(row[0]):.3f}", f"{float(row[1]):.6f}", f"{float(row[2]):.6f}",
+                             f"{float(row[3]):.2f}", f"{float(row[4]):.2f}"]
+                    cells.extend(["1" if method_masks_np[m][pi] else "0" for m in method_names])
+                    f.write(",".join(cells) + "\n")
+                    rows += 1
+        print(f"  wrote {rows:>7d} {qtype} query-point rows to {path}", flush=True)
+
+
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in km between two lat/lon pairs."""
     import math

@@ -52,6 +52,8 @@ def main() -> None:
         range_spatial_fraction=args.range_spatial_fraction,
         range_time_fraction=args.range_time_fraction,
         knn_k=args.knn_k,
+        knn_t_half_window_fraction=args.knn_t_half_window_fraction,
+        similarity_time_fraction=args.similarity_time_fraction,
         epochs=args.epochs,
         lr=args.lr,
         pointwise_loss_weight=args.pointwise_loss_weight,
@@ -81,6 +83,8 @@ def main() -> None:
         coverage_lambda=args.coverage_lambda,
         coverage_sigma_fraction=args.coverage_sigma_fraction,
         use_cls_token=str(args.use_cls_token).lower() == "true",
+        knn_label_variant=args.knn_label_variant,
+        range_label_variant=args.range_label_variant,
     )
 
     coverage_msg = (
@@ -103,7 +107,8 @@ def main() -> None:
         f"knn_k={args.knn_k}  mlqds_temporal_fraction={args.mlqds_temporal_fraction}  "
         f"residual_label_mode={args.residual_label_mode}  "
         f"simplification_mode={args.simplification_mode}  coverage_lambda={args.coverage_lambda}  "
-        f"coverage_sigma_fraction={args.coverage_sigma_fraction}  use_cls_token={args.use_cls_token}",
+        f"coverage_sigma_fraction={args.coverage_sigma_fraction}  use_cls_token={args.use_cls_token}  "
+        f"knn_label_variant={args.knn_label_variant}  range_label_variant={args.range_label_variant}",
         flush=True,
     )
 
@@ -163,6 +168,9 @@ def main() -> None:
     print(out.geometric_table)
     print("\nLength-preservation table (whole-set distributional summary; higher is better)")
     print(out.length_preservation_table)
+    print("\n" + out.eval_query_length_table)
+    print("\n" + out.top_best_queries_table)
+    print("\n" + out.top_worst_queries_table)
     print("\nDistribution-shift table")
     print(out.shift_table)
 

@@ -306,6 +306,52 @@ def _knn_representative_support(
     return support
 
 
+def _knn_distance_weights(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    trajectory_ids: set[int],
+    params: dict[str, float],
+) -> torch.Tensor:
+    """Per-point weights for kNN labels: inverse distance from each in-window point to the query anchor.
+
+    Used by the ``distance_weighted`` knn-label variant. F1 for kNN only counts whether
+    *any* in-window point of an answer-trajectory is retained close enough to the anchor
+    to make it into the top-K — so label mass should concentrate on the point most likely
+    to be that one (the closest representative) rather than spread evenly across all
+    in-window points. Returns a per-point weight tensor; non-trajectory points get 0.
+    Inside each trajectory, weights sum to 1 across that trajectory's representatives so
+    _add_weighted_hit_label can distribute one trajectory-hit gain by these weights.
+    """
+    weights = torch.zeros((points.shape[0],), dtype=torch.float32, device=points.device)
+    time_start = float(params["t_center"] - params["t_half_window"])
+    time_end = float(params["t_center"] + params["t_half_window"])
+    limit = int(KNN_REPRESENTATIVES_PER_TRAJECTORY)
+
+    for trajectory_id in sorted(trajectory_ids):
+        if trajectory_id < 0 or trajectory_id >= len(boundaries):
+            continue
+        start, end = boundaries[trajectory_id]
+        if end <= start:
+            continue
+        trajectory_points = points[start:end]
+        in_window = (trajectory_points[:, 0] >= time_start) & (trajectory_points[:, 0] <= time_end)
+        candidate_offsets = torch.where(in_window)[0]
+        if candidate_offsets.numel() == 0:
+            continue
+        candidates = trajectory_points[candidate_offsets]
+        distance = _haversine_km(candidates[:, 1], candidates[:, 2], float(params["lat"]), float(params["lon"]))
+        distance = distance + 0.001 * torch.abs(candidates[:, 0] - float(params["t_center"]))
+        if limit > 0 and candidate_offsets.numel() > limit:
+            nearest = torch.topk(-distance, k=limit).indices
+            candidate_offsets = candidate_offsets[nearest]
+            distance = distance[nearest]
+        # Inverse distance, eps to avoid div-by-zero. Normalise so each trajectory's
+        # support points sum to 1 (so _add_weighted_hit_label distributes gain by these).
+        inv = 1.0 / (distance + 1e-3)
+        weights[start + candidate_offsets] = inv / inv.sum().clamp(min=1e-12)
+    return weights
+
+
 def _similarity_support_mask(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
@@ -362,6 +408,8 @@ def compute_typed_importance_labels(
     seed: int,
     similarity_sample_rate: float = 0.70,
     clustering_sample_rate: float = 0.70,
+    knn_label_variant: str = "legacy",
+    range_label_variant: str = "legacy",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute per-point per-type labels as expected query-F1 contribution."""
     n = points.shape[0]
@@ -388,8 +436,15 @@ def compute_typed_importance_labels(
             hit_count = int(box_support.sum().item())
             if hit_count > 0:
                 base_gain = float(2.0 / (hit_count + 1.0))
-                bp_weights = _range_boundary_and_proximity_weights(points, box_support, point_trajectory_ids)
-                labels[box_support, t_idx] += base_gain * bp_weights[box_support]
+                if range_label_variant == "uniform":
+                    # Range AnswerF1 is point-recall — every in-box point counts equally.
+                    # Uniform per-in-box-point label drops the boundary/proximity bias so
+                    # the model isn't pulled toward boundary-only retention which doesn't
+                    # match what point F1 actually rewards.
+                    labels[box_support, t_idx] += base_gain
+                else:
+                    bp_weights = _range_boundary_and_proximity_weights(points, box_support, point_trajectory_ids)
+                    labels[box_support, t_idx] += base_gain * bp_weights[box_support]
 
         elif qtype == "knn":
             original_ids = set(execute_typed_query(points, trajectories, q, boundaries))
@@ -397,9 +452,17 @@ def compute_typed_importance_labels(
             if gain <= 0.0:
                 continue
             support = _knn_representative_support(points, boundaries, original_ids, params)
-            for trajectory_id in original_ids:
-                trajectory_support = support & (point_trajectory_ids == int(trajectory_id))
-                _add_distributed_hit_label(labels, trajectory_support, t_idx, gain)
+            if knn_label_variant == "distance_weighted":
+                # Concentrate label mass on the closest-to-anchor representative within
+                # each answer trajectory, since F1 only needs that single point retained.
+                weights = _knn_distance_weights(points, boundaries, original_ids, params)
+                for trajectory_id in original_ids:
+                    trajectory_support = support & (point_trajectory_ids == int(trajectory_id))
+                    _add_weighted_hit_label(labels, trajectory_support, t_idx, gain, weights)
+            else:
+                for trajectory_id in original_ids:
+                    trajectory_support = support & (point_trajectory_ids == int(trajectory_id))
+                    _add_distributed_hit_label(labels, trajectory_support, t_idx, gain)
 
         elif qtype == "similarity":
             original_ids = set(execute_typed_query(points, trajectories, q, boundaries))

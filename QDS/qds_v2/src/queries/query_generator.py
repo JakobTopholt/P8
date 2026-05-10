@@ -15,6 +15,7 @@ DEFAULT_RANGE_SPATIAL_FRACTION = 0.08
 DEFAULT_RANGE_TIME_FRACTION = 0.15
 DEFAULT_SIMILARITY_RADIUS_FRACTION = 0.04
 DEFAULT_SIMILARITY_TIME_FRACTION = 0.04
+DEFAULT_KNN_T_HALF_WINDOW_FRACTION = 0.25
 DEFAULT_KNN_K = 12
 
 
@@ -156,6 +157,7 @@ def _make_knn_query(
     anchor_mask: torch.Tensor | None = None,
     density_weights: torch.Tensor | None = None,
     knn_k: int | None = DEFAULT_KNN_K,
+    knn_t_half_window_fraction: float = DEFAULT_KNN_T_HALF_WINDOW_FRACTION,
 ) -> dict[str, Any]:
     """Generate one kNN query. See src/queries/README.md for details."""
     p = _pick_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
@@ -166,7 +168,7 @@ def _make_knn_query(
             "lat": float(p[1].item()),
             "lon": float(p[2].item()),
             "t_center": float(p[0].item()),
-            "t_half_window": float(0.25 * (b["t_max"] - b["t_min"])),  # 25% of day ≈ 6 h
+            "t_half_window": float(knn_t_half_window_fraction * (b["t_max"] - b["t_min"])),
             "k": max(1, k),
         },
     }
@@ -178,10 +180,11 @@ def _make_similarity_query(
     b: dict[str, float],
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
+    similarity_time_fraction: float = DEFAULT_SIMILARITY_TIME_FRACTION,
 ) -> dict[str, Any]:
     """Generate one similarity query with a reference snippet. See src/queries/README.md for details."""
     p = _pick_point(points, generator, candidate_mask=anchor_mask)
-    t_half = DEFAULT_SIMILARITY_TIME_FRACTION * (b["t_max"] - b["t_min"])
+    t_half = similarity_time_fraction * (b["t_max"] - b["t_min"])
     radius = DEFAULT_SIMILARITY_RADIUS_FRACTION * max(b["lat_max"] - b["lat_min"], b["lon_max"] - b["lon_min"])
 
     traj_idx = int(torch.randint(0, len(trajectories), (1,), generator=generator).item())
@@ -352,6 +355,8 @@ def _make_query(
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
     knn_k: int | None = DEFAULT_KNN_K,
+    knn_t_half_window_fraction: float = DEFAULT_KNN_T_HALF_WINDOW_FRACTION,
+    similarity_time_fraction: float = DEFAULT_SIMILARITY_TIME_FRACTION,
 ) -> dict[str, Any]:
     """Generate one query of a named type."""
     if name == "range":
@@ -372,9 +377,17 @@ def _make_query(
             anchor_mask=anchor_mask,
             density_weights=density_weights,
             knn_k=knn_k,
+            knn_t_half_window_fraction=knn_t_half_window_fraction,
         )
     if name == "similarity":
-        return _make_similarity_query(points, trajectories, b, generator, anchor_mask=anchor_mask)
+        return _make_similarity_query(
+            points,
+            trajectories,
+            b,
+            generator,
+            anchor_mask=anchor_mask,
+            similarity_time_fraction=similarity_time_fraction,
+        )
     if name == "clustering":
         return _make_clustering_query(
             points,
@@ -423,6 +436,8 @@ def generate_typed_query_workload(
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
     knn_k: int | None = DEFAULT_KNN_K,
+    knn_t_half_window_fraction: float = DEFAULT_KNN_T_HALF_WINDOW_FRACTION,
+    similarity_time_fraction: float = DEFAULT_SIMILARITY_TIME_FRACTION,
     front_load_knn: int = 0,
 ) -> TypedQueryWorkload:
     """Generate a mixed typed-query workload and padded feature tensor. See src/queries/README.md for details.
@@ -464,6 +479,8 @@ def generate_typed_query_workload(
                     range_spatial_fraction=range_spatial_fraction,
                     range_time_fraction=range_time_fraction,
                     knn_k=knn_k,
+                    knn_t_half_window_fraction=knn_t_half_window_fraction,
+                    similarity_time_fraction=similarity_time_fraction,
                 )
                 typed.append(query)
                 counts[knn_idx] += 1
@@ -512,6 +529,8 @@ def generate_typed_query_workload(
                 range_spatial_fraction=range_spatial_fraction,
                 range_time_fraction=range_time_fraction,
                 knn_k=knn_k,
+                knn_t_half_window_fraction=knn_t_half_window_fraction,
+                similarity_time_fraction=similarity_time_fraction,
             ))
         counts[knn_idx] = max(0, counts[knn_idx] - n_front)
     for name, count in zip(names, counts.tolist()):
@@ -527,6 +546,8 @@ def generate_typed_query_workload(
                     range_spatial_fraction=range_spatial_fraction,
                     range_time_fraction=range_time_fraction,
                     knn_k=knn_k,
+                    knn_t_half_window_fraction=knn_t_half_window_fraction,
+                    similarity_time_fraction=similarity_time_fraction,
                 )
             )
 

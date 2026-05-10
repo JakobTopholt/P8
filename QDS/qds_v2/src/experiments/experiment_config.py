@@ -57,6 +57,8 @@ class QueryConfig:
     )
     similarity_top_k: int = 5
     knn_k: int = 12
+    knn_t_half_window_fraction: float = 0.25
+    similarity_time_fraction: float = 0.04
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -108,6 +110,8 @@ class ModelConfig:
     coverage_lambda: float = 0.5
     coverage_sigma_fraction: float = 0.5
     use_cls_token: bool = True
+    knn_label_variant: str = "legacy"
+    range_label_variant: str = "legacy"
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -260,6 +264,8 @@ def build_experiment_config(
     checkpoint_smoothing_window: int = 1,
     checkpoint_f1_variant: str = "answer",
     knn_k: int = 12,
+    knn_t_half_window_fraction: float = 0.25,
+    similarity_time_fraction: float = 0.04,
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.05,
     residual_label_mode: str = "none",
@@ -267,6 +273,8 @@ def build_experiment_config(
     coverage_lambda: float = 0.5,
     coverage_sigma_fraction: float = 0.5,
     use_cls_token: bool = True,
+    knn_label_variant: str = "legacy",
+    range_label_variant: str = "legacy",
     **_ignored_kwargs: Any,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
@@ -289,6 +297,8 @@ def build_experiment_config(
             train_workload_mix=train_workload_mix or {"range": 0.5, "knn": 0.5},
             eval_workload_mix=eval_workload_mix or {"similarity": 0.5, "clustering": 0.5},
             knn_k=knn_k,
+            knn_t_half_window_fraction=knn_t_half_window_fraction,
+            similarity_time_fraction=similarity_time_fraction,
         ),
         model=ModelConfig(
             epochs=epochs,
@@ -313,6 +323,8 @@ def build_experiment_config(
             coverage_lambda=coverage_lambda,
             coverage_sigma_fraction=coverage_sigma_fraction,
             use_cls_token=use_cls_token,
+            knn_label_variant=knn_label_variant,
+            range_label_variant=range_label_variant,
         ),
     )
 

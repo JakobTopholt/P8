@@ -151,6 +151,122 @@ def test_knn_labels_all_inwindow_points_when_below_representative_cap() -> None:
     assert labels[:4, QUERY_TYPE_ID_KNN].sum().item() == pytest.approx(1.0)
 
 
+def test_range_label_variant_uniform_drops_boundary_proximity_bias() -> None:
+    """Assert range uniform variant gives every in-box point equal label.
+
+    Two trajectories cross a single range box. Trajectory 0 enters and exits the box
+    (so legacy boundary-detection assigns 2x boost to its first/last in-box points).
+    Trajectory 1 is far away — irrelevant. The uniform variant should give all
+    in-box points the same per-point label, while legacy gives the boundary-points a
+    higher value. Total per-query label mass differs between variants because the
+    legacy version is mean-1-normalized within trajectory and the uniform version
+    skips that normalization, but the *spread* across in-box points must be flat for
+    uniform.
+    """
+    points = torch.tensor(
+        [
+            # trajectory 0: enters box at point 0, in box for 4 points, exits at 4
+            [0.0, 0.0, 0.0, 1.0],   # before box
+            [1.0, 0.5, 0.5, 1.0],   # IN box (first in-box point — boundary)
+            [2.0, 0.6, 0.6, 1.0],   # IN box (interior)
+            [3.0, 0.7, 0.7, 1.0],   # IN box (interior)
+            [4.0, 0.8, 0.8, 1.0],   # IN box (last in-box point — boundary)
+            [5.0, 5.0, 5.0, 1.0],   # after box
+            # trajectory 1: far away, never in box
+            [0.0, 10.0, 10.0, 1.0],
+            [5.0, 10.5, 10.5, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    boundaries = [(0, 6), (6, 8)]
+    queries = [
+        {
+            "type": "range",
+            "params": {
+                "lat_min": 0.4, "lat_max": 0.9,
+                "lon_min": 0.4, "lon_max": 0.9,
+                "t_start": 0.5, "t_end": 4.5,
+            },
+        }
+    ]
+
+    legacy_labels, _ = compute_typed_importance_labels(
+        points, boundaries, queries, seed=1, range_label_variant="legacy"
+    )
+    uni_labels, _ = compute_typed_importance_labels(
+        points, boundaries, queries, seed=1, range_label_variant="uniform"
+    )
+
+    in_box_idx = [1, 2, 3, 4]
+    legacy_in_box = legacy_labels[in_box_idx, QUERY_TYPE_ID_RANGE].tolist()
+    uni_in_box = uni_labels[in_box_idx, QUERY_TYPE_ID_RANGE].tolist()
+
+    # Uniform variant: all in-box points get the SAME label.
+    assert max(uni_in_box) == pytest.approx(min(uni_in_box), abs=1e-6)
+
+    # Legacy variant: boundary points (first and last in-box points) get a strictly
+    # higher label than interior in-box points (boundary boost = 2x).
+    assert legacy_in_box[0] > legacy_in_box[1]
+    assert legacy_in_box[3] > legacy_in_box[2]
+
+    # Out-of-box points stay at zero in both variants.
+    out_box_idx = [0, 5, 6, 7]
+    assert all(legacy_labels[i, QUERY_TYPE_ID_RANGE].item() == 0.0 for i in out_box_idx)
+    assert all(uni_labels[i, QUERY_TYPE_ID_RANGE].item() == 0.0 for i in out_box_idx)
+
+
+def test_knn_label_variant_distance_weighted_concentrates_on_closest() -> None:
+    """Assert distance_weighted kNN labels concentrate label mass on the closest in-window point.
+
+    With four in-window points at increasing distance from the anchor, the closest
+    representative should receive the largest label, and the per-trajectory label
+    sum should still equal the trajectory's gain (here 1.0 with one query, k=1, one
+    answer trajectory).
+    """
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 1.0],     # closest  → biggest label
+            [0.1, 0.0, 0.10, 1.0],    # 2nd
+            [0.2, 0.0, 0.20, 1.0],    # 3rd
+            [0.3, 0.0, 0.30, 1.0],    # 4th
+            [0.0, 5.0, 5.0, 1.0],     # other trajectory, not selected
+        ],
+        dtype=torch.float32,
+    )
+    boundaries = [(0, 4), (4, 5)]
+    queries = [
+        {
+            "type": "knn",
+            "params": {
+                "lat": 0.0,
+                "lon": 0.0,
+                "t_center": 0.0,
+                "t_half_window": 1.0,
+                "k": 1,
+            },
+        }
+    ]
+
+    legacy_labels, _ = compute_typed_importance_labels(
+        points, boundaries, queries, seed=1, knn_label_variant="legacy"
+    )
+    dw_labels, _ = compute_typed_importance_labels(
+        points, boundaries, queries, seed=1, knn_label_variant="distance_weighted"
+    )
+
+    # Sums match across the trajectory's representatives — both variants distribute
+    # the same total gain.
+    assert legacy_labels[:4, QUERY_TYPE_ID_KNN].sum().item() == pytest.approx(
+        dw_labels[:4, QUERY_TYPE_ID_KNN].sum().item(), abs=1e-5
+    )
+    # Legacy splits gain equally (all four equal, monotonic-equal).
+    legacy_vals = legacy_labels[:4, QUERY_TYPE_ID_KNN].tolist()
+    assert max(legacy_vals) == pytest.approx(min(legacy_vals), abs=1e-5)
+    # Distance-weighted is strictly decreasing as distance grows.
+    dw_vals = dw_labels[:4, QUERY_TYPE_ID_KNN].tolist()
+    assert dw_vals[0] > dw_vals[1] > dw_vals[2] > dw_vals[3]
+
+
 def test_knn_labels_keep_nearest_high_cap_representatives() -> None:
     """Assert kNN labels cap very dense trajectories at the nearest 64 representatives."""
     near_points = [[float(i), 0.0, float(i) * 0.001, 1.0] for i in range(64)]
