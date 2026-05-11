@@ -91,8 +91,17 @@ class TrajectoryQDSModel(nn.Module):
         # keep gradients well-behaved if a head wants extreme calibration.
         self.head_log_temperature = nn.Parameter(torch.zeros(NUM_QUERY_TYPES))
 
+        # Cache positional encodings keyed by (length, device). Window length is
+        # fixed per training run, so this avoids recomputing the same sinusoidal
+        # buffer on every forward pass.
+        self._pe_cache: dict[tuple[int, torch.device], torch.Tensor] = {}
+
     def _positional_encoding(self, length: int, device: torch.device) -> torch.Tensor:
         """Build sinusoidal positional encoding. See src/models/README.md for details."""
+        key = (int(length), device)
+        cached = self._pe_cache.get(key)
+        if cached is not None:
+            return cached
         pos = torch.arange(length, device=device, dtype=torch.float32).unsqueeze(1)
         div = torch.exp(
             torch.arange(0, self.embed_dim, 2, device=device, dtype=torch.float32)
@@ -101,6 +110,7 @@ class TrajectoryQDSModel(nn.Module):
         pe = torch.zeros((length, self.embed_dim), device=device, dtype=torch.float32)
         pe[:, 0::2] = torch.sin(pos * div)
         pe[:, 1::2] = torch.cos(pos * div)
+        self._pe_cache[key] = pe
         return pe
 
     def forward(

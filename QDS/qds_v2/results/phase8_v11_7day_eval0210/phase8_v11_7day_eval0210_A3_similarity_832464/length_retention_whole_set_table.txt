@@ -1,0 +1,7 @@
+Length retention — Scope 1: whole eval set (every trajectory ≥2 points)
+Method                    avg_orig_km  avg_simp_km  Retention   NTraj
+---------------------------------------------------------------------
+MLQDS                        117.9284     116.7567     0.9901    1710
+uniform                      117.9284     114.9596     0.9748    1710
+DouglasPeucker               117.9284     116.7077     0.9896    1710
+Oracle                         0.0000       0.0000     0.9668       0

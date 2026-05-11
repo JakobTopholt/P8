@@ -1,0 +1,6 @@
+Length retention — Scope 2: trajectories any eval query touches (full polyline)
+Method                    avg_orig_km  avg_simp_km  Retention   NTraj
+---------------------------------------------------------------------
+MLQDS                        125.1877     123.9993     0.9905    1571
+uniform                      125.1877     122.1389     0.9756    1571
+DouglasPeucker               125.1877     123.9515     0.9901    1571

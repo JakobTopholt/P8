@@ -604,6 +604,32 @@ def train_model(
     # Diagnostic pass operates on single windows so we can cheaply subsample a
     # fraction of them (batched diagnostics would waste the remaining lanes).
     diag_windows = single_windows
+
+    # Precompute, for every (batch_idx, b_in_batch, type_idx), whether the
+    # window contains at least one positive labelled point of that type.
+    # This was previously checked inside the training inner loop with a
+    # `.any().item()` sync per batch × type — which costs roughly
+    # n_batches * NUM_QUERY_TYPES * n_epochs GPU↔CPU syncs (= tens of thousands
+    # per training run). Doing it once up-front trades n_batches syncs for
+    # zero per-step syncs, then we just look up a Python list at runtime.
+    has_positives_per_batch: list[list[list[bool]]] = []
+    for w_batch in windows:
+        B = int(w_batch.points.shape[0])
+        per_batch_per_b: list[list[bool]] = []
+        for b in range(B):
+            idx_row = w_batch.global_indices[b]
+            valid = idx_row >= 0
+            global_idx = idx_row[valid]
+            row: list[bool] = []
+            if global_idx.numel() == 0:
+                row = [False] * NUM_QUERY_TYPES
+            else:
+                lbls = training_targets_dev[global_idx]
+                msks = labelled_mask_dev[global_idx]
+                has = (msks & (lbls > 0)).any(dim=0)  # (NUM_QUERY_TYPES,)
+                row = has.tolist()
+            per_batch_per_b.append(row)
+        has_positives_per_batch.append(per_batch_per_b)
     diag_every = max(1, int(getattr(model_config, "diagnostic_every", 1)))
     diag_fraction = float(getattr(model_config, "diagnostic_window_fraction", 1.0))
     diag_fraction = min(1.0, max(0.05, diag_fraction))
@@ -670,12 +696,17 @@ def train_model(
         model.train()
         epoch_mix = _sample_epoch_mix(model_config.dirichlet_alpha, g).to(device)
         epoch_type_weights = _combine_epoch_type_weights(base_type_weights, epoch_mix)
+        # Materialise weights to Python floats ONCE per epoch (single sync) so
+        # the inner loop can compare with a Python float instead of paying for
+        # per-(batch × type) .item() syncs.
+        epoch_type_weights_cpu: list[float] = epoch_type_weights.detach().cpu().tolist()
+        active_type_indices: list[int] = [t for t in range(NUM_QUERY_TYPES) if epoch_type_weights_cpu[t] > 0.0]
         epoch_loss = torch.tensor(0.0, device=device)
         positive_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
         skipped_zero_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
         ranking_pair_counts = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
 
-        for w in windows:
+        for batch_idx, w in enumerate(windows):
             with torch.cuda.amp.autocast(enabled=use_amp):
                 pred_batch = train_model_handle(
                     points=w.points,
@@ -688,21 +719,21 @@ def train_model(
                 # GPU actually saturated compared to the old batch=1 loop.
                 loss_terms: list[torch.Tensor] = []
                 B = pred_batch.shape[0]
+                hp_batch = has_positives_per_batch[batch_idx]  # precomputed Python list
                 for b in range(B):
                     idx = w.global_indices[b]
                     valid_window = idx >= 0
                     global_idx = idx[valid_window]
                     pred_valid = pred_batch[b][valid_window]
+                    hp_b = hp_batch[b]
 
-                    for t in range(NUM_QUERY_TYPES):
-                        type_weight = epoch_type_weights[t]
-                        if float(type_weight.item()) <= 0.0:
-                            continue
-                        t_labels = training_targets_dev[global_idx, t]
-                        t_mask = labelled_mask_dev[global_idx, t]
-                        if not bool((t_mask & (t_labels > 0)).any().item()):
+                    for t in active_type_indices:
+                        if not hp_b[t]:
                             skipped_zero_windows[t] += 1
                             continue
+                        type_weight = epoch_type_weights[t]
+                        t_labels = training_targets_dev[global_idx, t]
+                        t_mask = labelled_mask_dev[global_idx, t]
                         t_pred = pred_valid[:, t]
                         positive_windows[t] += 1
                         rank_loss, pair_count = _ranking_loss_for_type(
@@ -727,7 +758,7 @@ def train_model(
                     loss = None
 
             if loss is not None:
-                opt.zero_grad()
+                opt.zero_grad(set_to_none=True)
                 scaler_amp.scale(loss).backward()
                 clip_norm = float(getattr(model_config, "gradient_clip_norm", 0.0) or 0.0)
                 if clip_norm > 0.0:
@@ -779,10 +810,20 @@ def train_model(
                     else 0.0
                 ),
             }
+            # Counters are tiny CPU tensors — read them once via tolist() to
+            # produce a Python list, avoiding NUM_QUERY_TYPES separate .item() syncs.
+            pos_w_list = positive_windows.tolist()
+            skip_w_list = skipped_zero_windows.tolist()
+            rank_p_list = ranking_pair_counts.tolist()
             for type_idx in range(NUM_QUERY_TYPES):
-                stats[f"positive_windows_t{type_idx}"] = float(positive_windows[type_idx].item())
-                stats[f"skipped_zero_windows_t{type_idx}"] = float(skipped_zero_windows[type_idx].item())
-                stats[f"ranking_pairs_t{type_idx}"] = float(ranking_pair_counts[type_idx].item())
+                stats[f"positive_windows_t{type_idx}"] = float(pos_w_list[type_idx])
+                stats[f"skipped_zero_windows_t{type_idx}"] = float(skip_w_list[type_idx])
+                stats[f"ranking_pairs_t{type_idx}"] = float(rank_p_list[type_idx])
+            # Per-type diagnostic stats. None of these (except pred_std and
+            # collapse_warning above) feed into training decisions — they're
+            # logged for human inspection and consumed by some quality-check
+            # tests. The cost is small (~ms per epoch on the diag sample) so we
+            # keep them rather than gate behind a flag.
             for t in range(NUM_QUERY_TYPES):
                 pt = full_pred[:, t]
                 stats[f"pred_p50_t{t}"] = float(_safe_quantile(pt, 0.50).item())
@@ -798,8 +839,6 @@ def train_model(
                     stats[f"label_p95_t{t}"] = 0.0
                 eval_mask = labelled_mask_dev[:, t] & covered_mask
                 if bool(eval_mask.any().item()):
-                    # Reset eval_g to the same state each epoch so the diagnostic
-                    # subsample is identical across epochs, giving stable tau trends.
                     eval_g.manual_seed(int(seed) + 777)
                     p_sample, y_sample = _discriminative_sample(
                         pt[eval_mask].detach().cpu(),
