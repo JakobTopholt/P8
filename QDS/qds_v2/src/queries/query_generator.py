@@ -18,6 +18,41 @@ DEFAULT_SIMILARITY_TIME_FRACTION = 0.04
 DEFAULT_KNN_T_HALF_WINDOW_FRACTION = 0.25
 DEFAULT_KNN_K = 12
 
+# Time fractions are interpreted as a fraction of a single calendar day (24h),
+# not a fraction of the full data span. This makes absolute window sizes
+# identical between 1-day eval and multi-day train without further scaling.
+SECONDS_PER_DAY = 86400.0
+
+
+def _clip_to_anchor_day(
+    anchor_t: float, t_start: float, t_end: float, b: dict[str, float]
+) -> tuple[float, float]:
+    """Clip [t_start, t_end] to the anchor's calendar day (Unix midnight UTC).
+
+    When single_day_clip is enabled, query time bounds are restricted to a
+    single calendar day containing the anchor so train queries on multi-day
+    data look structurally identical to single-day eval queries.
+
+    If the target window fits inside the available day-bounds, it's preserved
+    by shifting (becoming asymmetric around the anchor when necessary). Only
+    when the target exceeds the available day-bounds is it truncated.
+    """
+    day_start = (anchor_t // SECONDS_PER_DAY) * SECONDS_PER_DAY
+    day_end = day_start + SECONDS_PER_DAY
+    avail_lo = max(b["t_min"], day_start)
+    avail_hi = min(b["t_max"], day_end)
+    target_width = t_end - t_start
+    if target_width >= (avail_hi - avail_lo):
+        return avail_lo, avail_hi
+    lo, hi = t_start, t_end
+    if lo < avail_lo:
+        hi += (avail_lo - lo)
+        lo = avail_lo
+    if hi > avail_hi:
+        lo -= (hi - avail_hi)
+        hi = avail_hi
+    return max(avail_lo, lo), min(avail_hi, hi)
+
 
 def _dataset_bounds(points: torch.Tensor) -> dict[str, float]:
     """Compute global point-cloud bounds for query generation. See src/queries/README.md for details."""
@@ -127,6 +162,7 @@ def _make_range_query(
     density_weights: torch.Tensor | None = None,
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
+    single_day_clip: bool = False,
 ) -> dict[str, Any]:
     """Generate one range query. See src/queries/README.md for details."""
     spatial_fraction = float(range_spatial_fraction)
@@ -136,7 +172,15 @@ def _make_range_query(
     p = _pick_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
     lat_w = spatial_fraction * (b["lat_max"] - b["lat_min"]) * (0.5 + torch.rand(1, generator=generator).item())
     lon_w = spatial_fraction * (b["lon_max"] - b["lon_min"]) * (0.5 + torch.rand(1, generator=generator).item())
-    t_w = time_fraction * (b["t_max"] - b["t_min"]) * (0.5 + torch.rand(1, generator=generator).item())
+    t_w = time_fraction * SECONDS_PER_DAY * (0.5 + torch.rand(1, generator=generator).item())
+    anchor_t = float(p[0].item())
+    raw_t_start = anchor_t - t_w
+    raw_t_end = anchor_t + t_w
+    if single_day_clip:
+        t_start, t_end = _clip_to_anchor_day(anchor_t, raw_t_start, raw_t_end, b)
+    else:
+        t_start = max(b["t_min"], raw_t_start)
+        t_end = min(b["t_max"], raw_t_end)
     return {
         "type": "range",
         "params": {
@@ -144,8 +188,8 @@ def _make_range_query(
             "lat_max": float(min(b["lat_max"], p[1].item() + lat_w)),
             "lon_min": float(max(b["lon_min"], p[2].item() - lon_w)),
             "lon_max": float(min(b["lon_max"], p[2].item() + lon_w)),
-            "t_start": float(max(b["t_min"], p[0].item() - t_w)),
-            "t_end": float(min(b["t_max"], p[0].item() + t_w)),
+            "t_start": float(t_start),
+            "t_end": float(t_end),
         },
     }
 
@@ -158,17 +202,25 @@ def _make_knn_query(
     density_weights: torch.Tensor | None = None,
     knn_k: int | None = DEFAULT_KNN_K,
     knn_t_half_window_fraction: float = DEFAULT_KNN_T_HALF_WINDOW_FRACTION,
+    single_day_clip: bool = False,
 ) -> dict[str, Any]:
     """Generate one kNN query. See src/queries/README.md for details."""
     p = _pick_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
     k = int(knn_k) if knn_k is not None and int(knn_k) > 0 else int(torch.randint(3, 8, (1,), generator=generator).item())
+    anchor_t = float(p[0].item())
+    raw_half = float(knn_t_half_window_fraction * SECONDS_PER_DAY)
+    if single_day_clip:
+        lo, hi = _clip_to_anchor_day(anchor_t, anchor_t - raw_half, anchor_t + raw_half, b)
+        t_half = min(anchor_t - lo, hi - anchor_t)
+    else:
+        t_half = raw_half
     return {
         "type": "knn",
         "params": {
             "lat": float(p[1].item()),
             "lon": float(p[2].item()),
-            "t_center": float(p[0].item()),
-            "t_half_window": float(knn_t_half_window_fraction * (b["t_max"] - b["t_min"])),
+            "t_center": anchor_t,
+            "t_half_window": float(max(0.0, t_half)),
             "k": max(1, k),
         },
     }
@@ -181,10 +233,11 @@ def _make_similarity_query(
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
     similarity_time_fraction: float = DEFAULT_SIMILARITY_TIME_FRACTION,
+    single_day_clip: bool = False,
 ) -> dict[str, Any]:
     """Generate one similarity query with a reference snippet. See src/queries/README.md for details."""
     p = _pick_point(points, generator, candidate_mask=anchor_mask)
-    t_half = similarity_time_fraction * (b["t_max"] - b["t_min"])
+    t_half = similarity_time_fraction * SECONDS_PER_DAY
     radius = DEFAULT_SIMILARITY_RADIUS_FRACTION * max(b["lat_max"] - b["lat_min"], b["lon_max"] - b["lon_min"])
 
     traj_idx = int(torch.randint(0, len(trajectories), (1,), generator=generator).item())
@@ -192,13 +245,22 @@ def _make_similarity_query(
     center = int(torch.randint(2, max(3, traj.shape[0] - 2), (1,), generator=generator).item())
     ref = traj[max(0, center - 2) : min(traj.shape[0], center + 3), :3]
 
+    anchor_t = float(p[0].item())
+    raw_t_start = anchor_t - t_half
+    raw_t_end = anchor_t + t_half
+    if single_day_clip:
+        t_start, t_end = _clip_to_anchor_day(anchor_t, raw_t_start, raw_t_end, b)
+    else:
+        t_start = max(b["t_min"], raw_t_start)
+        t_end = min(b["t_max"], raw_t_end)
+
     return {
         "type": "similarity",
         "params": {
             "lat_query_centroid": float(p[1].item()),
             "lon_query_centroid": float(p[2].item()),
-            "t_start": float(max(b["t_min"], p[0].item() - t_half)),
-            "t_end": float(min(b["t_max"], p[0].item() + t_half)),
+            "t_start": float(t_start),
+            "t_end": float(t_end),
             "radius": float(radius),
             "top_k": 5,
         },
@@ -214,6 +276,7 @@ def _make_clustering_query(
     density_weights: torch.Tensor | None = None,
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
+    single_day_clip: bool = False,
 ) -> dict[str, Any]:
     """Generate one clustering query. See src/queries/README.md for details."""
     rq = _make_range_query(
@@ -224,6 +287,7 @@ def _make_clustering_query(
         density_weights=density_weights,
         range_spatial_fraction=range_spatial_fraction,
         range_time_fraction=range_time_fraction,
+        single_day_clip=single_day_clip,
     )
     params = dict(rq["params"])
     params.update(
@@ -357,6 +421,7 @@ def _make_query(
     knn_k: int | None = DEFAULT_KNN_K,
     knn_t_half_window_fraction: float = DEFAULT_KNN_T_HALF_WINDOW_FRACTION,
     similarity_time_fraction: float = DEFAULT_SIMILARITY_TIME_FRACTION,
+    single_day_clip: bool = False,
 ) -> dict[str, Any]:
     """Generate one query of a named type."""
     if name == "range":
@@ -368,6 +433,7 @@ def _make_query(
             density_weights=density_weights,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
+            single_day_clip=single_day_clip,
         )
     if name == "knn":
         return _make_knn_query(
@@ -378,6 +444,7 @@ def _make_query(
             density_weights=density_weights,
             knn_k=knn_k,
             knn_t_half_window_fraction=knn_t_half_window_fraction,
+            single_day_clip=single_day_clip,
         )
     if name == "similarity":
         return _make_similarity_query(
@@ -387,6 +454,7 @@ def _make_query(
             generator,
             anchor_mask=anchor_mask,
             similarity_time_fraction=similarity_time_fraction,
+            single_day_clip=single_day_clip,
         )
     if name == "clustering":
         return _make_clustering_query(
@@ -397,6 +465,7 @@ def _make_query(
             density_weights=density_weights,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
+            single_day_clip=single_day_clip,
         )
     raise ValueError(f"Unsupported query type: {name}")
 
@@ -439,6 +508,7 @@ def generate_typed_query_workload(
     knn_t_half_window_fraction: float = DEFAULT_KNN_T_HALF_WINDOW_FRACTION,
     similarity_time_fraction: float = DEFAULT_SIMILARITY_TIME_FRACTION,
     front_load_knn: int = 0,
+    single_day_clip: bool = False,
 ) -> TypedQueryWorkload:
     """Generate a mixed typed-query workload and padded feature tensor. See src/queries/README.md for details.
 
@@ -481,6 +551,7 @@ def generate_typed_query_workload(
                     knn_k=knn_k,
                     knn_t_half_window_fraction=knn_t_half_window_fraction,
                     similarity_time_fraction=similarity_time_fraction,
+                    single_day_clip=single_day_clip,
                 )
                 typed.append(query)
                 counts[knn_idx] += 1
@@ -505,6 +576,9 @@ def generate_typed_query_workload(
                 range_spatial_fraction=range_spatial_fraction,
                 range_time_fraction=range_time_fraction,
                 knn_k=knn_k,
+                knn_t_half_window_fraction=knn_t_half_window_fraction,
+                similarity_time_fraction=similarity_time_fraction,
+                single_day_clip=single_day_clip,
             )
             typed.append(query)
             counts[type_idx] += 1
@@ -531,6 +605,7 @@ def generate_typed_query_workload(
                 knn_k=knn_k,
                 knn_t_half_window_fraction=knn_t_half_window_fraction,
                 similarity_time_fraction=similarity_time_fraction,
+                single_day_clip=single_day_clip,
             ))
         counts[knn_idx] = max(0, counts[knn_idx] - n_front)
     for name, count in zip(names, counts.tolist()):
@@ -548,6 +623,7 @@ def generate_typed_query_workload(
                     knn_k=knn_k,
                     knn_t_half_window_fraction=knn_t_half_window_fraction,
                     similarity_time_fraction=similarity_time_fraction,
+                    single_day_clip=single_day_clip,
                 )
             )
 

@@ -232,6 +232,7 @@ def run_experiment_pipeline(
             knn_t_half_window_fraction=config.query.knn_t_half_window_fraction,
             similarity_time_fraction=config.query.similarity_time_fraction,
             front_load_knn=knn_front_load,
+            single_day_clip=True,
         )
         eval_workload = generate_typed_query_workload(
             trajectories=test_traj,
@@ -245,6 +246,7 @@ def run_experiment_pipeline(
             knn_k=config.query.knn_k,
             knn_t_half_window_fraction=config.query.knn_t_half_window_fraction,
             similarity_time_fraction=config.query.similarity_time_fraction,
+            single_day_clip=True,
         )
         selection_workload = None
         if selection_traj:
@@ -258,6 +260,9 @@ def run_experiment_pipeline(
                 range_spatial_fraction=config.query.range_spatial_fraction,
                 range_time_fraction=config.query.range_time_fraction,
                 knn_k=config.query.knn_k,
+                knn_t_half_window_fraction=config.query.knn_t_half_window_fraction,
+                similarity_time_fraction=config.query.similarity_time_fraction,
+                single_day_clip=True,
             )
         print(
             f"  train_workload={len(train_workload.typed_queries)} queries  "
