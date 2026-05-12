@@ -1,3 +1,0 @@
-Train\Eval            clustering=0.2,knn=0.2,range=0.2,similarity=0.2
----------------------------------------------------------------------
-clustering=0.2,knn=0.2,range=0.2,similarity=0.2                0.6690
