@@ -115,6 +115,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run held-out query-F1 diagnostics every N epochs. 0 disables unless checkpoint selection metric is f1 or uniform_gap.",
     )
     parser.add_argument(
+        "--f1_diagnostic_start_epoch",
+        type=int,
+        default=15,
+        help="Skip F1 diagnostics until this epoch (1-indexed). kNN-only workloads always override to 1.",
+    )
+    parser.add_argument(
+        "--train_batch_size",
+        type=int,
+        default=16,
+        help="Number of trajectory windows per training batch (per forward pass). Higher = better GPU utilization. Default 16; 32-64 typical on 24GB GPUs.",
+    )
+    parser.add_argument(
         "--checkpoint_uniform_gap_weight",
         type=float,
         default=0.5,

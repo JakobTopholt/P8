@@ -72,6 +72,8 @@ def main() -> None:
         diagnostic_window_fraction=args.diagnostic_window_fraction,
         checkpoint_selection_metric=args.checkpoint_selection_metric,
         f1_diagnostic_every=args.f1_diagnostic_every,
+        f1_diagnostic_start_epoch=args.f1_diagnostic_start_epoch,
+        train_batch_size=args.train_batch_size,
         checkpoint_uniform_gap_weight=args.checkpoint_uniform_gap_weight,
         checkpoint_type_penalty_weight=args.checkpoint_type_penalty_weight,
         checkpoint_smoothing_window=args.checkpoint_smoothing_window,
