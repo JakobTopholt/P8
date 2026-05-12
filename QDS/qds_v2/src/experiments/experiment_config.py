@@ -78,7 +78,7 @@ class ModelConfig:
     num_heads: int = 4
     num_layers: int = 3
     type_embed_dim: int = 16
-    query_chunk_size: int = 128
+    query_chunk_size: int = 4096
     dropout: float = 0.1
     window_length: int = 512
     window_stride: int = 256
@@ -87,7 +87,7 @@ class ModelConfig:
     compression_ratio: float = 0.2
     model_type: str = "baseline"
     rank_margin: float = 0.05
-    ranking_pairs_per_type: int = 96
+    ranking_pairs_per_type: int = 80
     ranking_top_quantile: float = 0.80
     pointwise_loss_weight: float = 0.25
     gradient_clip_norm: float = 1.0
@@ -96,9 +96,15 @@ class ModelConfig:
     early_stopping_patience: int = 0
     train_batch_size: int = 16
     diagnostic_every: int = 1
-    diagnostic_window_fraction: float = 0.2
+    diagnostic_window_fraction: float = 0.05
     checkpoint_selection_metric: str = "loss"
     f1_diagnostic_every: int = 0
+    # Skip F1 diagnostics until this epoch (1-indexed). The model's first ~15
+    # epochs are noisy and F1 typically tracks loss anyway — running F1 then is
+    # mostly wasted compute. Overridden to 0 for kNN-only workloads, which can
+    # collapse early and need fast F1-based detection. Default 15 matches the
+    # typical "model has settled into a sensible regime" point.
+    f1_diagnostic_start_epoch: int = 15
     checkpoint_uniform_gap_weight: float = 0.5
     checkpoint_type_penalty_weight: float = 1.0
     checkpoint_smoothing_window: int = 1
@@ -257,7 +263,7 @@ def build_experiment_config(
     seed: int = 42,
     early_stopping_patience: int = 0,
     diagnostic_every: int = 1,
-    diagnostic_window_fraction: float = 0.2,
+    diagnostic_window_fraction: float = 0.05,
     checkpoint_selection_metric: str = "loss",
     f1_diagnostic_every: int = 0,
     checkpoint_uniform_gap_weight: float = 0.5,

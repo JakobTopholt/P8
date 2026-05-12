@@ -140,22 +140,21 @@ def _within_box_centroid_weights(
     return weights
 
 
-def _range_boundary_and_proximity_weights(
+def _range_boundary_weights(
     points: torch.Tensor,
     box_mask: torch.Tensor,
     point_trajectory_ids: torch.Tensor,
 ) -> torch.Tensor:
-    """Per-point weights for range: combines two priors that match the query's intent.
+    """Per-point weights for range: boundary-only prior.
 
-    1. Boundary crossings: in-box points whose immediate temporal neighbor (predecessor
-       or successor in the trajectory) is OUT of the box. These mark where a vessel
-       enters or leaves the query region — semantically critical for range queries.
-       Boost: 2x.
-    2. Cross-trajectory proximity: in-box points close to in-box points of *other*
-       trajectories. Encodes "ship is near another ship" — useful inductive bias for
-       multi-vessel queries. Weight ~ 1/(distance + eps), normalized.
+    Replaces the previous boundary+proximity combination. The proximity factor
+    (1/distance to nearest in-box point of a different trajectory) required an
+    O(N^2) cdist per query plus a Python loop over trajectory IDs with .item()
+    syncs — significant setup-time cost on range/clustering workloads.
 
-    The two factors combine multiplicatively then are mean=1-normalized within each
+    Boundary crossings: in-box points whose immediate temporal neighbor is OUT
+    of the box. These mark vessel entry/exit and are semantically critical for
+    range queries. Boost: 2x. Weights are mean=1-normalized within each
     trajectory's in-box subset so total per-query label mass is preserved.
     """
     weights = torch.zeros(points.shape[0], dtype=torch.float32, device=points.device)
@@ -185,36 +184,22 @@ def _range_boundary_and_proximity_weights(
         next_out[-1] = traj_in[-1]
         boundary_full[traj_idx] = prev_out | next_out
 
-    # 2. Cross-trajectory proximity within the in-box subset.
-    coords = points[in_box_idx, 1:3]
-    dists = torch.cdist(coords, coords)
-    same_traj = box_traj_ids.unsqueeze(0) == box_traj_ids.unsqueeze(1)
-    dists = dists.masked_fill(same_traj, float("inf"))
-    nearest_other = dists.min(dim=1).values
-    finite = torch.isfinite(nearest_other)
-
+    # Boundary-only weights, normalized per-trajectory to preserve total mass.
     boundary_in_box = boundary_full[in_box_idx].float()
     BOUNDARY_BOOST = 1.0  # additive on top of base 1.0 → boundary points get 2x raw
-    PROX_EPS = 1e-4
 
-    for tid in torch.unique(box_traj_ids).tolist():
-        local = torch.where(box_traj_ids == tid)[0]
-        if local.numel() == 0:
-            continue
-        b = 1.0 + BOUNDARY_BOOST * boundary_in_box[local]
-        d = nearest_other[local]
-        f = finite[local]
-        if bool(f.any().item()):
-            d_safe = torch.where(f, d, torch.full_like(d, float(d[f].max().item()) + 1.0))
-            prox = 1.0 / (d_safe + PROX_EPS)
-        else:
-            prox = torch.ones_like(d)
-        raw = b * prox
-        mean_raw = float(raw.mean().item())
-        if mean_raw > 1e-12:
-            weights[in_box_idx[local]] = raw / mean_raw
-        else:
-            weights[in_box_idx[local]] = 1.0
+    # Per-trajectory mean=1 normalization in one vectorized pass (no Python loop
+    # and no .item() syncs vs the previous per-tid loop).
+    raw = 1.0 + BOUNDARY_BOOST * boundary_in_box
+    # Compute per-trajectory mean of raw, then divide.
+    unique_tids, inverse = torch.unique(box_traj_ids, return_inverse=True)
+    sums = torch.zeros(unique_tids.numel(), dtype=raw.dtype, device=raw.device)
+    counts = torch.zeros(unique_tids.numel(), dtype=raw.dtype, device=raw.device)
+    sums.scatter_add_(0, inverse, raw)
+    counts.scatter_add_(0, inverse, torch.ones_like(raw))
+    means = sums / counts.clamp(min=1.0)
+    safe_means = torch.where(means > 1e-12, means, torch.ones_like(means))
+    weights[in_box_idx] = raw / safe_means[inverse]
     return weights
 
 
@@ -443,7 +428,7 @@ def compute_typed_importance_labels(
                     # match what point F1 actually rewards.
                     labels[box_support, t_idx] += base_gain
                 else:
-                    bp_weights = _range_boundary_and_proximity_weights(points, box_support, point_trajectory_ids)
+                    bp_weights = _range_boundary_weights(points, box_support, point_trajectory_ids)
                     labels[box_support, t_idx] += base_gain * bp_weights[box_support]
 
         elif qtype == "knn":

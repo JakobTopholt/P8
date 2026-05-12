@@ -220,34 +220,25 @@ def _ranking_loss_for_type(
     if top_idx.numel() == 0:
         top_idx = valid_idx
 
-    # Sample pairs one at a time to preserve the interleaved RNG consumption
-    # of the original implementation (bit-exact on CPU).  The loss is then
-    # computed in a single batched call instead of per-pair, which avoids
-    # autograd-graph blowup and lets the backward pass fuse efficiently.
-    target_cpu = target.detach().cpu() if target.is_cuda else target
-    top_idx_cpu = top_idx.cpu() if top_idx.is_cuda else top_idx
-    valid_idx_cpu = valid_idx.cpu() if valid_idx.is_cuda else valid_idx
-    a_list: list[int] = []
-    b_list: list[int] = []
-    for _ in range(pairs_per_type):
-        ai = int(torch.randint(0, top_idx_cpu.numel(), (1,), generator=generator).item())
-        bi = int(torch.randint(0, valid_idx_cpu.numel(), (1,), generator=generator).item())
-        a = int(top_idx_cpu[ai].item())
-        b = int(valid_idx_cpu[bi].item())
-        if a == b:
-            continue
-        if bool(torch.isclose(target_cpu[a], target_cpu[b]).item()):
-            continue
-        a_list.append(a)
-        b_list.append(b)
-
-    if not a_list:
+    # Sample all pairs in one vectorized call. Generator is CPU-bound for
+    # deterministic reproducibility; indices are moved to the target device once.
+    # The old per-pair Python loop hit ~3 .item() syncs per pair × pairs_per_type
+    # calls — the dominant CPU bottleneck before this rewrite.
+    pairs = int(pairs_per_type)
+    ai = torch.randint(0, int(top_idx.numel()), (pairs,), generator=generator)
+    bi = torch.randint(0, int(valid_idx.numel()), (pairs,), generator=generator)
+    if top_idx.is_cuda:
+        ai = ai.to(top_idx.device, non_blocking=True)
+        bi = bi.to(top_idx.device, non_blocking=True)
+    a_idx = top_idx[ai]
+    b_idx = valid_idx[bi]
+    keep = (a_idx != b_idx) & ~torch.isclose(target[a_idx], target[b_idx])
+    a_idx = a_idx[keep]
+    b_idx = b_idx[keep]
+    if a_idx.numel() == 0:
         return pred.new_tensor(0.0), 0
-
-    a_idx = torch.tensor(a_list, dtype=torch.long, device=pred.device)
-    b_idx = torch.tensor(b_list, dtype=torch.long, device=pred.device)
     sign = torch.sign(target[a_idx] - target[b_idx])
-    return F.margin_ranking_loss(pred[a_idx], pred[b_idx], sign, margin=margin), len(a_list)
+    return F.margin_ranking_loss(pred[a_idx], pred[b_idx], sign, margin=margin), int(a_idx.numel())
 
 
 def _selection_score(avg_tau: float, pred_std: float, loss: float | None = None) -> float:
@@ -365,11 +356,14 @@ def _predict_workload_scores(
     norm_points_dev = norm_points.to(device)
     norm_queries_dev = norm_queries.to(device)
     type_ids_dev = workload.type_ids.to(device)
+    # min_real_points=1: F1 diagnostics need predictions for every point, so keep
+    # tiny windows that the main training loop skips for speed.
     windows = build_trajectory_windows(
         points=norm_points,
         boundaries=boundaries,
         window_length=model_config.window_length,
         stride=model_config.window_stride,
+        min_real_points=1,
     )
     windows = [
         TrajectoryBatch(
@@ -562,6 +556,11 @@ def train_model(
     # quality regression — purely a wall-clock speedup.
     n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
     use_data_parallel = n_gpus >= 2 and bool(getattr(model_config, "use_data_parallel", True))
+    # torch.compile was attempted here but disabled on AI Lab — the compute nodes'
+    # gcc/triton toolchain failed to compile the inductor CUDA helper module,
+    # crashing the run on the first forward pass (after the wrap call succeeded
+    # because compile is lazy). Re-enable only if you have verified compile works
+    # by running a dry forward pass at startup.
     train_model_handle = nn.DataParallel(model) if use_data_parallel else model
     if use_data_parallel:
         print(f"  [training] using nn.DataParallel across {n_gpus} GPUs", flush=True)
@@ -689,6 +688,35 @@ def train_model(
     best_state_dict: dict[str, torch.Tensor] | None = None
     epochs_no_improve = 0
     consecutive_collapse_diags = 0
+    # Trip-wire is enabled only for kNN-only workloads. Historical data shows
+    # kNN-only collapse is terminal (model never recovers, 4+ GPU-hours wasted).
+    # Other workloads — especially range/clustering with sparse labels in the
+    # first few epochs — can transiently look "collapsed" then recover, so we
+    # don't auto-abort them. The collapse_penalty in selection_score still
+    # rejects collapsed epochs as checkpoint candidates either way.
+    _mix_dict = _normalized_mix_dict(train_mix or _query_frequency_mix(workload))
+    is_knn_only = _mix_dict.get("knn", 0.0) >= 0.95
+    # F1-diag start epoch: skip F1 diagnostics until this epoch (model is too
+    # noisy early to give a useful validation signal). kNN-only workloads
+    # override to 0 because they can collapse before epoch 15 and need fast
+    # F1-based detection. Configured via ModelConfig.f1_diagnostic_start_epoch.
+    f1_diag_start_epoch = int(getattr(model_config, "f1_diagnostic_start_epoch", 15) or 0)
+    if is_knn_only:
+        f1_diag_start_epoch = 0
+    if is_knn_only:
+        print(
+            f"  [training] collapse trip-wire ENABLED (kNN-only workload; "
+            f"abort after {COLLAPSE_TRIP_WIRE_DIAGS} consecutive pred_std<1e-3 epochs); "
+            f"F1 diag starts at epoch 1",
+            flush=True,
+        )
+    else:
+        print(
+            f"  [training] collapse trip-wire disabled (non-kNN-only workload; "
+            f"collapsed epochs still rejected as best-checkpoint candidates via selection penalty); "
+            f"F1 diag starts at epoch {max(1, f1_diag_start_epoch)}",
+            flush=True,
+        )
     epoch_w = len(str(effective_epochs))
     epochs_trained = 0
     for epoch in range(effective_epochs):
@@ -810,52 +838,24 @@ def train_model(
                     else 0.0
                 ),
             }
-            # Counters are tiny CPU tensors — read them once via tolist() to
-            # produce a Python list, avoiding NUM_QUERY_TYPES separate .item() syncs.
-            pos_w_list = positive_windows.tolist()
-            skip_w_list = skipped_zero_windows.tolist()
-            rank_p_list = ranking_pair_counts.tolist()
-            for type_idx in range(NUM_QUERY_TYPES):
-                stats[f"positive_windows_t{type_idx}"] = float(pos_w_list[type_idx])
-                stats[f"skipped_zero_windows_t{type_idx}"] = float(skip_w_list[type_idx])
-                stats[f"ranking_pairs_t{type_idx}"] = float(rank_p_list[type_idx])
-            # Per-type diagnostic stats. None of these (except pred_std and
-            # collapse_warning above) feed into training decisions — they're
-            # logged for human inspection and consumed by some quality-check
-            # tests. The cost is small (~ms per epoch on the diag sample) so we
-            # keep them rather than gate behind a flag.
-            for t in range(NUM_QUERY_TYPES):
-                pt = full_pred[:, t]
-                stats[f"pred_p50_t{t}"] = float(_safe_quantile(pt, 0.50).item())
-                stats[f"pred_p90_t{t}"] = float(_safe_quantile(pt, 0.90).item())
-                stats[f"pred_p99_t{t}"] = float(_safe_quantile(pt, 0.99).item())
-                labelled_type = labelled_mask_dev[:, t]
-                positive_type = labelled_type & (training_targets_dev[:, t] > 0)
-                labelled_count = max(1, int(labelled_type.sum().item()))
-                stats[f"positive_fraction_t{t}"] = float(positive_type.sum().item() / labelled_count)
-                if bool(positive_type.any().item()):
-                    stats[f"label_p95_t{t}"] = float(_safe_quantile(training_targets_dev[positive_type, t], 0.95).item())
-                else:
-                    stats[f"label_p95_t{t}"] = 0.0
-                eval_mask = labelled_mask_dev[:, t] & covered_mask
-                if bool(eval_mask.any().item()):
-                    eval_g.manual_seed(int(seed) + 777)
-                    p_sample, y_sample = _discriminative_sample(
-                        pt[eval_mask].detach().cpu(),
-                        training_targets_dev[eval_mask, t].detach().cpu(),
-                        n_each=100,
-                        generator=eval_g,
-                    )
-                    stats[f"kendall_tau_t{t}"] = _kendall_tau(p_sample, y_sample)
-                else:
-                    stats[f"kendall_tau_t{t}"] = 0.0
-
+            # Per-type quantiles, positive_fraction, label_p95, kendall_tau, and
+            # ranking-pair / positive-window counts removed: none of them feed
+            # training decisions for the uniform_gap selection metric and they
+            # were noise in the logs. The essentials remain: pred_std (collapse
+            # detection), loss, val_query_f1 (per type), val_uniform_f1 gap
+            # (per type) computed below in the F1 diag block.
             if stats["pred_std"] < 1e-3:
                 stats["collapse_warning"] = 1.0
 
+            # Honour f1_diag_start_epoch: skip F1 diag before that epoch unless
+            # this is the final epoch (always run at end). 1-indexed (epoch+1).
+            past_start = (epoch + 1) >= max(1, f1_diag_start_epoch)
             should_run_f1 = has_validation_f1 and (
-                selection_metric == "f1"
-                or (f1_diag_every > 0 and ((epoch + 1) % f1_diag_every == 0 or is_last_epoch))
+                is_last_epoch
+                or (past_start and (
+                    selection_metric == "f1"
+                    or (f1_diag_every > 0 and (epoch + 1) % f1_diag_every == 0)
+                ))
             )
             if should_run_f1:
                 query_f1, per_type_f1 = _validation_query_f1(
@@ -901,8 +901,6 @@ def train_model(
         epochs_trained = epoch + 1
 
         if is_diag_epoch:
-            tau_vals = [stats[f"kendall_tau_t{t}"] for t in active_type_ids]
-            avg_tau = sum(tau_vals) / max(1, len(tau_vals))
             collapse = "  COLLAPSE" if stats.get("collapse_warning") else ""
             if selection_metric == "uniform_gap" and "val_query_f1" in stats and validation_uniform_result is not None:
                 uniform_f1, uniform_per_type = validation_uniform_result
@@ -923,7 +921,10 @@ def train_model(
             elif selection_metric == "f1" and "val_query_f1" in stats:
                 selection = _f1_selection_score(stats["val_query_f1"], stats["pred_std"])
             else:
-                selection = _selection_score(avg_tau, stats["pred_std"], stats["loss"])
+                # avg_tau removed (kendall_tau no longer computed). For
+                # selection_metric=loss this just makes selection = -loss with
+                # the collapse penalty — same primary signal as before.
+                selection = _selection_score(0.0, stats["pred_std"], stats["loss"])
             stats["selection_score"] = selection
             selection_history.append(float(selection))
             window = selection_history[-smoothing_window:]
@@ -945,7 +946,7 @@ def train_model(
             )
             print(
                 f"  [{run_tag}] epoch {epoch + 1:0{epoch_w}d}/{effective_epochs}  "
-                f"loss={stats['loss']:.8f}  avg_tau={avg_tau:+.3f}  "
+                f"loss={stats['loss']:.8f}  "
                 f"pred_std={stats['pred_std']:.6g}  select={selection:+.3f}{smoothed_label}  "
                 f"({epoch_dt:.2f}s){collapse}{best_marker}",
                 flush=True,
@@ -969,18 +970,6 @@ def train_model(
                     f"clustering={stats.get('val_query_f1_gap_clustering', 0.0):+.6f}",
                     flush=True,
                 )
-            diag_parts = []
-            for type_idx in active_type_ids:
-                type_name = ID_TO_QUERY_NAME.get(type_idx, f"t{type_idx}")
-                diag_parts.append(
-                    f"{type_name}:pos={stats[f'positive_fraction_t{type_idx}']:.4f},"
-                    f"p95={stats[f'label_p95_t{type_idx}']:.3f},"
-                    f"pairs={int(stats[f'ranking_pairs_t{type_idx}'])},"
-                    f"skip={int(stats[f'skipped_zero_windows_t{type_idx}'])}"
-                )
-            if diag_parts:
-                print(f"    [{run_tag}] label_diag  " + "  ".join(diag_parts), flush=True)
-
             if is_new_best_model:
                 best_selection = smoothed_selection
                 best_loss = stats["loss"]
@@ -992,11 +981,11 @@ def train_model(
                 consecutive_collapse_diags += 1
             else:
                 consecutive_collapse_diags = 0
-            if consecutive_collapse_diags >= COLLAPSE_TRIP_WIRE_DIAGS:
+            if is_knn_only and consecutive_collapse_diags >= COLLAPSE_TRIP_WIRE_DIAGS:
                 print(
                     f"  [{run_tag}] collapse trip-wire at epoch {epoch + 1:0{epoch_w}d}: "
                     f"pred_std<1e-3 for {consecutive_collapse_diags} consecutive diag epochs — "
-                    f"aborting training and restoring best checkpoint to avoid wasted compute",
+                    f"aborting kNN-only training and restoring best checkpoint to avoid wasted compute",
                     flush=True,
                 )
                 break

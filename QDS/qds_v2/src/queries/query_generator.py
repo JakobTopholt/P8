@@ -538,9 +538,14 @@ def generate_typed_query_workload(
         query_limit = max(requested_queries, int(max_queries) if max_queries is not None else requested_queries)
 
         # Generate kNN queries first so they always get their initial quota even
-        # when other types advance coverage faster.
+        # when other types advance coverage faster. SKIP per-query coverage
+        # updates here: each kNN query covers ~k×~few-points (~60 typically),
+        # so updating the coverage mask after every front-load query is ~99%
+        # wasted Python overhead. Compute the kNN front-load's contribution to
+        # `covered` ONCE after the loop (union of all their point masks).
         if front_load_knn > 0 and "knn" in names:
             knn_idx = names.index("knn")
+            front_load_queries: list[dict[str, Any]] = []
             for _ in range(min(front_load_knn, query_limit)):
                 query = _make_query(
                     "knn", points, trajectories, b, g,
@@ -554,9 +559,21 @@ def generate_typed_query_workload(
                     single_day_clip=single_day_clip,
                 )
                 typed.append(query)
+                front_load_queries.append(query)
                 counts[knn_idx] += 1
-                covered |= point_coverage_mask_for_query(points, query)
+            # One-shot union of front-load kNN coverage (much faster than
+            # incrementally updating after each query).
+            if front_load_queries:
+                covered |= query_coverage_mask(points, front_load_queries)
 
+        # Buffer kNN queries during the proportional loop and apply their
+        # coverage in batches. kNN per-query coverage is ~60 points (k=12-50 ×
+        # representatives) on multi-million-point datasets — the O(N) per-query
+        # haversine + topk cost dominates while the marginal coverage signal
+        # is negligible. Other types (range/clustering/similarity) keep the
+        # per-query update since each one moves coverage by 0.1-1%.
+        knn_buffer: list[dict[str, Any]] = []
+        KNN_COVERAGE_BATCH = 100  # flush every N kNN queries
         while len(typed) < query_limit:
             current_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
             if len(typed) >= requested_queries and current_coverage >= coverage_target:
@@ -582,7 +599,17 @@ def generate_typed_query_workload(
             )
             typed.append(query)
             counts[type_idx] += 1
-            covered |= point_coverage_mask_for_query(points, query)
+            if name == "knn":
+                knn_buffer.append(query)
+                if len(knn_buffer) >= KNN_COVERAGE_BATCH:
+                    covered |= query_coverage_mask(points, knn_buffer)
+                    knn_buffer.clear()
+            else:
+                covered |= point_coverage_mask_for_query(points, query)
+        # Flush any remaining buffered kNN queries.
+        if knn_buffer:
+            covered |= query_coverage_mask(points, knn_buffer)
+            knn_buffer.clear()
 
         return _finalize_workload(points, typed, g)
 

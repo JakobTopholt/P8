@@ -232,6 +232,16 @@ def main() -> None:
 
     results: dict[str, Any] = {}
     save_masks = bool(args.save_simplified_dir)
+    # Cache full_res + support_masks once — shared across all methods.
+    from src.evaluation.evaluate_methods import precompute_query_cache
+    print("[eval] precomputing query cache ...", flush=True)
+    t_cache = time.perf_counter()
+    eval_cache = precompute_query_cache(
+        points=points,
+        boundaries=boundaries,
+        typed_queries=workload.typed_queries,
+    )
+    print(f"[eval] query cache built in {time.perf_counter() - t_cache:.2f}s", flush=True)
     for method in methods:
         t0 = time.perf_counter()
         print(f"[eval] {method.name} ...", flush=True)
@@ -243,6 +253,7 @@ def main() -> None:
             workload_mix=eval_mix,
             compression_ratio=compression_ratio,
             return_mask=method.name == "MLQDS" or save_masks,
+            cache=eval_cache,
         )
         print(f"[eval] {method.name} done in {time.perf_counter() - t0:.2f}s", flush=True)
 

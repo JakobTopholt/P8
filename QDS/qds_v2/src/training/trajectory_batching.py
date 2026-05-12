@@ -22,13 +22,25 @@ def build_trajectory_windows(
     boundaries: list[tuple[int, int]],
     window_length: int,
     stride: int,
+    min_real_points: int | None = None,
 ) -> list[TrajectoryBatch]:
-    """Build trajectory-local windows with no cross-trajectory attention. See src/training/README.md for details."""
+    """Build trajectory-local windows with no cross-trajectory attention. See src/training/README.md for details.
+
+    min_real_points: skip windows whose real (non-padded) point count is below
+    this threshold. Defaults to window_length // 16 (~6%), removing near-empty
+    windows where padding dominates and training signal is minimal. Set to 0
+    or 1 to retain all windows (e.g. for inference where every point needs a
+    prediction).
+    """
+    if min_real_points is None:
+        min_real_points = max(1, window_length // 16)
     windows: list[TrajectoryBatch] = []
     for tid, (start, end) in enumerate(boundaries):
         traj = points[start:end]
         n = traj.shape[0]
         if n <= window_length:
+            if n < min_real_points:
+                continue
             pad = window_length - n
             p = torch.cat([traj, torch.zeros((pad, traj.shape[1]), dtype=traj.dtype)], dim=0)
             mask = torch.zeros((window_length,), dtype=torch.bool)
@@ -47,6 +59,11 @@ def build_trajectory_windows(
 
         for w_start in range(0, n, stride):
             w_end = min(n, w_start + window_length)
+            real_count = w_end - w_start
+            if real_count < min_real_points:
+                if w_end == n:
+                    break
+                continue
             chunk = traj[w_start:w_end]
             if chunk.shape[0] < window_length:
                 pad = window_length - chunk.shape[0]

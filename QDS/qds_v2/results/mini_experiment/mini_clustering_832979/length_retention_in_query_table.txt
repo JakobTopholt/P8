@@ -1,0 +1,6 @@
+Length retention — Scope 3: in-query segments (first_in-1 to last_in+1)
+Method                    avg_orig_km  avg_simp_km  Retention    NSeg
+---------------------------------------------------------------------
+MLQDS                          9.1999       8.4948     0.9234    3038
+uniform                        9.1999       7.7917     0.8469    3038
+DouglasPeucker                 9.1999       8.3429     0.9068    3038

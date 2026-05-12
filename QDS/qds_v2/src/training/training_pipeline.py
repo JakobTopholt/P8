@@ -109,7 +109,11 @@ def windowed_predict(
     Using per-window inference ensures the transformer never attends across
     trajectory boundaries, matching the behaviour seen during training.
     """
-    windows = build_trajectory_windows(norm_points, boundaries, window_length, window_stride)
+    # min_real_points=1: at inference every trajectory needs a prediction window,
+    # even tiny ones. (Training skips near-empty windows for speed.)
+    windows = build_trajectory_windows(
+        norm_points, boundaries, window_length, window_stride, min_real_points=1
+    )
     windows = batch_windows(windows, max(1, int(batch_size)))
     n = norm_points.shape[0]
     all_pred = norm_points.new_zeros((n, NUM_QUERY_TYPES))

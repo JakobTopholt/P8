@@ -22,7 +22,7 @@ class TrajectoryQDSModel(nn.Module):
         num_heads: int = 4,
         num_layers: int = 3,
         type_embed_dim: int = 16,
-        query_chunk_size: int = 128,
+        query_chunk_size: int = 4096,
         dropout: float = 0.1,
         use_cls_token: bool = True,
     ) -> None:

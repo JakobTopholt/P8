@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 
@@ -181,12 +183,61 @@ def _clustering_support_mask(
     return _range_box_mask(points, params) & _ids_mask(point_trajectory_ids, clustered_ids)
 
 
+@dataclass
+class QueryEvalCache:
+    """Precomputed per-query data that doesn't depend on simplification method.
+
+    Eliminates the redundant computation in evaluate_method when multiple
+    methods (MLQDS, uniform, DP, Oracle) are scored on the same query set.
+    Without this each method recomputes full_res and support_mask for every
+    query, paying 4× the cost.
+
+    full_res:  ground-truth answer set per query (kNN/similarity/clustering).
+               Range is not cached (cheap point_f1 instead).
+    support:   per-point support mask per query (used by combined F1 product).
+    """
+
+    full_res: list[Any] = field(default_factory=list)       # per-query answer set
+    support: list[torch.Tensor] = field(default_factory=list)  # per-query mask
+
+
+def precompute_query_cache(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    typed_queries: list[dict],
+) -> QueryEvalCache:
+    """Build a QueryEvalCache for sharing across multiple method evaluations."""
+    full_traj = _split_by_boundaries(points, boundaries)
+    cache = QueryEvalCache()
+    empty_mask = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+    for query in typed_queries:
+        qtype = query["type"]
+        if qtype == "range":
+            # Range uses _range_point_f1 which doesn't need full_res. Cache a
+            # no-op placeholder to keep the per-query index aligned.
+            cache.full_res.append(None)
+            cache.support.append(empty_mask)
+            continue
+        full_res = execute_typed_query(points, full_traj, query, boundaries)
+        cache.full_res.append(full_res)
+        if qtype == "knn":
+            cache.support.append(_knn_representative_mask(points, boundaries, set(full_res), query["params"]))
+        elif qtype == "similarity":
+            cache.support.append(_similarity_support_mask(points, boundaries, set(full_res), query))
+        elif qtype == "clustering":
+            cache.support.append(_clustering_support_mask(points, boundaries, list(full_res), query["params"]))
+        else:
+            cache.support.append(empty_mask)
+    return cache
+
+
 def score_retained_mask(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     retained_mask: torch.Tensor,
     typed_queries: list[dict],
     workload_mix: dict[str, float],
+    cache: QueryEvalCache | None = None,
 ) -> tuple[float, dict[str, float], float, dict[str, float]]:
     """Score a precomputed retained mask with the final query-F1 semantics.
 
@@ -196,9 +247,11 @@ def score_retained_mask(
     The "combined" variant is the legacy answer_f1 * point_subset_f1 product
     kept for diagnostic comparison; it double-penalizes a method that returns
     the right answer set via different points than ground truth's "support".
+
+    cache: optional precomputed QueryEvalCache to skip per-query full_res and
+    support_mask recomputation across methods. Pass None to compute inline.
     """
     simplified = points[retained_mask]
-    full_traj = _split_by_boundaries(points, boundaries)
     simp_boundaries: list[tuple[int, int]] = []
     cursor = 0
     for start, end in boundaries:
@@ -206,10 +259,12 @@ def score_retained_mask(
         simp_boundaries.append((cursor, cursor + n))
         cursor += n
     simp_traj = _split_by_boundaries(simplified, simp_boundaries)
+    # Only need full_traj if cache is None (we'll be computing full_res inline)
+    full_traj = _split_by_boundaries(points, boundaries) if cache is None else None
 
     answer_scores: dict[str, list[float]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
     combined_scores: dict[str, list[float]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
-    for query in typed_queries:
+    for q_idx, query in enumerate(typed_queries):
         qtype = query["type"]
         if qtype == "range":
             point_f1 = _range_point_f1(points, simplified, query["params"])
@@ -217,21 +272,31 @@ def score_retained_mask(
             combined_scores[qtype].append(point_f1)
             continue
 
-        full_res = execute_typed_query(points, full_traj, query, boundaries)
+        if cache is not None:
+            full_res = cache.full_res[q_idx]
+            support = cache.support[q_idx]
+        else:
+            full_res = execute_typed_query(points, full_traj, query, boundaries)
+            if qtype == "knn":
+                support = _knn_representative_mask(points, boundaries, set(full_res), query["params"])
+            elif qtype == "similarity":
+                support = _similarity_support_mask(points, boundaries, set(full_res), query)
+            elif qtype == "clustering":
+                support = _clustering_support_mask(points, boundaries, list(full_res), query["params"])
+            else:
+                support = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+
         simp_res = execute_typed_query(simplified, simp_traj, query, simp_boundaries)
         if qtype == "knn":
             ans = f1_score(set(full_res), set(simp_res))
-            support = _knn_representative_mask(points, boundaries, set(full_res), query["params"])
             answer_scores[qtype].append(ans)
             combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
         elif qtype == "similarity":
             ans = f1_score(set(full_res), set(simp_res))
-            support = _similarity_support_mask(points, boundaries, set(full_res), query)
             answer_scores[qtype].append(ans)
             combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
         elif qtype == "clustering":
             ans = clustering_f1(full_res, simp_res)
-            support = _clustering_support_mask(points, boundaries, list(full_res), query["params"])
             answer_scores[qtype].append(ans)
             combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
 
@@ -283,6 +348,7 @@ def evaluate_method(
     workload_mix: dict[str, float],
     compression_ratio: float,
     return_mask: bool = False,
+    cache: QueryEvalCache | None = None,
 ) -> MethodEvaluation:
     """Evaluate one simplification method on typed queries at matched ratio. See src/evaluation/README.md for details."""
     t0 = time.time()
@@ -295,6 +361,7 @@ def evaluate_method(
         retained_mask=retained_mask,
         typed_queries=typed_queries,
         workload_mix=workload_mix,
+        cache=cache,
     )
     comp = float(retained_mask.float().mean().item())
     avg_gap, avg_norm_gap, max_gap = _retained_point_gap_stats(retained_mask, boundaries)

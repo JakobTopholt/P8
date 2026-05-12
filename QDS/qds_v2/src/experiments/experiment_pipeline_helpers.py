@@ -51,11 +51,95 @@ from src.experiments.geojson_writers import (
     write_query_points_csv,
     write_simplified_csv,
 )
-from src.queries.query_generator import generate_typed_query_workload
-from src.queries.query_types import parse_workload_mix
+from src.queries.query_generator import (
+    generate_typed_query_workload,
+    query_coverage_mask,
+)
+from src.queries.query_types import pad_query_features, parse_workload_mix
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import train_model
 from src.training.training_pipeline import ModelArtifacts, save_checkpoint
+
+SECONDS_PER_DAY = 86400.0
+
+
+def _selection_workload_from_train(
+    train_workload: TypedQueryWorkload,
+    selection_points: torch.Tensor,
+) -> TypedQueryWorkload:
+    """Build a selection (validation) workload by copying train queries verbatim.
+
+    Selection trajectories are held out from the same train day, so queries do
+    NOT need timestamp-shifting — just compute coverage on the held-out points.
+    Matches the eval workload philosophy: same queries everywhere, only the
+    underlying data differs.
+    """
+    typed = [dict(q) for q in train_workload.typed_queries]
+    features, type_ids = pad_query_features(typed)
+    covered = query_coverage_mask(selection_points, typed)
+    covered_points = int(covered.sum().item())
+    total_points = int(selection_points.shape[0])
+    coverage_fraction = float(covered_points / total_points) if total_points > 0 else 0.0
+    return TypedQueryWorkload(
+        query_features=features,
+        typed_queries=typed,
+        type_ids=type_ids,
+        coverage_fraction=coverage_fraction,
+        covered_points=covered_points,
+        total_points=total_points,
+    )
+
+
+def _eval_workload_from_train(
+    train_workload: TypedQueryWorkload,
+    eval_points: torch.Tensor,
+) -> TypedQueryWorkload:
+    """Build an eval workload by copying train queries and shifting each query's
+    calendar day onto the eval data's calendar day.
+
+    Each train query is anchored to a specific timestamp in train data. To
+    reuse the SAME queries on a different eval day, we keep lat/lon/k/window
+    parameters unchanged and shift the time fields so the query's day-of-data
+    aligns with eval's day. Multi-day train queries all collapse onto eval's
+    single day (preserving each query's time-of-day).
+    """
+    eval_t_min = float(eval_points[:, 0].min().item())
+    eval_day_start = (eval_t_min // SECONDS_PER_DAY) * SECONDS_PER_DAY
+
+    shifted_queries: list[dict] = []
+    for q in train_workload.typed_queries:
+        new_q = {"type": q["type"], "params": dict(q["params"])}
+        params = new_q["params"]
+        if q["type"] == "knn":
+            orig_t = float(params["t_center"])
+        else:
+            orig_t = float(params["t_start"])
+        orig_day_start = (orig_t // SECONDS_PER_DAY) * SECONDS_PER_DAY
+        delta = eval_day_start - orig_day_start
+        if q["type"] in {"range", "clustering", "similarity"}:
+            params["t_start"] = float(params["t_start"]) + delta
+            params["t_end"] = float(params["t_end"]) + delta
+        elif q["type"] == "knn":
+            params["t_center"] = float(params["t_center"]) + delta
+        if "reference" in q:
+            # Keep the reference snippet as-is — it's used for shape matching only,
+            # not for time-window filtering.
+            new_q["reference"] = q["reference"]
+        shifted_queries.append(new_q)
+
+    features, type_ids = pad_query_features(shifted_queries)
+    covered = query_coverage_mask(eval_points, shifted_queries)
+    covered_points = int(covered.sum().item())
+    total_points = int(eval_points.shape[0])
+    coverage_fraction = float(covered_points / total_points) if total_points > 0 else 0.0
+    return TypedQueryWorkload(
+        query_features=features,
+        typed_queries=shifted_queries,
+        type_ids=type_ids,
+        coverage_fraction=coverage_fraction,
+        covered_points=covered_points,
+        total_points=total_points,
+    )
 
 
 @dataclass
@@ -211,14 +295,41 @@ def run_experiment_pipeline(
         selection_ds = TrajectoryDataset(selection_traj) if selection_traj else None
         train_points = train_ds.get_all_points()
         test_points = test_ds.get_all_points()
+        selection_points = selection_ds.get_all_points() if selection_ds is not None else None
         train_boundaries = train_ds.get_trajectory_boundaries()
         test_boundaries = test_ds.get_trajectory_boundaries()
         selection_boundaries = selection_ds.get_trajectory_boundaries() if selection_ds is not None else None
+        # Dataset point-split breakdown: percentages of total points across all
+        # three sets. Useful for sanity-checking that the train/selection/eval
+        # ratios match expectations (default val_fraction=0.15 → selection ≈
+        # 15% of train trajectories, then absolute point counts depend on
+        # per-trajectory length distribution).
+        n_train_pts = int(train_points.shape[0])
+        n_test_pts = int(test_points.shape[0])
+        n_sel_pts = int(selection_points.shape[0]) if selection_points is not None else 0
+        total_pts = n_train_pts + n_test_pts + n_sel_pts
+        if total_pts > 0:
+            print(
+                f"  point split: total={total_pts:,}  "
+                f"train={n_train_pts:,} ({100*n_train_pts/total_pts:.1f}%)  "
+                f"selection={n_sel_pts:,} ({100*n_sel_pts/total_pts:.1f}%)  "
+                f"eval={n_test_pts:,} ({100*n_test_pts/total_pts:.1f}%)",
+                flush=True,
+            )
 
     with _phase("generate-workloads"):
         # Front-load all kNN queries before proportional scheduling for training
         # so kNN always gets its full quota even if n_queries is small.
-        knn_front_load = int(train_mix.get("knn", 0.0) * config.query.n_queries)
+        # Front-load enough kNN queries up-front to seed kNN labels even when
+        # the proportional scheduler hasn't reached kNN yet. Floor at 100 if
+        # kNN is in the mix at all — the generator now skips per-query coverage
+        # updates during front-load, so cost is negligible. Pure non-kNN mixes
+        # stay at 0 (no kNN queries needed).
+        knn_weight = float(train_mix.get("knn", 0.0))
+        if knn_weight > 0.0:
+            knn_front_load = max(100, int(knn_weight * config.query.n_queries))
+        else:
+            knn_front_load = 0
         train_workload = generate_typed_query_workload(
             trajectories=train_traj,
             n_queries=config.query.n_queries,
@@ -234,36 +345,19 @@ def run_experiment_pipeline(
             front_load_knn=knn_front_load,
             single_day_clip=True,
         )
-        eval_workload = generate_typed_query_workload(
-            trajectories=test_traj,
-            n_queries=config.query.n_queries,
-            workload_mix=eval_mix,
-            seed=seeds.eval_query_seed,
-            target_coverage=config.query.target_coverage,
-            max_queries=config.query.max_queries,
-            range_spatial_fraction=config.query.range_spatial_fraction,
-            range_time_fraction=config.query.range_time_fraction,
-            knn_k=config.query.knn_k,
-            knn_t_half_window_fraction=config.query.knn_t_half_window_fraction,
-            similarity_time_fraction=config.query.similarity_time_fraction,
-            single_day_clip=True,
-        )
+        # Eval workload is a COPY of the train workload, with each query's
+        # calendar day shifted onto the eval data's day (preserving lat/lon,
+        # window sizes, k, time-of-day). This guarantees train and eval see the
+        # exact same queries — only the underlying data differs. The eval
+        # coverage_fraction printed below reflects how much of the eval data the
+        # shifted train queries actually hit.
+        eval_workload = _eval_workload_from_train(train_workload, test_points)
         selection_workload = None
-        if selection_traj:
-            selection_workload = generate_typed_query_workload(
-                trajectories=selection_traj,
-                n_queries=_validation_query_count(config),
-                workload_mix=eval_mix,
-                seed=seeds.eval_query_seed + 17,
-                target_coverage=config.query.target_coverage,
-                max_queries=config.query.max_queries,
-                range_spatial_fraction=config.query.range_spatial_fraction,
-                range_time_fraction=config.query.range_time_fraction,
-                knn_k=config.query.knn_k,
-                knn_t_half_window_fraction=config.query.knn_t_half_window_fraction,
-                similarity_time_fraction=config.query.similarity_time_fraction,
-                single_day_clip=True,
-            )
+        if selection_traj and selection_points is not None:
+            # Selection uses the SAME train queries on held-out 15% trajectories
+            # (same calendar day → no timestamp shift needed). Aligns selection
+            # with eval philosophy: same queries everywhere, only data changes.
+            selection_workload = _selection_workload_from_train(train_workload, selection_points)
         print(
             f"  train_workload={len(train_workload.typed_queries)} queries  "
             f"coverage={_coverage_name(train_workload)}",
@@ -347,6 +441,16 @@ def run_experiment_pipeline(
     matched: dict[str, Any] = {}
     save_masks = bool(save_simplified_dir)
     with _phase("evaluate-matched"):
+        # Precompute full_res + support_mask cache once — shared across all 4
+        # methods (MLQDS, uniform, DP, Oracle). Eliminates the ~4× redundant
+        # per-query ground-truth re-computation each method used to pay.
+        with _phase("  precompute-query-cache"):
+            from src.evaluation.evaluate_methods import precompute_query_cache
+            eval_cache = precompute_query_cache(
+                points=test_points,
+                boundaries=test_boundaries,
+                typed_queries=eval_workload.typed_queries,
+            )
         for method in methods:
             with _phase(f"  eval {method.name}"):
                 matched[method.name] = evaluate_method(
@@ -357,6 +461,7 @@ def run_experiment_pipeline(
                     workload_mix=eval_mix,
                     compression_ratio=config.model.compression_ratio,
                     return_mask=method.name in {"MLQDS", "uniform", "DouglasPeucker"} or save_masks,
+                    cache=eval_cache,
                 )
 
         eval_labels, _ = compute_typed_importance_labels(
@@ -376,6 +481,7 @@ def run_experiment_pipeline(
                 typed_queries=eval_workload.typed_queries,
                 workload_mix=eval_mix,
                 compression_ratio=config.model.compression_ratio,
+                cache=eval_cache,
             )
 
     matched_table = print_method_comparison_table(matched)
