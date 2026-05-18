@@ -107,6 +107,10 @@ shift_table.txt
 geometric_distortion_table.txt
 length_preservation_table.txt
 eval_query_length_table.txt
+length_retention_whole_set_table.txt
+length_retention_eval_query_table.txt
+length_retention_in_query_table.txt
+length_retention_*.txt
 top_best_queries_table.txt
 top_worst_queries_table.txt
 top_best_queries.csv
@@ -116,3 +120,14 @@ ML_simplified_eval.csv
 uniform_simplified_eval.csv
 DP_simplified_eval.csv
 *.pt
+
+# ---------------------------------
+# Selected experiment artifacts under AISDATA that SHOULD be tracked.
+# These rules must come AFTER the AISDATA/* and *.pt blanket-ignores above
+# so the negations take effect (last matching rule wins in .gitignore).
+# ---------------------------------
+!AISDATA/model/
+!AISDATA/model/*.pt
+!AISDATA/experiment/
+!AISDATA/experiment/*.txt
+!AISDATA/README.md
