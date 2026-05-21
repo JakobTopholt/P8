@@ -130,4 +130,6 @@ DP_simplified_eval.csv
 !AISDATA/model/*.pt
 !AISDATA/experiment/
 !AISDATA/experiment/*.txt
+!AISDATA/generalized_experiment/
+!AISDATA/generalized_experiment/*.txt
 !AISDATA/README.md
