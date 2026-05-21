@@ -54,6 +54,7 @@ def main() -> None:
         knn_k=args.knn_k,
         knn_t_half_window_fraction=args.knn_t_half_window_fraction,
         similarity_time_fraction=args.similarity_time_fraction,
+        similarity_top_k=args.similarity_top_k,
         epochs=args.epochs,
         lr=args.lr,
         pointwise_loss_weight=args.pointwise_loss_weight,

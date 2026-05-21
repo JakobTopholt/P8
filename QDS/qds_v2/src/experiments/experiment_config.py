@@ -275,6 +275,7 @@ def build_experiment_config(
     knn_k: int = 12,
     knn_t_half_window_fraction: float = 0.25,
     similarity_time_fraction: float = 0.04,
+    similarity_top_k: int = 5,
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.05,
     residual_label_mode: str = "none",
@@ -309,6 +310,7 @@ def build_experiment_config(
             knn_k=knn_k,
             knn_t_half_window_fraction=knn_t_half_window_fraction,
             similarity_time_fraction=similarity_time_fraction,
+            similarity_top_k=similarity_top_k,
         ),
         model=ModelConfig(
             epochs=epochs,

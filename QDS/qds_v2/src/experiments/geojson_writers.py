@@ -89,6 +89,53 @@ def write_queries_geojson(out_dir: str, typed_queries: list[dict[str, Any]]) -> 
         print(f"  wrote {len(feats):>4d} {qtype} queries to {path}", flush=True)
 
 
+def read_queries_geojson(in_dir: str) -> list[dict[str, Any]]:
+    """Reconstruct typed_queries list from per-type GeoJSON files in ``in_dir``.
+
+    Reads ``queries_{range,knn,similarity,clustering}.geojson`` (any subset that
+    exists) and rebuilds the typed-query dicts in the format produced by
+    src.queries.query_generator._make_*_query. Use this to feed the EXACT same
+    eval workload saved by ``--save_queries_dir`` into a later inference run
+    so eval numbers are comparable without regenerating queries.
+
+    Limitation: similarity queries lose the ``reference`` field on round-trip
+    (GeoJSON properties only carry primitive values). The model will then see
+    zeros in similarity feature dims 5:8 — acceptable for diagnostic re-runs
+    on the same model, but flagged via a warning print.
+    """
+    in_path = Path(in_dir)
+    typed: list[dict[str, Any]] = []
+    sim_missing_reference = 0
+    for qtype in ("range", "knn", "similarity", "clustering"):
+        f_path = in_path / f"queries_{qtype}.geojson"
+        if not f_path.exists():
+            continue
+        with open(f_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for feat in data.get("features", []):
+            props = feat.get("properties", {})
+            params = {
+                k: v for k, v in props.items()
+                if k not in ("query_type", "t_start_hm", "t_end_hm")
+            }
+            if qtype == "knn":
+                params["k"] = int(params["k"])
+            if qtype == "clustering":
+                params["min_samples"] = int(params["min_samples"])
+            entry: dict[str, Any] = {"type": qtype, "params": params}
+            if qtype == "similarity":
+                # reference field is not round-tripped through GeoJSON
+                sim_missing_reference += 1
+            typed.append(entry)
+    if sim_missing_reference > 0:
+        print(
+            f"  [read_queries_geojson] WARNING: {sim_missing_reference} similarity "
+            f"queries loaded without 'reference' field — feature dims 5:8 will be zero.",
+            flush=True,
+        )
+    return typed
+
+
 def write_simplified_csv(
     out_path: str,
     points: torch.Tensor,

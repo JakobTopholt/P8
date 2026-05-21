@@ -342,6 +342,7 @@ def run_experiment_pipeline(
             knn_k=config.query.knn_k,
             knn_t_half_window_fraction=config.query.knn_t_half_window_fraction,
             similarity_time_fraction=config.query.similarity_time_fraction,
+            similarity_top_k=config.query.similarity_top_k,
             front_load_knn=knn_front_load,
             single_day_clip=True,
         )

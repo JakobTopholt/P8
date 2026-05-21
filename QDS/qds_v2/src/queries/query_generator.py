@@ -233,6 +233,7 @@ def _make_similarity_query(
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
     similarity_time_fraction: float = DEFAULT_SIMILARITY_TIME_FRACTION,
+    similarity_top_k: int = 5,
     single_day_clip: bool = False,
 ) -> dict[str, Any]:
     """Generate one similarity query with a reference snippet. See src/queries/README.md for details."""
@@ -262,7 +263,7 @@ def _make_similarity_query(
             "t_start": float(t_start),
             "t_end": float(t_end),
             "radius": float(radius),
-            "top_k": 5,
+            "top_k": int(max(1, similarity_top_k)),
         },
         "reference": ref.tolist(),
     }
@@ -421,6 +422,7 @@ def _make_query(
     knn_k: int | None = DEFAULT_KNN_K,
     knn_t_half_window_fraction: float = DEFAULT_KNN_T_HALF_WINDOW_FRACTION,
     similarity_time_fraction: float = DEFAULT_SIMILARITY_TIME_FRACTION,
+    similarity_top_k: int = 5,
     single_day_clip: bool = False,
 ) -> dict[str, Any]:
     """Generate one query of a named type."""
@@ -454,6 +456,7 @@ def _make_query(
             generator,
             anchor_mask=anchor_mask,
             similarity_time_fraction=similarity_time_fraction,
+            similarity_top_k=similarity_top_k,
             single_day_clip=single_day_clip,
         )
     if name == "clustering":
@@ -507,6 +510,7 @@ def generate_typed_query_workload(
     knn_k: int | None = DEFAULT_KNN_K,
     knn_t_half_window_fraction: float = DEFAULT_KNN_T_HALF_WINDOW_FRACTION,
     similarity_time_fraction: float = DEFAULT_SIMILARITY_TIME_FRACTION,
+    similarity_top_k: int = 5,
     front_load_knn: int = 0,
     single_day_clip: bool = False,
 ) -> TypedQueryWorkload:
@@ -556,6 +560,7 @@ def generate_typed_query_workload(
                     knn_k=knn_k,
                     knn_t_half_window_fraction=knn_t_half_window_fraction,
                     similarity_time_fraction=similarity_time_fraction,
+                    similarity_top_k=similarity_top_k,
                     single_day_clip=single_day_clip,
                 )
                 typed.append(query)
@@ -595,6 +600,7 @@ def generate_typed_query_workload(
                 knn_k=knn_k,
                 knn_t_half_window_fraction=knn_t_half_window_fraction,
                 similarity_time_fraction=similarity_time_fraction,
+                similarity_top_k=similarity_top_k,
                 single_day_clip=single_day_clip,
             )
             typed.append(query)
@@ -632,6 +638,7 @@ def generate_typed_query_workload(
                 knn_k=knn_k,
                 knn_t_half_window_fraction=knn_t_half_window_fraction,
                 similarity_time_fraction=similarity_time_fraction,
+                similarity_top_k=similarity_top_k,
                 single_day_clip=single_day_clip,
             ))
         counts[knn_idx] = max(0, counts[knn_idx] - n_front)
@@ -650,6 +657,7 @@ def generate_typed_query_workload(
                     knn_k=knn_k,
                     knn_t_half_window_fraction=knn_t_half_window_fraction,
                     similarity_time_fraction=similarity_time_fraction,
+                    similarity_top_k=similarity_top_k,
                     single_day_clip=single_day_clip,
                 )
             )

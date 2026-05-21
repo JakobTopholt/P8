@@ -58,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.04,
         help="Similarity query time half-window as a fraction of dataset time span. Default 0.04 (=~58min on 1-day) matches the legacy hardcoded constant. Scale down on multi-day data to keep absolute window size constant.",
     )
+    parser.add_argument(
+        "--similarity_top_k",
+        type=int,
+        default=5,
+        help="Number of trajectories returned by each similarity query (default 5).",
+    )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument(
