@@ -1,6 +1,0 @@
-torch
-numpy
-matplotlib
-tqdm
-pandas
-pytest
