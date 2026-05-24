@@ -1,6 +1,6 @@
 # Visualization Module
 
-This package is intentionally minimal in v2.
+This package is intentionally minimal.
 
 ## Current State
 

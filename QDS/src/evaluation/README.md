@@ -1,22 +1,21 @@
 # Evaluation Module
 
-This module compares query-aware ML simplification against stochastic and geometric baselines, then reports per-type and aggregate query F1 where higher is better.
+This module compares query-aware ML simplification against temporal, geometric, and label-Oracle baselines, then reports per-type and aggregate query F1 where higher is better.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
-| `baselines.py` | Simplification methods: `MLQDSMethod`, `RandomMethod`, `NewUniformTemporalMethod`, `DouglasPeuckerMethod`, and `OracleMethod`. |
+| `baselines.py` | Simplification methods: `MLQDSMethod`, `NewUniformTemporalMethod`, `DouglasPeuckerMethod`, and `OracleMethod`. |
 | `metrics.py` | F1 functions and the `MethodEvaluation` container. |
 | `evaluate_methods.py` | Runs a method on flattened points and boundaries, then formats the comparison tables. |
 
 ## Methods
 
-- `MLQDSMethod` uses the trained model, the persisted scaler, and the eval workload to produce workload-weighted per-point scores, then applies the standard per-trajectory top-k simplifier directly.
-- `RandomMethod` retains random points per trajectory.
+- `MLQDSMethod` uses the trained model, the persisted scaler, and the eval workload to produce workload-weighted per-point scores. Query-type heads are rank-normalized within each trajectory before workload mixing so one uncalibrated head cannot dominate the score scale.
 - `UniformTemporalMethod` is the legacy central-window temporal baseline and is kept only for compatibility tests.
-- `NewUniformTemporalMethod` (`newUniformTemporal` in result tables) keeps truly evenly spaced points in each trajectory and is the default temporal baseline.
-- `DouglasPeuckerMethod` approximates geometric importance from perpendicular distance to the trajectory endpoints.
+- `NewUniformTemporalMethod` (`uniform` in result tables) keeps truly evenly spaced points in each trajectory and is the default temporal baseline.
+- `DouglasPeuckerMethod` is a true recursive Douglas-Peucker baseline that keeps endpoints and repeatedly splits the current highest-error segment until the compression budget is filled.
 - `OracleMethod` is a diagnostic upper bound that uses oracle labels directly.
 
 ## Metrics

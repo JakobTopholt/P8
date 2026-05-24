@@ -10,27 +10,27 @@ _Extracted from chat session — April 29, 2026_
 
 I checked the code and the new logs. Short version: the model is mostly collapsing, Random looks correctly implemented, and the tables are misleading in two places.
 
-The model is still trained from F1-derived labels, but not by directly optimizing final query F1. It builds per-point labels from query answer-set F1 contribution in [importance_labels.py](QDS/qds_v2/src/training/importance_labels.py#L86-L154), rescales them, then trains a ranking loss plus small MSE in [train_model.py](QDS/qds_v2/src/training/train_model.py#L292-L333). So “trained on F1” means “trained on point labels derived from F1,” not “trained end-to-end against final evaluated F1.”
+The model is still trained from F1-derived labels, but not by directly optimizing final query F1. It builds per-point labels from query answer-set F1 contribution in [importance_labels.py](QDS/src/training/importance_labels.py#L86-L154), rescales them, then trains a ranking loss plus small MSE in [train_model.py](QDS/src/training/train_model.py#L292-L333). So “trained on F1” means “trained on point labels derived from F1,” not “trained end-to-end against final evaluated F1.”
 
 Main problems I found:
 
 1. `best_loss` is selecting collapsed models.  
-   In your `local_mixed` run, epoch 3 had the only positive `avg_tau=+0.028`, but training restored epoch 33 because it had the lowest loss. That happens because [train_model.py](QDS/qds_v2/src/training/train_model.py#L421-L438) saves by loss, and [train_model.py](QDS/qds_v2/src/training/train_model.py#L473-L478) restores that loss-best model. With sparse/tied labels, a near-constant model can have good loss but useless ranking. Fix: choose best checkpoint by validation query F1, or at minimum “best non-collapsed tau,” not raw training loss.
+   In your `local_mixed` run, epoch 3 had the only positive `avg_tau=+0.028`, but training restored epoch 33 because it had the lowest loss. That happens because [train_model.py](QDS/src/training/train_model.py#L421-L438) saves by loss, and [train_model.py](QDS/src/training/train_model.py#L473-L478) restores that loss-best model. With sparse/tied labels, a near-constant model can have good loss but useless ranking. Fix: choose best checkpoint by validation query F1, or at minimum “best non-collapsed tau,” not raw training loss.
 
 2. Collapsed MLQDS behaves almost like Random.  
-   When scores are constant, simplification still adds tiny deterministic jitter before top-k selection in [simplify_trajectories.py](QDS/qds_v2/src/simplification/simplify_trajectories.py#L20-L25). So a collapsed model still keeps a pseudo-random 10% per trajectory. That explains why MLQDS can be close to Random even when `pred_std=0.000` and `avg_tau=0.000`.
+   When scores are constant, simplification still adds tiny deterministic jitter before top-k selection in [simplify_trajectories.py](QDS/src/simplification/simplify_trajectories.py#L20-L25). So a collapsed model still keeps a pseudo-random 10% per trajectory. That explains why MLQDS can be close to Random even when `pred_std=0.000` and `avg_tau=0.000`.
 
 3. Random appears to work correctly.  
-   Random is just seeded random scores per point, then the same per-trajectory top-k simplifier as MLQDS in [baselines.py](QDS/qds_v2/src/evaluation/baselines.py#L72-L82). It is strong because evaluation F1 compares trajectory-ID answer sets in [evaluate_methods.py](QDS/qds_v2/src/evaluation/evaluate_methods.py#L49-L54). For range/kNN, if Random keeps any point from a queried trajectory, that trajectory is still present in the answer. At 10% retention, this often works surprisingly well.
+   Random is just seeded random scores per point, then the same per-trajectory top-k simplifier as MLQDS in [baselines.py](QDS/src/evaluation/baselines.py#L72-L82). It is strong because evaluation F1 compares trajectory-ID answer sets in [evaluate_methods.py](QDS/src/evaluation/evaluate_methods.py#L49-L54). For range/kNN, if Random keeps any point from a queried trajectory, that trajectory is still present in the answer. At 10% retention, this often works surprisingly well.
 
 4. The `Oracle` row is currently not comparable.  
-   MLQDS/Random are evaluated on `test_points` with `eval_workload`, but Oracle is evaluated on `train_points` with `train_workload` in [experiment_pipeline_helpers.py](QDS/qds_v2/src/experiments/experiment_pipeline_helpers.py#L241-L261). So Oracle lower than Random does not mean Random beats the true oracle. It means the Oracle row is a different experiment. Fix: compute oracle labels on `test_points/test_boundaries/eval_workload`, or rename the current row to `TrainOracle`.
+   MLQDS/Random are evaluated on `test_points` with `eval_workload`, but Oracle is evaluated on `train_points` with `train_workload` in [experiment_pipeline_helpers.py](QDS/src/experiments/experiment_pipeline_helpers.py#L241-L261). So Oracle lower than Random does not mean Random beats the true oracle. It means the Oracle row is a different experiment. Fix: compute oracle labels on `test_points/test_boundaries/eval_workload`, or rename the current row to `TrainOracle`.
 
 5. `query_coverage` is hurting training.  
-   With coverage mode, `n_queries=100` is not treated as a minimum. Range stopped at 17 queries, local_mixed stopped at 28 queries, while pure kNN hit 1000 queries and still only covered `0.36%/0.59%`. The loop stops as soon as coverage is reached, or at max queries, in [query_generator.py](QDS/qds_v2/src/queries/query_generator.py#L363-L386). Fix: require both `len(queries) >= n_queries` and coverage target, or disable `--query_coverage` for these training runs.
+   With coverage mode, `n_queries=100` is not treated as a minimum. Range stopped at 17 queries, local_mixed stopped at 28 queries, while pure kNN hit 1000 queries and still only covered `0.36%/0.59%`. The loop stops as soon as coverage is reached, or at max queries, in [query_generator.py](QDS/src/queries/query_generator.py#L363-L386). Fix: require both `len(queries) >= n_queries` and coverage target, or disable `--query_coverage` for these training runs.
 
 6. kNN coverage and labels are still mismatched.  
-   kNN execution now returns nearest distinct trajectories, but kNN coverage still measures nearest points around the anchor in [query_generator.py](QDS/qds_v2/src/queries/query_generator.py#L233-L247). The kNN label also marks every point in the returned trajectory’s time window, not the nearest point(s) that actually preserve kNN membership in [importance_labels.py](QDS/qds_v2/src/training/importance_labels.py#L108-L117). This makes kNN labels noisy, and explains why kNN Oracle can look weak.
+   kNN execution now returns nearest distinct trajectories, but kNN coverage still measures nearest points around the anchor in [query_generator.py](QDS/src/queries/query_generator.py#L233-L247). The kNN label also marks every point in the returned trajectory’s time window, not the nearest point(s) that actually preserve kNN membership in [importance_labels.py](QDS/src/training/importance_labels.py#L108-L117). This makes kNN labels noisy, and explains why kNN Oracle can look weak.
 
 My recommended fix order:
 
@@ -54,7 +54,7 @@ I can fix these, but not from this current chat mode: you are in **Ask mode**, w
 
 1. **Fix Oracle evaluation**
    
-   Current bug: Oracle is evaluated on train data while MLQDS/Random are evaluated on eval data in [experiment_pipeline_helpers.py](QDS/qds_v2/src/experiments/experiment_pipeline_helpers.py#L241-L261).
+   Current bug: Oracle is evaluated on train data while MLQDS/Random are evaluated on eval data in [experiment_pipeline_helpers.py](QDS/src/experiments/experiment_pipeline_helpers.py#L241-L261).
 
    Correct fix: compute eval oracle labels from `test_points`, `test_boundaries`, and `eval_workload`, then evaluate Oracle on the same eval set as MLQDS/Random.
 
@@ -81,7 +81,7 @@ I can fix these, but not from this current chat mode: you are in **Ask mode**, w
 
 2. **Stop selecting collapsed models by best training loss**
    
-   The previous “best loss” change is now clearly wrong for this data. In your logs, collapsed epochs often have the best loss. The restore happens in [train_model.py](QDS/qds_v2/src/training/train_model.py#L421-L478).
+   The previous “best loss” change is now clearly wrong for this data. In your logs, collapsed epochs often have the best loss. The restore happens in [train_model.py](QDS/src/training/train_model.py#L421-L478).
 
    Fix: select checkpoint by a quality score, not raw loss. Best option is validation query F1. Simpler immediate fix: only save diagnostic epochs, penalize collapse, and prefer `avg_tau`.
 
@@ -105,7 +105,7 @@ I can fix these, but not from this current chat mode: you are in **Ask mode**, w
    MAX_QUERIES=1000
    ```
 
-   Current generator stops when coverage is reached, even if it made fewer than `N_QUERIES`, in [query_generator.py](QDS/qds_v2/src/queries/query_generator.py#L363-L386). That is why range trained with only 17 queries and local_mixed with only 28.
+   Current generator stops when coverage is reached, even if it made fewer than `N_QUERIES`, in [query_generator.py](QDS/src/queries/query_generator.py#L363-L386). That is why range trained with only 17 queries and local_mixed with only 28.
 
    Fix the generator so it stops only when both are true:
 
@@ -126,7 +126,7 @@ I can fix these, but not from this current chat mode: you are in **Ask mode**, w
 
 4. **Fix range/kNN labels to match trajectory-hit F1**
    
-   Current labels mark broad support regions in [importance_labels.py](QDS/qds_v2/src/training/importance_labels.py#L101-L117). That does not match the real metric well. The metric only cares whether a trajectory appears in the simplified query answer, not how many support points are retained.
+   Current labels mark broad support regions in [importance_labels.py](QDS/src/training/importance_labels.py#L101-L117). That does not match the real metric well. The metric only cares whether a trajectory appears in the simplified query answer, not how many support points are retained.
 
    Fix labels so each query/trajectory contributes a limited amount of value. For range, distribute gain per returned trajectory across its in-box points instead of giving every support point full gain. For kNN, label the nearest representative point or a small neighborhood around it per returned trajectory, not the full time window.
 
@@ -134,7 +134,7 @@ I can fix these, but not from this current chat mode: you are in **Ask mode**, w
 
 5. **Add diagnostics that show why training fails**
    
-   Current log rounds `pred_std` to three decimals, so small but nonzero spread prints as `0.000` in [train_model.py](QDS/qds_v2/src/training/train_model.py#L427-L433).
+   Current log rounds `pred_std` to three decimals, so small but nonzero spread prints as `0.000` in [train_model.py](QDS/src/training/train_model.py#L427-L433).
 
    Add:
 
@@ -155,14 +155,14 @@ I can fix these, but not from this current chat mode: you are in **Ask mode**, w
 
 **How Random Works**
 
-Random is not training. It is a baseline. In [baselines.py](QDS/qds_v2/src/evaluation/baselines.py#L72-L82), it creates one random score for every point:
+Random is not training. It is a baseline. In [baselines.py](QDS/src/evaluation/baselines.py#L72-L82), it creates one random score for every point:
 
 ```python
 scores = torch.rand((points.shape[0],), generator=g)
 return simplify_with_scores(scores, boundaries, compression_ratio)
 ```
 
-Then [simplify_trajectories.py](QDS/qds_v2/src/simplification/simplify_trajectories.py#L28-L42) keeps the top `compression_ratio` points **inside each trajectory**. So yes: Random keeps approximately the same amount of data points as MLQDS, because both use the same compression ratio. It does not remove exactly the same number every time globally, because each trajectory gets its own `ceil(compression_ratio * n)` and first/last points are always retained.
+Then [simplify_trajectories.py](QDS/src/simplification/simplify_trajectories.py#L28-L42) keeps the top `compression_ratio` points **inside each trajectory**. So yes: Random keeps approximately the same amount of data points as MLQDS, because both use the same compression ratio. It does not remove exactly the same number every time globally, because each trajectory gets its own `ceil(compression_ratio * n)` and first/last points are always retained.
 
 This is normal AI practice: compare a learned model against simple baselines at the same budget. Random answers: “does the model beat chance under the same compression?” UniformTemporal answers: “does the model beat regular sampling?” DouglasPeucker answers: “does the model beat geometry-only simplification?”
 

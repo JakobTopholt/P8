@@ -15,8 +15,7 @@ documentation.
 ## Documentation Map
 
 - [`ais_pipeline/README.md`](ais_pipeline/README.md): root AIS cleaning pipeline layout.
-- [`QDS/README.md`](QDS/README.md): ML simplification project overview.
-- [`QDS/qds_project/README.md`](QDS/qds_project/README.md): full QDS technical docs.
+- [`QDS/README.md`](QDS/README.md): ML simplification project overview and usage.
 - [`db/README.md`](db/README.md): PostGIS setup, lifecycle, and SQL checks.
 - [`ais_pipeline/environment/README.md`](ais_pipeline/environment/README.md): Java/Hadoop/Spark bootstrap helpers.
 - [`ais_pipeline/tools/README.md`](ais_pipeline/tools/README.md): utility scripts and experiments.
