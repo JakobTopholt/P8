@@ -282,6 +282,130 @@ def compute_in_query_length_retention(
     }
 
 
+def compute_full_trajectory_lengths_km(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+) -> list[float]:
+    """Full polyline length (km) of every trajectory, indexed by trajectory id.
+
+    Precompute once and reuse across per-query Scope-3 bucketing so each query
+    doesn't recompute trajectory lengths.
+    """
+    points_cpu = points.detach().cpu()
+    lats = points_cpu[:, 1]
+    lons = points_cpu[:, 2]
+    out: list[float] = []
+    for s, e in boundaries:
+        if e - s < 2:
+            out.append(0.0)
+            continue
+        out.append(float(_polyline_length_km(lats[s:e], lons[s:e])))
+    return out
+
+
+# Default trajectory-length buckets (km), high-to-low. Each in-query segment is
+# assigned to the bucket of its PARENT trajectory's full length.
+SCOPE3_LENGTH_BUCKETS: list[tuple[float, float, str]] = [
+    (200.0, float("inf"), "200+"),
+    (150.0, 200.0, "150-200"),
+    (100.0, 150.0, "100-150"),
+    (50.0, 100.0, "50-100"),
+    (25.0, 50.0, "25-50"),
+    (15.0, 25.0, "15-25"),
+    (0.0, 15.0, "0-15"),
+]
+
+
+def _bucket_label_for_length(full_km: float, buckets: list[tuple[float, float, str]]) -> str | None:
+    """Return the bucket label whose [lo, hi) range contains full_km, else None."""
+    for lo, hi, label in buckets:
+        if full_km >= lo and full_km < hi:
+            return label
+    return None
+
+
+def count_trajectories_by_length_bucket(
+    full_traj_km: list[float],
+    buckets: list[tuple[float, float, str]] = SCOPE3_LENGTH_BUCKETS,
+    min_km: float = 1e-9,
+) -> dict[str, int]:
+    """Count how many trajectories in the dataset fall into each length bucket.
+
+    Query-independent dataset distribution: each trajectory is counted once in
+    the bucket of its full polyline length. Trajectories with ~zero length
+    (``< min_km``) are skipped so near-stationary tracks don't inflate the
+    smallest bucket. Use this to contextualize Scope-3 per-bucket retention
+    (a bucket with few trajectories has noisier retention).
+    """
+    counts: dict[str, int] = {label: 0 for _, _, label in buckets}
+    for km in full_traj_km:
+        if float(km) < min_km:
+            continue
+        label = _bucket_label_for_length(float(km), buckets)
+        if label is not None:
+            counts[label] += 1
+    return counts
+
+
+def compute_in_query_length_retention_bucketed(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+    support_mask: torch.Tensor,
+    full_traj_km: list[float],
+    buckets: list[tuple[float, float, str]] = SCOPE3_LENGTH_BUCKETS,
+) -> dict[str, dict[str, float]]:
+    """Scope-3 in-query retention split into buckets by PARENT trajectory length.
+
+    Same in-query segment definition as ``compute_in_query_length_retention``
+    (``first_in - 1`` to ``last_in + 1``), but each segment's orig/simp km is
+    accumulated into the bucket of its parent trajectory's FULL length
+    (``full_traj_km[tid]``). Returns per-bucket running sums so a caller can
+    aggregate across many queries before computing the ratio.
+
+    Returns ``{bucket_label: {sum_orig_km, sum_simp_km, n_segments}}``.
+    """
+    points_cpu = points.detach().cpu()
+    retained_cpu = retained_mask.detach().cpu().bool()
+    support_cpu = support_mask.detach().cpu().bool()
+    lats = points_cpu[:, 1]
+    lons = points_cpu[:, 2]
+
+    out: dict[str, dict[str, float]] = {
+        label: {"sum_orig_km": 0.0, "sum_simp_km": 0.0, "n_segments": 0} for _, _, label in buckets
+    }
+    for tid, (s, e) in enumerate(boundaries):
+        if e - s < 2:
+            continue
+        traj_support = support_cpu[s:e]
+        if int(traj_support.sum().item()) <= 0:
+            continue
+        in_idx = torch.where(traj_support)[0]
+        first_in = int(in_idx.min().item())
+        last_in = int(in_idx.max().item())
+        seg_start = max(0, first_in - 1)
+        seg_end = min((e - s) - 1, last_in + 1)
+        if seg_end - seg_start < 1:
+            continue
+        seg_lat = lats[s + seg_start : s + seg_end + 1]
+        seg_lon = lons[s + seg_start : s + seg_end + 1]
+        orig_km = _polyline_length_km(seg_lat, seg_lon)
+        if orig_km <= 1e-9:
+            continue
+        seg_retained = retained_cpu[s + seg_start : s + seg_end + 1]
+        if int(seg_retained.sum().item()) >= 2:
+            simp_km = _polyline_length_km(seg_lat[seg_retained], seg_lon[seg_retained])
+        else:
+            simp_km = 0.0
+        label = _bucket_label_for_length(float(full_traj_km[tid]) if tid < len(full_traj_km) else 0.0, buckets)
+        if label is None:
+            continue
+        out[label]["sum_orig_km"] += float(orig_km)
+        out[label]["sum_simp_km"] += float(simp_km)
+        out[label]["n_segments"] += 1
+    return out
+
+
 def compute_length_preserved_for_trajectories(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
