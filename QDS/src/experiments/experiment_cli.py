@@ -11,51 +11,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--csv_path", type=str, default=None)
     parser.add_argument("--train_csv_path", "--train_csv", dest="train_csv_path", type=str, default=None)
     parser.add_argument("--eval_csv_path", "--eval_csv", dest="eval_csv_path", type=str, default=None)
-    parser.add_argument(
-        "--cache_dir",
-        type=str,
-        default=None,
-        help="Optional directory for segmented AIS Parquet caches keyed by source file and load config.",
-    )
-    parser.add_argument(
-        "--refresh_cache",
-        action="store_true",
-        help="Rebuild AIS cache entries even when a matching manifest exists.",
-    )
     parser.add_argument("--n_ships", type=int, default=24)
     parser.add_argument("--n_points", type=int, default=200)
-    parser.add_argument(
-        "--min_points_per_segment",
-        type=int,
-        default=4,
-        help="Minimum points required to keep an AIS trajectory segment.",
-    )
-    parser.add_argument(
-        "--max_points_per_segment",
-        "--max_points_per_ship",
-        dest="max_points_per_segment",
-        type=int,
-        default=None,
-        help="Optional AIS CSV downsampling cap per trajectory segment, useful for smoke runs.",
-    )
-    parser.add_argument(
-        "--max_time_gap_seconds",
-        type=float,
-        default=3600.0,
-        help="Split one vessel track into new trajectory segments when consecutive points exceed this time gap. Set <=0 to disable.",
-    )
-    parser.add_argument(
-        "--max_segments",
-        type=int,
-        default=None,
-        help="Optional cap applied during CSV segmentation, useful for smoke runs.",
-    )
-    parser.add_argument(
-        "--max_trajectories",
-        type=int,
-        default=None,
-        help="Legacy optional cap on loaded AIS trajectories after CSV loading, useful for smoke runs.",
-    )
     parser.add_argument("--n_queries", type=int, default=128)
     parser.add_argument(
         "--query_coverage",
@@ -84,52 +41,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Range query half-window as a fraction of dataset time span. Lower values allow more queries without blanketing the dataset.",
     )
     parser.add_argument(
-        "--range_min_point_hits",
-        type=int,
-        default=None,
-        help="Optional range-query acceptance filter: reject boxes with fewer point hits.",
-    )
-    parser.add_argument(
-        "--range_max_point_hit_fraction",
-        type=float,
-        default=None,
-        help="Optional range-query acceptance filter: reject boxes hitting more than this point fraction.",
-    )
-    parser.add_argument(
-        "--range_min_trajectory_hits",
-        type=int,
-        default=None,
-        help="Optional range-query acceptance filter: reject boxes hitting fewer trajectories.",
-    )
-    parser.add_argument(
-        "--range_max_trajectory_hit_fraction",
-        type=float,
-        default=None,
-        help="Optional range-query acceptance filter: reject boxes hitting more than this trajectory fraction.",
-    )
-    parser.add_argument(
-        "--range_max_box_volume_fraction",
-        type=float,
-        default=None,
-        help="Optional range-query acceptance filter: reject boxes with larger normalized spatiotemporal volume.",
-    )
-    parser.add_argument(
-        "--range_duplicate_iou_threshold",
-        type=float,
-        default=None,
-        help="Optional range-query acceptance filter: reject boxes with IoU at or above this threshold versus accepted boxes.",
-    )
-    parser.add_argument(
-        "--range_acceptance_max_attempts",
-        type=int,
-        default=None,
-        help="Maximum candidate range boxes to try when acceptance filters are enabled.",
-    )
-    parser.add_argument(
         "--knn_k",
         type=int,
         default=12,
         help="Number of nearest trajectories returned by generated kNN queries.",
+    )
+    parser.add_argument(
+        "--knn_t_half_window_fraction",
+        type=float,
+        default=0.25,
+        help="kNN time half-window as a fraction of dataset time span. Default 0.25 (=6h on 1-day data) reproduces the legacy hardcoded behaviour. Lower this on multi-day data to keep absolute window size constant.",
+    )
+    parser.add_argument(
+        "--similarity_time_fraction",
+        type=float,
+        default=0.04,
+        help="Similarity query time half-window as a fraction of dataset time span. Default 0.04 (=~58min on 1-day) matches the legacy hardcoded constant. Scale down on multi-day data to keep absolute window size constant.",
+    )
+    parser.add_argument(
+        "--similarity_top_k",
+        type=int,
+        default=5,
+        help="Number of trajectories returned by each similarity query (default 5).",
     )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--lr", type=float, default=5e-4)
@@ -188,16 +121,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run held-out query-F1 diagnostics every N epochs. 0 disables unless checkpoint selection metric is f1 or uniform_gap.",
     )
     parser.add_argument(
+        "--f1_diagnostic_start_epoch",
+        type=int,
+        default=15,
+        help="Skip F1 diagnostics until this epoch (1-indexed). kNN-only workloads always override to 1.",
+    )
+    parser.add_argument(
+        "--train_batch_size",
+        type=int,
+        default=16,
+        help="Number of trajectory windows per training batch (per forward pass). Higher = better GPU utilization. Default 16; 32-64 typical on 24GB GPUs.",
+    )
+    parser.add_argument(
         "--checkpoint_uniform_gap_weight",
         type=float,
         default=0.5,
-        help="When checkpoint_selection_metric=uniform_gap, bonus/penalty weight for aggregate gap versus uniform.",
+        help="When checkpoint_selection_metric=uniform_gap, bonus/penalty weight for aggregate gap versus newUniformTemporal.",
     )
     parser.add_argument(
         "--checkpoint_type_penalty_weight",
         type=float,
         default=1.0,
-        help="When checkpoint_selection_metric=uniform_gap, penalty weight for per-type F1 deficits versus uniform.",
+        help="When checkpoint_selection_metric=uniform_gap, penalty weight for per-type F1 deficits versus newUniformTemporal.",
     )
     parser.add_argument(
         "--checkpoint_smoothing_window",
@@ -227,9 +172,55 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--residual_label_mode",
         type=str,
-        default="temporal",
+        default="none",
         choices=["none", "temporal"],
-        help="Use labels directly, or train only on points not already kept by the temporal base.",
+        help="Use labels directly (default), or train only on points not already kept by the temporal base. 'none' is required for the 'score_coverage' simplifier.",
+    )
+    parser.add_argument(
+        "--simplification_mode",
+        type=str,
+        default="score_coverage",
+        choices=["score_coverage", "hybrid", "topk"],
+        help="How learned scores are converted to a retained mask. 'score_coverage' (default): per-trajectory greedy with Gaussian density penalty (coverage-aware top-k). 'hybrid': temporal base + learned residual fill. 'topk': pure top-k.",
+    )
+    parser.add_argument(
+        "--coverage_lambda",
+        type=float,
+        default=0.5,
+        help="Weight of the density penalty in score_coverage selection. 0.0 reduces to top-k; larger values approach uniform spacing.",
+    )
+    parser.add_argument(
+        "--coverage_sigma_fraction",
+        type=float,
+        default=0.5,
+        help="Gaussian kernel width as a fraction of expected spacing (n/k). Larger values spread the penalty more broadly.",
+    )
+    parser.add_argument(
+        "--use_cls_token",
+        type=str,
+        default="true",
+        choices=["true", "false"],
+        help="Whether the trajectory transformer uses a learnable CLS summary token consumed by cross-attention.",
+    )
+    parser.add_argument(
+        "--knn_label_variant",
+        type=str,
+        default="legacy",
+        choices=["legacy", "distance_weighted"],
+        help="kNN label distribution. 'legacy' spreads gain equally across all in-window representatives of an answer trajectory; 'distance_weighted' concentrates label mass on the closest-to-anchor representative (matches what kNN F1 actually rewards: keeping at least one near-anchor point).",
+    )
+    parser.add_argument(
+        "--range_label_variant",
+        type=str,
+        default="legacy",
+        choices=["legacy", "uniform"],
+        help="range label weighting. 'legacy' boosts boundary-crossing points 2x and adds cross-trajectory proximity prior; 'uniform' gives every in-box point equal label mass (matches range AnswerF1 = point-recall, doesn't reward boundary detection).",
+    )
+    parser.add_argument(
+        "--length_preservation_weight",
+        type=float,
+        default=0.0,
+        help="Weight (mu) on the polyline-detour shape bonus inside the score_coverage simplifier. 0 = no shape signal (current behaviour). Positive values push MLQDS toward Douglas-Peucker-style retention of shape-defining points while keeping the learned score and coverage terms; the bonus is normalised by the trajectory's mean inter-point step so mu=0.5-1.0 is a reasonable starting range.",
     )
     parser.add_argument(
         "--save_model",

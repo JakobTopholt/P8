@@ -32,19 +32,114 @@ from src.evaluation.baselines import (
 )
 from src.evaluation.evaluate_methods import (
     evaluate_method,
+    build_query_support_masks,
+    aggregate_in_query_retention_across_diagnostics,
+    compute_eval_query_length_preservation,
+    compute_per_query_diagnostics,
     print_geometric_distortion_table,
+    print_length_retention_eval_query_table,
+    print_length_retention_in_query_table,
+    print_length_retention_whole_set_table,
     print_method_comparison_table,
+    print_top_queries_table,
+    write_top_queries_csv,
     print_shift_table,
-    score_retained_mask,
 )
 from src.experiments.experiment_config import ExperimentConfig, TypedQueryWorkload, derive_seed_bundle
-from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
-from src.queries.query_generator import generate_typed_query_workload
-from src.queries.query_types import parse_workload_mix
-from src.queries.workload_diagnostics import compute_range_label_diagnostics, compute_range_workload_diagnostics
+from src.experiments.geojson_writers import (
+    write_queries_geojson,
+    write_query_points_csv,
+    write_simplified_csv,
+)
+from src.queries.query_generator import (
+    generate_typed_query_workload,
+    query_coverage_mask,
+)
+from src.queries.query_types import pad_query_features, parse_workload_mix
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.train_model import train_model
 from src.training.training_pipeline import ModelArtifacts, save_checkpoint
+
+SECONDS_PER_DAY = 86400.0
+
+
+def _selection_workload_from_train(
+    train_workload: TypedQueryWorkload,
+    selection_points: torch.Tensor,
+) -> TypedQueryWorkload:
+    """Build a selection (validation) workload by copying train queries verbatim.
+
+    Selection trajectories are held out from the same train day, so queries do
+    NOT need timestamp-shifting — just compute coverage on the held-out points.
+    Matches the eval workload philosophy: same queries everywhere, only the
+    underlying data differs.
+    """
+    typed = [dict(q) for q in train_workload.typed_queries]
+    features, type_ids = pad_query_features(typed)
+    covered = query_coverage_mask(selection_points, typed)
+    covered_points = int(covered.sum().item())
+    total_points = int(selection_points.shape[0])
+    coverage_fraction = float(covered_points / total_points) if total_points > 0 else 0.0
+    return TypedQueryWorkload(
+        query_features=features,
+        typed_queries=typed,
+        type_ids=type_ids,
+        coverage_fraction=coverage_fraction,
+        covered_points=covered_points,
+        total_points=total_points,
+    )
+
+
+def _eval_workload_from_train(
+    train_workload: TypedQueryWorkload,
+    eval_points: torch.Tensor,
+) -> TypedQueryWorkload:
+    """Build an eval workload by copying train queries and shifting each query's
+    calendar day onto the eval data's calendar day.
+
+    Each train query is anchored to a specific timestamp in train data. To
+    reuse the SAME queries on a different eval day, we keep lat/lon/k/window
+    parameters unchanged and shift the time fields so the query's day-of-data
+    aligns with eval's day. Multi-day train queries all collapse onto eval's
+    single day (preserving each query's time-of-day).
+    """
+    eval_t_min = float(eval_points[:, 0].min().item())
+    eval_day_start = (eval_t_min // SECONDS_PER_DAY) * SECONDS_PER_DAY
+
+    shifted_queries: list[dict] = []
+    for q in train_workload.typed_queries:
+        new_q = {"type": q["type"], "params": dict(q["params"])}
+        params = new_q["params"]
+        if q["type"] == "knn":
+            orig_t = float(params["t_center"])
+        else:
+            orig_t = float(params["t_start"])
+        orig_day_start = (orig_t // SECONDS_PER_DAY) * SECONDS_PER_DAY
+        delta = eval_day_start - orig_day_start
+        if q["type"] in {"range", "clustering", "similarity"}:
+            params["t_start"] = float(params["t_start"]) + delta
+            params["t_end"] = float(params["t_end"]) + delta
+        elif q["type"] == "knn":
+            params["t_center"] = float(params["t_center"]) + delta
+        if "reference" in q:
+            # Keep the reference snippet as-is — it's used for shape matching only,
+            # not for time-window filtering.
+            new_q["reference"] = q["reference"]
+        shifted_queries.append(new_q)
+
+    features, type_ids = pad_query_features(shifted_queries)
+    covered = query_coverage_mask(eval_points, shifted_queries)
+    covered_points = int(covered.sum().item())
+    total_points = int(eval_points.shape[0])
+    coverage_fraction = float(covered_points / total_points) if total_points > 0 else 0.0
+    return TypedQueryWorkload(
+        query_features=features,
+        typed_queries=shifted_queries,
+        type_ids=type_ids,
+        coverage_fraction=coverage_fraction,
+        covered_points=covered_points,
+        total_points=total_points,
+    )
 
 
 @dataclass
@@ -55,6 +150,11 @@ class ExperimentOutputs:
     shift_table: str
     metrics_dump: dict
     geometric_table: str = ""
+    length_retention_whole_set_table: str = ""
+    length_retention_eval_query_table: str = ""
+    length_retention_in_query_table: str = ""
+    top_best_queries_table: str = ""
+    top_worst_queries_table: str = ""
 
 
 def split_trajectories(
@@ -112,122 +212,6 @@ def _validation_query_count(config: ExperimentConfig) -> int:
     return min(doubled, max(int(config.query.n_queries), int(config.query.max_queries)))
 
 
-def _range_diagnostic_duplicate_threshold(config: ExperimentConfig) -> float | None:
-    """Use explicit duplicate threshold for diagnostics, or a diagnostic-only default."""
-    threshold = config.query.range_duplicate_iou_threshold
-    return 0.85 if threshold is None else threshold
-
-
-def _range_only_queries(typed_queries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return only range queries from a mixed workload."""
-    return [query for query in typed_queries if str(query.get("type", "")).lower() == "range"]
-
-
-def _range_signal_diagnostics(
-    points: torch.Tensor,
-    boundaries: list[tuple[int, int]],
-    range_queries: list[dict[str, Any]],
-    workload_mix: dict[str, float],
-    compression_ratio: float,
-    seed: int,
-) -> dict[str, Any]:
-    """Compute label, Oracle, and baseline diagnostics for range workloads."""
-    if not range_queries:
-        return {
-            "range_query_count": 0,
-            "labels": compute_range_label_diagnostics(
-                torch.zeros((0, 4), dtype=torch.float32),
-                torch.zeros((0, 4), dtype=torch.bool),
-            ),
-            "methods": {},
-            "best_baseline": None,
-            "best_baseline_range_f1": 0.0,
-            "oracle_range_f1": 0.0,
-            "oracle_gap_over_best_baseline": 0.0,
-        }
-
-    labels, labelled_mask = compute_typed_importance_labels(
-        points=points,
-        boundaries=boundaries,
-        typed_queries=range_queries,
-        seed=seed,
-    )
-    label_diagnostics = compute_range_label_diagnostics(labels, labelled_mask)
-    methods = [
-        NewUniformTemporalMethod(),
-        DouglasPeuckerMethod(),
-        OracleMethod(labels=labels, workload_mix={"range": 1.0}),
-    ]
-    method_scores: dict[str, dict[str, float]] = {}
-    for method in methods:
-        retained_mask = method.simplify(points, boundaries, compression_ratio)
-        aggregate, per_type, _, _ = score_retained_mask(
-            points=points,
-            boundaries=boundaries,
-            retained_mask=retained_mask,
-            typed_queries=range_queries,
-            workload_mix={"range": 1.0},
-        )
-        method_scores[method.name] = {
-            "aggregate_f1": float(aggregate),
-            "range_f1": float(per_type.get("range", 0.0)),
-        }
-
-    baseline_names = ["uniform", "DouglasPeucker"]
-    best_baseline = max(baseline_names, key=lambda name: method_scores.get(name, {}).get("range_f1", 0.0))
-    best_baseline_range_f1 = float(method_scores[best_baseline]["range_f1"])
-    oracle_range_f1 = float(method_scores.get("Oracle", {}).get("range_f1", 0.0))
-    normalized_mix = sum(float(v) for v in workload_mix.values())
-    range_weight = float(workload_mix.get("range", 0.0)) / normalized_mix if normalized_mix > 0.0 else 0.0
-    return {
-        "range_query_count": int(len(range_queries)),
-        "range_workload_weight": float(range_weight),
-        "labels": label_diagnostics,
-        "methods": method_scores,
-        "best_baseline": best_baseline,
-        "best_baseline_range_f1": best_baseline_range_f1,
-        "oracle_range_f1": oracle_range_f1,
-        "oracle_gap_over_best_baseline": float(oracle_range_f1 - best_baseline_range_f1),
-    }
-
-
-def _range_workload_diagnostics(
-    label: str,
-    points: torch.Tensor,
-    boundaries: list[tuple[int, int]],
-    workload: TypedQueryWorkload,
-    workload_mix: dict[str, float],
-    config: ExperimentConfig,
-    seed: int,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Build summary and JSONL rows for one workload."""
-    workload_diagnostics = compute_range_workload_diagnostics(
-        points=points,
-        boundaries=boundaries,
-        typed_queries=workload.typed_queries,
-        max_point_hit_fraction=config.query.range_max_point_hit_fraction,
-        max_trajectory_hit_fraction=config.query.range_max_trajectory_hit_fraction,
-        max_box_volume_fraction=config.query.range_max_box_volume_fraction,
-        duplicate_iou_threshold=_range_diagnostic_duplicate_threshold(config),
-    )
-    range_queries = _range_only_queries(workload.typed_queries)
-    signal = _range_signal_diagnostics(
-        points=points,
-        boundaries=boundaries,
-        range_queries=range_queries,
-        workload_mix=workload_mix,
-        compression_ratio=config.model.compression_ratio,
-        seed=seed,
-    )
-    summary = {
-        "range": workload_diagnostics["summary"],
-        "range_signal": signal,
-        "generation": workload.generation_diagnostics or {},
-    }
-    rows = [{"workload": label, **row} for row in workload_diagnostics["queries"]]
-    return summary, rows
-
-
 def run_experiment_pipeline(
     config: ExperimentConfig,
     trajectories: list[torch.Tensor],
@@ -240,7 +224,6 @@ def run_experiment_pipeline(
     trajectory_mmsis: list[int] | None = None,
     eval_trajectories: list[torch.Tensor] | None = None,
     eval_trajectory_mmsis: list[int] | None = None,
-    data_audit: dict[str, Any] | None = None,
 ) -> ExperimentOutputs:
     """Run training, matched evaluation, and shifted evaluation tables. See src/experiments/README.md for details."""
     pipeline_t0 = time.perf_counter()
@@ -316,11 +299,37 @@ def run_experiment_pipeline(
         train_boundaries = train_ds.get_trajectory_boundaries()
         test_boundaries = test_ds.get_trajectory_boundaries()
         selection_boundaries = selection_ds.get_trajectory_boundaries() if selection_ds is not None else None
+        # Dataset point-split breakdown: percentages of total points across all
+        # three sets. Useful for sanity-checking that the train/selection/eval
+        # ratios match expectations (default val_fraction=0.15 → selection ≈
+        # 15% of train trajectories, then absolute point counts depend on
+        # per-trajectory length distribution).
+        n_train_pts = int(train_points.shape[0])
+        n_test_pts = int(test_points.shape[0])
+        n_sel_pts = int(selection_points.shape[0]) if selection_points is not None else 0
+        total_pts = n_train_pts + n_test_pts + n_sel_pts
+        if total_pts > 0:
+            print(
+                f"  point split: total={total_pts:,}  "
+                f"train={n_train_pts:,} ({100*n_train_pts/total_pts:.1f}%)  "
+                f"selection={n_sel_pts:,} ({100*n_sel_pts/total_pts:.1f}%)  "
+                f"eval={n_test_pts:,} ({100*n_test_pts/total_pts:.1f}%)",
+                flush=True,
+            )
 
     with _phase("generate-workloads"):
         # Front-load all kNN queries before proportional scheduling for training
         # so kNN always gets its full quota even if n_queries is small.
-        knn_front_load = int(train_mix.get("knn", 0.0) * config.query.n_queries)
+        # Front-load enough kNN queries up-front to seed kNN labels even when
+        # the proportional scheduler hasn't reached kNN yet. Floor at 100 if
+        # kNN is in the mix at all — the generator now skips per-query coverage
+        # updates during front-load, so cost is negligible. Pure non-kNN mixes
+        # stay at 0 (no kNN queries needed).
+        knn_weight = float(train_mix.get("knn", 0.0))
+        if knn_weight > 0.0:
+            knn_front_load = max(100, int(knn_weight * config.query.n_queries))
+        else:
+            knn_front_load = 0
         train_workload = generate_typed_query_workload(
             trajectories=train_traj,
             n_queries=config.query.n_queries,
@@ -331,53 +340,25 @@ def run_experiment_pipeline(
             range_spatial_fraction=config.query.range_spatial_fraction,
             range_time_fraction=config.query.range_time_fraction,
             knn_k=config.query.knn_k,
+            knn_t_half_window_fraction=config.query.knn_t_half_window_fraction,
+            similarity_time_fraction=config.query.similarity_time_fraction,
+            similarity_top_k=config.query.similarity_top_k,
             front_load_knn=knn_front_load,
-            range_min_point_hits=config.query.range_min_point_hits,
-            range_max_point_hit_fraction=config.query.range_max_point_hit_fraction,
-            range_min_trajectory_hits=config.query.range_min_trajectory_hits,
-            range_max_trajectory_hit_fraction=config.query.range_max_trajectory_hit_fraction,
-            range_max_box_volume_fraction=config.query.range_max_box_volume_fraction,
-            range_duplicate_iou_threshold=config.query.range_duplicate_iou_threshold,
-            range_acceptance_max_attempts=config.query.range_acceptance_max_attempts,
+            single_day_clip=True,
         )
-        eval_workload = generate_typed_query_workload(
-            trajectories=test_traj,
-            n_queries=config.query.n_queries,
-            workload_mix=eval_mix,
-            seed=seeds.eval_query_seed,
-            target_coverage=config.query.target_coverage,
-            max_queries=config.query.max_queries,
-            range_spatial_fraction=config.query.range_spatial_fraction,
-            range_time_fraction=config.query.range_time_fraction,
-            knn_k=config.query.knn_k,
-            range_min_point_hits=config.query.range_min_point_hits,
-            range_max_point_hit_fraction=config.query.range_max_point_hit_fraction,
-            range_min_trajectory_hits=config.query.range_min_trajectory_hits,
-            range_max_trajectory_hit_fraction=config.query.range_max_trajectory_hit_fraction,
-            range_max_box_volume_fraction=config.query.range_max_box_volume_fraction,
-            range_duplicate_iou_threshold=config.query.range_duplicate_iou_threshold,
-            range_acceptance_max_attempts=config.query.range_acceptance_max_attempts,
-        )
+        # Eval workload is a COPY of the train workload, with each query's
+        # calendar day shifted onto the eval data's day (preserving lat/lon,
+        # window sizes, k, time-of-day). This guarantees train and eval see the
+        # exact same queries — only the underlying data differs. The eval
+        # coverage_fraction printed below reflects how much of the eval data the
+        # shifted train queries actually hit.
+        eval_workload = _eval_workload_from_train(train_workload, test_points)
         selection_workload = None
-        if selection_traj:
-            selection_workload = generate_typed_query_workload(
-                trajectories=selection_traj,
-                n_queries=_validation_query_count(config),
-                workload_mix=eval_mix,
-                seed=seeds.eval_query_seed + 17,
-                target_coverage=config.query.target_coverage,
-                max_queries=config.query.max_queries,
-                range_spatial_fraction=config.query.range_spatial_fraction,
-                range_time_fraction=config.query.range_time_fraction,
-                knn_k=config.query.knn_k,
-                range_min_point_hits=config.query.range_min_point_hits,
-                range_max_point_hit_fraction=config.query.range_max_point_hit_fraction,
-                range_min_trajectory_hits=config.query.range_min_trajectory_hits,
-                range_max_trajectory_hit_fraction=config.query.range_max_trajectory_hit_fraction,
-                range_max_box_volume_fraction=config.query.range_max_box_volume_fraction,
-                range_duplicate_iou_threshold=config.query.range_duplicate_iou_threshold,
-                range_acceptance_max_attempts=config.query.range_acceptance_max_attempts,
-            )
+        if selection_traj and selection_points is not None:
+            # Selection uses the SAME train queries on held-out 15% trajectories
+            # (same calendar day → no timestamp shift needed). Aligns selection
+            # with eval philosophy: same queries everywhere, only data changes.
+            selection_workload = _selection_workload_from_train(train_workload, selection_points)
         print(
             f"  train_workload={len(train_workload.typed_queries)} queries  "
             f"coverage={_coverage_name(train_workload)}",
@@ -404,55 +385,6 @@ def run_experiment_pipeline(
                         f"({coverage:.2%} < {target:.2%}); raise --n_queries or query footprint to cover more points.",
                         flush=True,
                     )
-
-    range_diagnostics_summary: dict[str, Any] = {}
-    range_diagnostics_rows: list[dict[str, Any]] = []
-    with _phase("range-diagnostics"):
-        train_summary, train_rows = _range_workload_diagnostics(
-            "train",
-            train_points,
-            train_boundaries,
-            train_workload,
-            train_mix,
-            config,
-            seeds.train_query_seed,
-        )
-        eval_summary, eval_rows = _range_workload_diagnostics(
-            "eval",
-            test_points,
-            test_boundaries,
-            eval_workload,
-            eval_mix,
-            config,
-            seeds.eval_query_seed,
-        )
-        range_diagnostics_summary["train"] = train_summary
-        range_diagnostics_summary["eval"] = eval_summary
-        range_diagnostics_rows.extend(train_rows)
-        range_diagnostics_rows.extend(eval_rows)
-        if selection_workload is not None and selection_points is not None and selection_boundaries is not None:
-            selection_summary, selection_rows = _range_workload_diagnostics(
-                "selection",
-                selection_points,
-                selection_boundaries,
-                selection_workload,
-                eval_mix,
-                config,
-                seeds.eval_query_seed + 17,
-            )
-            range_diagnostics_summary["selection"] = selection_summary
-            range_diagnostics_rows.extend(selection_rows)
-        for label, summary in range_diagnostics_summary.items():
-            range_summary = summary["range"]
-            signal = summary["range_signal"]
-            print(
-                f"  {label}: range_queries={range_summary['range_query_count']}  "
-                f"empty={range_summary['empty_query_rate']:.2%}  "
-                f"broad={range_summary['too_broad_query_rate']:.2%}  "
-                f"duplicates={range_summary['near_duplicate_query_rate']:.2%}  "
-                f"oracle_gap={signal['oracle_gap_over_best_baseline']:+.6f}",
-                flush=True,
-            )
 
     if save_queries_dir:
         with _phase("write-queries-geojson"):
@@ -498,6 +430,10 @@ def run_experiment_pipeline(
             workload_mix=eval_mix,
             temporal_fraction=config.model.mlqds_temporal_fraction,
             diversity_bonus=config.model.mlqds_diversity_bonus,
+            simplification_mode=getattr(config.model, "simplification_mode", "score_coverage"),
+            coverage_lambda=float(getattr(config.model, "coverage_lambda", 0.5)),
+            coverage_sigma_fraction=float(getattr(config.model, "coverage_sigma_fraction", 0.5)),
+            length_preservation_weight=float(getattr(config.model, "length_preservation_weight", 0.0)),
         ),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
@@ -506,6 +442,16 @@ def run_experiment_pipeline(
     matched: dict[str, Any] = {}
     save_masks = bool(save_simplified_dir)
     with _phase("evaluate-matched"):
+        # Precompute full_res + support_mask cache once — shared across all 4
+        # methods (MLQDS, uniform, DP, Oracle). Eliminates the ~4× redundant
+        # per-query ground-truth re-computation each method used to pay.
+        with _phase("  precompute-query-cache"):
+            from src.evaluation.evaluate_methods import precompute_query_cache
+            eval_cache = precompute_query_cache(
+                points=test_points,
+                boundaries=test_boundaries,
+                typed_queries=eval_workload.typed_queries,
+            )
         for method in methods:
             with _phase(f"  eval {method.name}"):
                 matched[method.name] = evaluate_method(
@@ -515,7 +461,8 @@ def run_experiment_pipeline(
                     typed_queries=eval_workload.typed_queries,
                     workload_mix=eval_mix,
                     compression_ratio=config.model.compression_ratio,
-                    return_mask=method.name == "MLQDS" or save_masks,
+                    return_mask=method.name in {"MLQDS", "uniform", "DouglasPeucker"} or save_masks,
+                    cache=eval_cache,
                 )
 
         eval_labels, _ = compute_typed_importance_labels(
@@ -523,6 +470,8 @@ def run_experiment_pipeline(
             boundaries=test_boundaries,
             typed_queries=eval_workload.typed_queries,
             seed=seeds.eval_query_seed,
+            knn_label_variant=str(getattr(config.model, "knn_label_variant", "legacy")),
+            range_label_variant=str(getattr(config.model, "range_label_variant", "legacy")),
         )
         oracle = OracleMethod(labels=eval_labels, workload_mix=eval_mix)
         with _phase(f"  eval {oracle.name}"):
@@ -533,10 +482,35 @@ def run_experiment_pipeline(
                 typed_queries=eval_workload.typed_queries,
                 workload_mix=eval_mix,
                 compression_ratio=config.model.compression_ratio,
+                cache=eval_cache,
             )
 
     matched_table = print_method_comparison_table(matched)
     geometric_table = print_geometric_distortion_table(matched)
+
+    diag_methods = ["MLQDS", "uniform", "DouglasPeucker", "Oracle"]
+    masks_for_diag: dict[str, Any] = {}
+    for name in diag_methods:
+        m = matched.get(name)
+        if m is not None and m.retained_mask is not None:
+            masks_for_diag[name] = m.retained_mask
+    eval_query_length_pres = compute_eval_query_length_preservation(
+        test_points, test_boundaries, masks_for_diag, eval_workload.typed_queries,
+    )
+    per_query_diagnostics = compute_per_query_diagnostics(
+        test_points, test_boundaries, masks_for_diag, eval_workload.typed_queries,
+    )
+    in_query_aggs = aggregate_in_query_retention_across_diagnostics(per_query_diagnostics, list(masks_for_diag.keys()))
+
+    # Three length-retention scope tables (Scope 1 = whole eval set, Scope 2 =
+    # trajectories any eval query touches with full polyline, Scope 3 = in-query
+    # segments only with ±1 outside-anchor point).
+    length_retention_whole_set_table = print_length_retention_whole_set_table(matched, test_points, test_boundaries)
+    length_retention_eval_query_table = print_length_retention_eval_query_table(eval_query_length_pres)
+    length_retention_in_query_table = print_length_retention_in_query_table(in_query_aggs)
+
+    top_best_table = print_top_queries_table(per_query_diagnostics, k=15, mode="best")
+    top_worst_table = print_top_queries_table(per_query_diagnostics, k=15, mode="worst")
 
     with _phase("evaluate-shift"):
         train_name = _mix_name(train_mix)
@@ -554,6 +528,10 @@ def run_experiment_pipeline(
                         workload_mix=train_mix,
                         temporal_fraction=config.model.mlqds_temporal_fraction,
                         diversity_bonus=config.model.mlqds_diversity_bonus,
+                        simplification_mode=getattr(config.model, "simplification_mode", "score_coverage"),
+                        coverage_lambda=float(getattr(config.model, "coverage_lambda", 0.5)),
+                        coverage_sigma_fraction=float(getattr(config.model, "coverage_sigma_fraction", 0.5)),
+            length_preservation_weight=float(getattr(config.model, "length_preservation_weight", 0.0)),
                     ),
                     points=test_points,
                     boundaries=test_boundaries,
@@ -583,18 +561,18 @@ def run_experiment_pipeline(
                 "max_retained_point_gap": m.max_retained_point_gap,
                 "geometric_distortion": m.geometric_distortion,
                 "avg_length_preserved": m.avg_length_preserved,
-                "avg_length_loss": m.avg_length_loss,
+                "length_preservation_aggregates": m.length_preservation_aggregates,
                 "combined_query_shape_score": m.combined_query_shape_score,
             }
             for name, m in matched.items()
         },
         "shift": shift_pairs,
+        "eval_query_length_preservation": eval_query_length_pres,
+        "per_query_diagnostics": per_query_diagnostics,
         "training_history": trained.history,
         "best_epoch": trained.best_epoch,
         "best_loss": trained.best_loss,
         "best_f1": trained.best_f1,
-        "data_audit": data_audit,
-        "workload_diagnostics": range_diagnostics_summary,
     }
 
     with _phase("write-results"):
@@ -603,13 +581,13 @@ def run_experiment_pipeline(
         (out_dir / "matched_table.txt").write_text(matched_table + "\n", encoding="utf-8")
         (out_dir / "shift_table.txt").write_text(shift_table + "\n", encoding="utf-8")
         (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
-        (out_dir / "range_workload_diagnostics.json").write_text(
-            json.dumps(range_diagnostics_summary, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        with open(out_dir / "range_query_diagnostics.jsonl", "w", encoding="utf-8") as f:
-            for row in range_diagnostics_rows:
-                f.write(json.dumps(row, sort_keys=True) + "\n")
+        (out_dir / "length_retention_whole_set_table.txt").write_text(length_retention_whole_set_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_eval_query_table.txt").write_text(length_retention_eval_query_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_in_query_table.txt").write_text(length_retention_in_query_table + "\n", encoding="utf-8")
+        (out_dir / "top_best_queries_table.txt").write_text(top_best_table + "\n", encoding="utf-8")
+        (out_dir / "top_worst_queries_table.txt").write_text(top_worst_table + "\n", encoding="utf-8")
+        write_top_queries_csv(per_query_diagnostics, str(out_dir / "top_best_queries.csv"), k=15, mode="best")
+        write_top_queries_csv(per_query_diagnostics, str(out_dir / "top_worst_queries.csv"), k=15, mode="worst")
         with open(out_dir / "example_run.json", "w", encoding="utf-8") as f:
             json.dump(dump, f, indent=2)
         print(f"  wrote results to {out_dir}", flush=True)
@@ -626,6 +604,10 @@ def run_experiment_pipeline(
                     workload_mix=eval_mix,
                     temporal_fraction=config.model.mlqds_temporal_fraction,
                     diversity_bonus=config.model.mlqds_diversity_bonus,
+                    simplification_mode=getattr(config.model, "simplification_mode", "score_coverage"),
+                    coverage_lambda=float(getattr(config.model, "coverage_lambda", 0.5)),
+                    coverage_sigma_fraction=float(getattr(config.model, "coverage_sigma_fraction", 0.5)),
+                    length_preservation_weight=float(getattr(config.model, "length_preservation_weight", 0.0)),
                 )
                 eval_mask = eval_mlqds.simplify(test_points, test_boundaries, config.model.compression_ratio)
             write_simplified_csv(
@@ -647,8 +629,17 @@ def run_experiment_pipeline(
                         trajectory_mmsis=test_mmsis,
                     )
 
-        with _phase("trajectory-length-loss"):
-            report_trajectory_length_loss(test_points, test_boundaries, eval_mask, top_k=25, trajectory_mmsis=test_mmsis)
+        with _phase("write-query-points-csv"):
+            support_masks = build_query_support_masks(test_points, test_boundaries, eval_workload.typed_queries)
+            write_query_points_csv(
+                str(out_dir),
+                test_points,
+                test_boundaries,
+                eval_workload.typed_queries,
+                support_masks,
+                masks_for_diag,
+                trajectory_mmsis=test_mmsis,
+            )
 
     print(f"[pipeline] total runtime {time.perf_counter() - pipeline_t0:.2f}s", flush=True)
     return ExperimentOutputs(
@@ -656,6 +647,11 @@ def run_experiment_pipeline(
         shift_table=shift_table,
         metrics_dump=dump,
         geometric_table=geometric_table,
+        length_retention_whole_set_table=length_retention_whole_set_table,
+        length_retention_eval_query_table=length_retention_eval_query_table,
+        length_retention_in_query_table=length_retention_in_query_table,
+        top_best_queries_table=top_best_table,
+        top_worst_queries_table=top_worst_table,
     )
 
 

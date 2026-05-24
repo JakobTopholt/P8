@@ -22,17 +22,9 @@ class DataConfig:
 
     n_ships: int = 24
     n_points_per_ship: int = 200
-    min_points_per_segment: int = 4
-    max_points_per_segment: int | None = None
-    max_time_gap_seconds: float | None = 3600.0
-    max_segments: int | None = None
-    max_points_per_ship: int | None = None
-    max_trajectories: int | None = None
     csv_path: str | None = None
     train_csv_path: str | None = None
     eval_csv_path: str | None = None
-    cache_dir: str | None = None
-    refresh_cache: bool = False
     seed: int = 42
     train_fraction: float = 0.70
     val_fraction: float = 0.15
@@ -65,13 +57,8 @@ class QueryConfig:
     )
     similarity_top_k: int = 5
     knn_k: int = 12
-    range_min_point_hits: int | None = None
-    range_max_point_hit_fraction: float | None = None
-    range_min_trajectory_hits: int | None = None
-    range_max_trajectory_hit_fraction: float | None = None
-    range_max_box_volume_fraction: float | None = None
-    range_duplicate_iou_threshold: float | None = None
-    range_acceptance_max_attempts: int | None = None
+    knn_t_half_window_fraction: float = 0.25
+    similarity_time_fraction: float = 0.04
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -91,7 +78,7 @@ class ModelConfig:
     num_heads: int = 4
     num_layers: int = 3
     type_embed_dim: int = 16
-    query_chunk_size: int = 128
+    query_chunk_size: int = 4096
     dropout: float = 0.1
     window_length: int = 512
     window_stride: int = 256
@@ -100,7 +87,7 @@ class ModelConfig:
     compression_ratio: float = 0.2
     model_type: str = "baseline"
     rank_margin: float = 0.05
-    ranking_pairs_per_type: int = 96
+    ranking_pairs_per_type: int = 80
     ranking_top_quantile: float = 0.80
     pointwise_loss_weight: float = 0.25
     gradient_clip_norm: float = 1.0
@@ -109,16 +96,29 @@ class ModelConfig:
     early_stopping_patience: int = 0
     train_batch_size: int = 16
     diagnostic_every: int = 1
-    diagnostic_window_fraction: float = 0.2
+    diagnostic_window_fraction: float = 0.05
     checkpoint_selection_metric: str = "loss"
     f1_diagnostic_every: int = 0
+    # Skip F1 diagnostics until this epoch (1-indexed). The model's first ~15
+    # epochs are noisy and F1 typically tracks loss anyway — running F1 then is
+    # mostly wasted compute. Overridden to 0 for kNN-only workloads, which can
+    # collapse early and need fast F1-based detection. Default 15 matches the
+    # typical "model has settled into a sensible regime" point.
+    f1_diagnostic_start_epoch: int = 15
     checkpoint_uniform_gap_weight: float = 0.5
     checkpoint_type_penalty_weight: float = 1.0
     checkpoint_smoothing_window: int = 1
     checkpoint_f1_variant: str = "answer"
     mlqds_temporal_fraction: float = 0.0
     mlqds_diversity_bonus: float = 0.05
-    residual_label_mode: str = "temporal"
+    residual_label_mode: str = "none"
+    simplification_mode: str = "score_coverage"
+    coverage_lambda: float = 0.5
+    coverage_sigma_fraction: float = 0.5
+    use_cls_token: bool = True
+    knn_label_variant: str = "legacy"
+    range_label_variant: str = "legacy"
+    length_preservation_weight: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize config to a dictionary. See src/experiments/README.md for details."""
@@ -172,7 +172,6 @@ class TypedQueryWorkload:
     coverage_fraction: float | None = None
     covered_points: int | None = None
     total_points: int | None = None
-    generation_diagnostics: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize workload to a dictionary. See src/queries/README.md for details."""
@@ -183,7 +182,6 @@ class TypedQueryWorkload:
             "coverage_fraction": self.coverage_fraction,
             "covered_points": self.covered_points,
             "total_points": self.total_points,
-            "generation_diagnostics": self.generation_diagnostics,
         }
 
     @classmethod
@@ -196,7 +194,6 @@ class TypedQueryWorkload:
             coverage_fraction=data.get("coverage_fraction"),
             covered_points=data.get("covered_points"),
             total_points=data.get("total_points"),
-            generation_diagnostics=data.get("generation_diagnostics"),
         )
 
 
@@ -245,25 +242,12 @@ class SeedBundle:
 def build_experiment_config(
     n_ships: int = 24,
     n_points: int = 200,
-    min_points_per_segment: int = 4,
-    max_points_per_segment: int | None = None,
-    max_time_gap_seconds: float | None = 3600.0,
-    max_segments: int | None = None,
-    max_points_per_ship: int | None = None,
-    max_trajectories: int | None = None,
     n_queries: int = 128,
     query_coverage: float | None = None,
     target_query_coverage: float | None = None,
     max_queries: int | None = None,
     range_spatial_fraction: float = 0.08,
     range_time_fraction: float = 0.15,
-    range_min_point_hits: int | None = None,
-    range_max_point_hit_fraction: float | None = None,
-    range_min_trajectory_hits: int | None = None,
-    range_max_trajectory_hit_fraction: float | None = None,
-    range_max_box_volume_fraction: float | None = None,
-    range_duplicate_iou_threshold: float | None = None,
-    range_acceptance_max_attempts: int | None = None,
     epochs: int = 6,
     lr: float = 5e-4,
     pointwise_loss_weight: float = 0.25,
@@ -272,8 +256,6 @@ def build_experiment_config(
     csv_path: str | None = None,
     train_csv_path: str | None = None,
     eval_csv_path: str | None = None,
-    cache_dir: str | None = None,
-    refresh_cache: bool = False,
     model_type: str = "baseline",
     workload: str = "mixed",
     train_workload_mix: dict[str, float] | None = None,
@@ -281,36 +263,39 @@ def build_experiment_config(
     seed: int = 42,
     early_stopping_patience: int = 0,
     diagnostic_every: int = 1,
-    diagnostic_window_fraction: float = 0.2,
+    diagnostic_window_fraction: float = 0.05,
     checkpoint_selection_metric: str = "loss",
     f1_diagnostic_every: int = 0,
+    f1_diagnostic_start_epoch: int = 15,
+    train_batch_size: int = 16,
     checkpoint_uniform_gap_weight: float = 0.5,
     checkpoint_type_penalty_weight: float = 1.0,
     checkpoint_smoothing_window: int = 1,
     checkpoint_f1_variant: str = "answer",
     knn_k: int = 12,
+    knn_t_half_window_fraction: float = 0.25,
+    similarity_time_fraction: float = 0.04,
+    similarity_top_k: int = 5,
     mlqds_temporal_fraction: float = 0.0,
     mlqds_diversity_bonus: float = 0.05,
-    residual_label_mode: str = "temporal",
+    residual_label_mode: str = "none",
+    simplification_mode: str = "score_coverage",
+    coverage_lambda: float = 0.5,
+    coverage_sigma_fraction: float = 0.5,
+    use_cls_token: bool = True,
+    knn_label_variant: str = "legacy",
+    range_label_variant: str = "legacy",
+    length_preservation_weight: float = 0.0,
     **_ignored_kwargs: Any,
 ) -> ExperimentConfig:
     """Build a structured experiment config from flat arguments. See src/experiments/README.md for details."""
-    segment_cap = max_points_per_segment if max_points_per_segment is not None else max_points_per_ship
     return ExperimentConfig(
         data=DataConfig(
             n_ships=n_ships,
             n_points_per_ship=n_points,
-            min_points_per_segment=min_points_per_segment,
-            max_points_per_segment=segment_cap,
-            max_time_gap_seconds=max_time_gap_seconds,
-            max_segments=max_segments,
-            max_points_per_ship=max_points_per_ship,
-            max_trajectories=max_trajectories,
             csv_path=csv_path,
             train_csv_path=train_csv_path,
             eval_csv_path=eval_csv_path,
-            cache_dir=cache_dir,
-            refresh_cache=refresh_cache,
             seed=seed,
         ),
         query=QueryConfig(
@@ -319,17 +304,13 @@ def build_experiment_config(
             max_queries=max_queries,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
-            range_min_point_hits=range_min_point_hits,
-            range_max_point_hit_fraction=range_max_point_hit_fraction,
-            range_min_trajectory_hits=range_min_trajectory_hits,
-            range_max_trajectory_hit_fraction=range_max_trajectory_hit_fraction,
-            range_max_box_volume_fraction=range_max_box_volume_fraction,
-            range_duplicate_iou_threshold=range_duplicate_iou_threshold,
-            range_acceptance_max_attempts=range_acceptance_max_attempts,
             workload=workload,
             train_workload_mix=train_workload_mix or {"range": 0.5, "knn": 0.5},
             eval_workload_mix=eval_workload_mix or {"similarity": 0.5, "clustering": 0.5},
             knn_k=knn_k,
+            knn_t_half_window_fraction=knn_t_half_window_fraction,
+            similarity_time_fraction=similarity_time_fraction,
+            similarity_top_k=similarity_top_k,
         ),
         model=ModelConfig(
             epochs=epochs,
@@ -343,6 +324,8 @@ def build_experiment_config(
             diagnostic_window_fraction=diagnostic_window_fraction,
             checkpoint_selection_metric=checkpoint_selection_metric,
             f1_diagnostic_every=f1_diagnostic_every,
+            f1_diagnostic_start_epoch=f1_diagnostic_start_epoch,
+            train_batch_size=train_batch_size,
             checkpoint_uniform_gap_weight=checkpoint_uniform_gap_weight,
             checkpoint_type_penalty_weight=checkpoint_type_penalty_weight,
             checkpoint_smoothing_window=checkpoint_smoothing_window,
@@ -350,6 +333,13 @@ def build_experiment_config(
             mlqds_temporal_fraction=mlqds_temporal_fraction,
             mlqds_diversity_bonus=mlqds_diversity_bonus,
             residual_label_mode=residual_label_mode,
+            simplification_mode=simplification_mode,
+            coverage_lambda=coverage_lambda,
+            coverage_sigma_fraction=coverage_sigma_fraction,
+            use_cls_token=use_cls_token,
+            knn_label_variant=knn_label_variant,
+            range_label_variant=range_label_variant,
+            length_preservation_weight=length_preservation_weight,
         ),
     )
 

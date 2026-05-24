@@ -12,7 +12,7 @@ Example (PowerShell, from repo root):
         --n_queries 100 `
         --results_dir results/inference_2026-02-08_range
 
-Run this from ``QDS`` so the ``src`` package resolves.
+Run this from ``QDS/qds_v2`` so the ``src`` package resolves.
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from src.data.ais_loader import load_ais_csv
 from src.data.trajectory_dataset import TrajectoryDataset
-from src.data.trajectory_cache import load_or_build_ais_cache
 from src.evaluation.baselines import (
     DouglasPeuckerMethod,
     MLQDSMethod,
@@ -40,38 +39,23 @@ from src.evaluation.baselines import (
 from src.evaluation.evaluate_methods import (
     evaluate_method,
     print_geometric_distortion_table,
+    print_length_retention_whole_set_table,
     print_method_comparison_table,
 )
-from src.experiments.geojson_writers import report_trajectory_length_loss, write_queries_geojson, write_simplified_csv
+from src.experiments.geojson_writers import read_queries_geojson, write_queries_geojson, write_simplified_csv
+from src.queries.query_generator import query_coverage_mask
+from src.queries.query_types import pad_query_features
+from src.experiments.experiment_config import TypedQueryWorkload
 from src.queries.query_generator import generate_typed_query_workload
 from src.queries.query_types import NUM_QUERY_TYPES
 from src.training.train_model import TrainingOutputs
 from src.training.training_pipeline import load_checkpoint
 
 
-def _normalized_gap_arg(value: float | None) -> float | None:
-    """Normalize CLI gap controls so <=0 disables time-gap segmentation."""
-    if value is None:
-        return None
-    value = float(value)
-    return None if value <= 0.0 else value
-
-
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Evaluate a saved AIS-QDS v2 model on a new CSV.")
     p.add_argument("--checkpoint", required=True, help="Path to saved .pt checkpoint.")
     p.add_argument("--csv_path", required=True, help="Preprocessed AIS CSV to evaluate on.")
-    p.add_argument(
-        "--cache_dir",
-        type=str,
-        default=None,
-        help="Optional directory for segmented AIS Parquet caches keyed by source file and load config.",
-    )
-    p.add_argument(
-        "--refresh_cache",
-        action="store_true",
-        help="Rebuild AIS cache entries even when a matching manifest exists.",
-    )
     p.add_argument("--n_queries", type=int, default=100, help="Queries to generate for evaluation.")
     p.add_argument(
         "--query_coverage",
@@ -128,36 +112,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="If set, write MLQDS-simplified trajectory CSV here.",
     )
     p.add_argument(
-        "--min_points_per_segment",
-        type=int,
-        default=4,
-        help="Minimum points required to keep an AIS trajectory segment.",
-    )
-    p.add_argument(
-        "--max_points_per_segment",
-        "--max_points_per_ship",
-        dest="max_points_per_segment",
-        type=int,
-        default=None,
-        help="Optional AIS CSV downsampling cap per trajectory segment.",
-    )
-    p.add_argument(
-        "--max_time_gap_seconds",
-        type=float,
-        default=3600.0,
-        help="Split one vessel track into new trajectory segments when consecutive points exceed this time gap. Set <=0 to disable.",
-    )
-    p.add_argument(
-        "--max_segments",
-        type=int,
-        default=None,
-        help="Optional cap applied during CSV segmentation.",
-    )
-    p.add_argument(
         "--max_trajectories",
         type=int,
         default=None,
         help="Optional cap on trajectories loaded (useful for quick smoke tests on a laptop).",
+    )
+    p.add_argument(
+        "--queries_from",
+        type=str,
+        default=None,
+        help="Directory containing queries_{type}.geojson files written by --save_queries_dir. "
+             "When set, eval uses these EXACT saved queries instead of regenerating, "
+             "so a re-run can be compared to the training-time validation numbers. "
+             "Skips --n_queries / --query_coverage / --seed / range_*/knn_* / similarity_* flags.",
+    )
+    p.add_argument(
+        "--no_query_model",
+        action="store_true",
+        help="Run MLQDS with an EMPTY workload (no queries fed to the model) while still using the generated --n_queries workload for F1/length-retention evaluation. Tests whether a single-workload model has learned a generalizable importance signal without per-day query generation.",
     )
     return p
 
@@ -191,6 +163,15 @@ def main() -> None:
     print(f"[load-checkpoint] {args.checkpoint}", flush=True)
     artifacts = load_checkpoint(args.checkpoint)
     saved_cfg = artifacts.config
+
+    # load_checkpoint puts the model on CPU. Move it to GPU when available —
+    # full-eval inference on millions of points is CPU-bound otherwise.
+    # windowed_predict moves window tensors / queries to the model's device.
+    inference_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    artifacts.model.to(inference_device)
+    print(f"[device] inference on {inference_device}", flush=True)
+    if torch.cuda.is_available():
+        print(f"[device] {torch.cuda.get_device_name(0)}", flush=True)
     saved_train_mix = artifacts.train_workload_mix
     saved_eval_mix = artifacts.eval_workload_mix
     print(
@@ -208,41 +189,7 @@ def main() -> None:
 
     t0 = time.perf_counter()
     print(f"[load-data] reading CSV: {args.csv_path}", flush=True)
-    load_kwargs = {
-        "min_points_per_segment": args.min_points_per_segment,
-        "max_points_per_segment": args.max_points_per_segment,
-        "max_time_gap_seconds": _normalized_gap_arg(args.max_time_gap_seconds),
-        "max_segments": args.max_segments,
-    }
-    cache_payload = None
-    if args.cache_dir:
-        cached = load_or_build_ais_cache(
-            args.csv_path,
-            cache_dir=args.cache_dir,
-            refresh_cache=bool(args.refresh_cache),
-            **load_kwargs,
-        )
-        trajectories = cached.trajectories
-        trajectory_mmsis = cached.mmsis
-        data_audit = cached.audit
-        cache_payload = cached.cache_metadata()
-        state = "hit" if cached.cache_hit else "built"
-        print(f"[load-data] cache {state}: {cached.cache_dir}", flush=True)
-    else:
-        trajectories, trajectory_mmsis, data_audit = load_ais_csv(
-            args.csv_path,
-            **load_kwargs,
-            return_mmsis=True,
-            return_audit=True,
-        )
-    print(
-        f"[load-data] audit: rows={data_audit.rows_loaded} "
-        f"dropped_invalid={data_audit.rows_dropped_invalid} "
-        f"duplicates={data_audit.duplicate_timestamp_rows} "
-        f"segments={data_audit.output_segment_count} "
-        f"gap_splits={data_audit.time_gap_over_threshold_count}",
-        flush=True,
-    )
+    trajectories, trajectory_mmsis = load_ais_csv(args.csv_path, return_mmsis=True)
     if args.max_trajectories is not None and len(trajectories) > args.max_trajectories:
         trajectories = trajectories[: args.max_trajectories]
         trajectory_mmsis = trajectory_mmsis[: args.max_trajectories]
@@ -255,17 +202,35 @@ def main() -> None:
     print(f"[dataset] points={points.shape[0]}  trajectories={len(boundaries)}", flush=True)
 
     t0 = time.perf_counter()
-    workload = generate_typed_query_workload(
-        trajectories=trajectories,
-        n_queries=int(args.n_queries),
-        workload_mix=eval_mix,
-        seed=int(args.seed),
-        target_coverage=args.query_coverage,
-        max_queries=args.max_queries,
-        range_spatial_fraction=args.range_spatial_fraction,
-        range_time_fraction=args.range_time_fraction,
-        knn_k=args.knn_k,
-    )
+    if args.queries_from:
+        print(f"[workload] loading saved queries from {args.queries_from}", flush=True)
+        typed = read_queries_geojson(args.queries_from)
+        if not typed:
+            raise RuntimeError(f"No queries found under {args.queries_from}")
+        features, type_ids = pad_query_features(typed)
+        covered = query_coverage_mask(points, typed)
+        covered_points = int(covered.sum().item())
+        total_points = int(points.shape[0])
+        workload = TypedQueryWorkload(
+            query_features=features,
+            typed_queries=typed,
+            type_ids=type_ids,
+            coverage_fraction=float(covered_points / total_points) if total_points > 0 else 0.0,
+            covered_points=covered_points,
+            total_points=total_points,
+        )
+    else:
+        workload = generate_typed_query_workload(
+            trajectories=trajectories,
+            n_queries=int(args.n_queries),
+            workload_mix=eval_mix,
+            seed=int(args.seed),
+            target_coverage=args.query_coverage,
+            max_queries=args.max_queries,
+            range_spatial_fraction=args.range_spatial_fraction,
+            range_time_fraction=args.range_time_fraction,
+            knn_k=args.knn_k,
+        )
     coverage_msg = ""
     if workload.coverage_fraction is not None:
         coverage_msg = (
@@ -292,21 +257,52 @@ def main() -> None:
         epochs_trained=int(artifacts.epochs_trained),
     )
 
+    if args.no_query_model:
+        # Empty workload for the model: query_features has shape (0, F) where
+        # F is the per-query feature width used during training. Inferring F
+        # from the generated workload keeps the tensor compatible with the
+        # model's cross-attention input projection.
+        empty_features = workload.query_features.new_zeros((0, workload.query_features.shape[1]))
+        model_workload = TypedQueryWorkload(
+            query_features=empty_features,
+            typed_queries=[],
+            type_ids=torch.zeros((0,), dtype=torch.long),
+        )
+        print("[no-query-model] MLQDS will receive an EMPTY workload — eval queries are unchanged.", flush=True)
+    else:
+        model_workload = workload
+
     methods = [
         MLQDSMethod(
             name="MLQDS",
             trained=trained,
-            workload=workload,
+            workload=model_workload,
             workload_mix=eval_mix,
             temporal_fraction=float(getattr(saved_cfg.model, "mlqds_temporal_fraction", 0.50)),
             diversity_bonus=float(getattr(saved_cfg.model, "mlqds_diversity_bonus", 0.05)),
+            simplification_mode=str(getattr(saved_cfg.model, "simplification_mode", "score_coverage")),
+            coverage_lambda=float(getattr(saved_cfg.model, "coverage_lambda", 0.5)),
+            coverage_sigma_fraction=float(getattr(saved_cfg.model, "coverage_sigma_fraction", 0.5)),
+            length_preservation_weight=float(getattr(saved_cfg.model, "length_preservation_weight", 0.0)),
         ),
         NewUniformTemporalMethod(),
         DouglasPeuckerMethod(),
     ]
 
     results: dict[str, Any] = {}
-    save_masks = bool(args.save_simplified_dir)
+    # Capture masks for ALL methods so Scope-2 / Scope-3 length retention can
+    # be computed per method below (not just MLQDS).
+    save_masks = True
+    # Cache full_res + support_masks once — shared across all methods.
+    from src.evaluation.evaluate_methods import precompute_query_cache
+    print("[eval] precomputing query cache ...", flush=True)
+    t_cache = time.perf_counter()
+    eval_cache = precompute_query_cache(
+        points=points,
+        boundaries=boundaries,
+        typed_queries=workload.typed_queries,
+    )
+    print(f"[eval] query cache built in {time.perf_counter() - t_cache:.2f}s", flush=True)
     for method in methods:
         t0 = time.perf_counter()
         print(f"[eval] {method.name} ...", flush=True)
@@ -317,25 +313,99 @@ def main() -> None:
             typed_queries=workload.typed_queries,
             workload_mix=eval_mix,
             compression_ratio=compression_ratio,
-            return_mask=method.name == "MLQDS" or save_masks,
+            return_mask=True,
+            cache=eval_cache,
         )
         print(f"[eval] {method.name} done in {time.perf_counter() - t0:.2f}s", flush=True)
+
+    # ---- Scope-3 (in-query) length retention per method ----
+    # The matched-eval pipeline computes Scope-3 during training diagnostics,
+    # but run_inference only printed Scope-1. Recompute it here from each
+    # method's retained mask + per-query support masks so re-eval runs report
+    # the same Scope-3 numbers as the training logs.
+    from src.evaluation.evaluate_methods import (
+        _query_support_mask,
+        _split_by_boundaries,
+        print_length_retention_in_query_table,
+    )
+    from src.evaluation.metrics import compute_in_query_length_retention
+    print("[eval] computing Scope-3 in-query retention ...", flush=True)
+    t_s3 = time.perf_counter()
+    full_traj_s3 = _split_by_boundaries(points, boundaries)
+    method_names_s3 = [m.name for m in methods]
+    s3_aggs: dict[str, dict[str, float]] = {
+        n: {"sum_orig_km": 0.0, "sum_simp_km": 0.0, "n_segments": 0} for n in method_names_s3
+    }
+    for q_idx, query in enumerate(workload.typed_queries):
+        # Reuse cached support for non-range types; recompute range cheaply.
+        support = eval_cache.support[q_idx]
+        if query["type"] == "range" or int(support.sum().item()) == 0:
+            support = _query_support_mask(points, boundaries, query, full_traj_s3)
+        if int(support.sum().item()) == 0:
+            continue
+        for name in method_names_s3:
+            mask = results[name].retained_mask
+            if mask is None:
+                continue
+            iq = compute_in_query_length_retention(points, boundaries, mask, support)
+            n_seg = int(iq["n_segments"])
+            if n_seg > 0:
+                s3_aggs[name]["sum_orig_km"] += float(iq["avg_orig_km"]) * n_seg
+                s3_aggs[name]["sum_simp_km"] += float(iq["avg_simp_km"]) * n_seg
+                s3_aggs[name]["n_segments"] += n_seg
+    length_retention_in_query_table = print_length_retention_in_query_table(s3_aggs)
+    print(f"[eval] Scope-3 computed in {time.perf_counter() - t_s3:.2f}s", flush=True)
 
     mlqds_mask = results["MLQDS"].retained_mask
     if mlqds_mask is None:
         raise RuntimeError("MLQDS retained mask was not captured during inference evaluation.")
 
-    table = print_method_comparison_table(results)
-    geometric_table = print_geometric_distortion_table(results)
-    print("\nMatched-workload table (inference on new CSV)")
-    print(table)
-    print("\nGeometric-distortion table (lower is better; SED = time-synchronous, PED = perpendicular, in km)")
-    print(geometric_table)
-
+    length_retention_whole_set_table = print_length_retention_whole_set_table(results, points, boundaries)
     out_dir = Path(args.results_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "matched_table.txt").write_text(table + "\n", encoding="utf-8")
-    (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
+    if args.no_query_model:
+        # No-query generalization mode: the model scored points WITHOUT seeing
+        # queries, but eval F1 is still computed against the real eval queries.
+        # Report BOTH the per-query/per-type AnswerF1 table (matched-workload)
+        # AND the whole-dataset aggregate summary, plus Scope-1 + Scope-3.
+        matched_table = print_method_comparison_table(results)
+        col1, col2, col3, col4 = 24, 14, 14, 14
+        ws_lines = [
+            f"{'Method':<{col1}}{'AnswerF1':>{col2}}{'CombinedF1':>{col3}}{'Compression':>{col4}}",
+        ]
+        ws_lines.append("-" * (col1 + col2 + col3 + col4))
+        for name, m in results.items():
+            ws_lines.append(
+                f"{name:<{col1}}"
+                f"{m.aggregate_f1:>{col2}.6f}"
+                f"{m.aggregate_combined_f1:>{col3}.6f}"
+                f"{m.compression_ratio:>{col4}.4f}"
+            )
+        ws_table = "\n".join(ws_lines)
+        print("\nMatched-workload AnswerF1 table (no-query model; per-type breakdown + Diff vs DP)")
+        print(matched_table)
+        print("\nWhole-dataset F1 table (aggregate across all eval queries)")
+        print(ws_table)
+        print("\n" + length_retention_whole_set_table)
+        print("\n" + length_retention_in_query_table)
+        (out_dir / "matched_table.txt").write_text(matched_table + "\n", encoding="utf-8")
+        (out_dir / "whole_dataset_f1_table.txt").write_text(ws_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_whole_set_table.txt").write_text(length_retention_whole_set_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_in_query_table.txt").write_text(length_retention_in_query_table + "\n", encoding="utf-8")
+        geometric_table = ""
+    else:
+        table = print_method_comparison_table(results)
+        geometric_table = print_geometric_distortion_table(results)
+        print("\nMatched-workload table (inference on new CSV)")
+        print(table)
+        print("\nGeometric-distortion table (lower is better; SED = time-synchronous, PED = perpendicular, in km)")
+        print(geometric_table)
+        print("\n" + length_retention_whole_set_table)
+        print("\n" + length_retention_in_query_table)
+        (out_dir / "matched_table.txt").write_text(table + "\n", encoding="utf-8")
+        (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_whole_set_table.txt").write_text(length_retention_whole_set_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_in_query_table.txt").write_text(length_retention_in_query_table + "\n", encoding="utf-8")
 
     dump = {
         "checkpoint": str(args.checkpoint),
@@ -347,10 +417,6 @@ def main() -> None:
         "query_coverage": workload.coverage_fraction,
         "covered_points": workload.covered_points,
         "total_points": workload.total_points,
-        "data_audit": {
-            **data_audit.to_dict(),
-            **({"cache": cache_payload} if cache_payload is not None else {}),
-        },
         "matched": {
             name: {
                 "aggregate_f1": m.aggregate_f1,
@@ -362,7 +428,7 @@ def main() -> None:
                 "max_retained_point_gap": m.max_retained_point_gap,
                 "geometric_distortion": m.geometric_distortion,
                 "avg_length_preserved": m.avg_length_preserved,
-                "avg_length_loss": m.avg_length_loss,
+                "length_preservation_aggregates": m.length_preservation_aggregates,
                 "combined_query_shape_score": m.combined_query_shape_score,
             }
             for name, m in results.items()
@@ -372,12 +438,6 @@ def main() -> None:
         json.dump(dump, f, indent=2)
     print(f"[write] results -> {out_dir}", flush=True)
 
-    t0 = time.perf_counter()
-    print("[trajectory-length-loss] starting...", flush=True)
-    try:
-        report_trajectory_length_loss(points, boundaries, mlqds_mask, top_k=25, trajectory_mmsis=trajectory_mmsis)
-    finally:
-        print(f"[trajectory-length-loss] done in {time.perf_counter() - t0:.2f}s", flush=True)
 
     if args.save_simplified_dir:
         out_dir_simp = Path(args.save_simplified_dir)

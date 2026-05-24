@@ -2,18 +2,31 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 import math
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+
+# How many consecutive diagnostic epochs of pred_std<1e-3 trigger an abort.
+# kNN training has historically collapsed terminally and burned 4+ GPU-hours
+# producing no useful checkpoint; this trip-wire stops the run as soon as the
+# selector signal goes negative-collapse for this many diag rounds in a row.
+COLLAPSE_TRIP_WIRE_DIAGS = 3
 
 from src.experiments.experiment_config import ModelConfig, TypedQueryWorkload
 from src.models.trajectory_qds_model import TrajectoryQDSModel
 from src.models.turn_aware_qds_model import TurnAwareQDSModel
 from src.queries.query_types import ID_TO_QUERY_NAME, NUM_QUERY_TYPES
-from src.simplification.simplify_trajectories import evenly_spaced_indices, simplify_with_temporal_score_hybrid
+from src.simplification.simplify_trajectories import (
+    evenly_spaced_indices,
+    simplify_with_score_and_coverage,
+    simplify_with_scores,
+    simplify_with_temporal_score_hybrid,
+)
 from src.training.importance_labels import compute_typed_importance_labels
 from src.training.scaler import FeatureScaler
 from src.training.trajectory_batching import TrajectoryBatch, batch_windows, build_trajectory_windows
@@ -207,34 +220,25 @@ def _ranking_loss_for_type(
     if top_idx.numel() == 0:
         top_idx = valid_idx
 
-    # Sample pairs one at a time to preserve the interleaved RNG consumption
-    # of the original implementation (bit-exact on CPU).  The loss is then
-    # computed in a single batched call instead of per-pair, which avoids
-    # autograd-graph blowup and lets the backward pass fuse efficiently.
-    target_cpu = target.detach().cpu() if target.is_cuda else target
-    top_idx_cpu = top_idx.cpu() if top_idx.is_cuda else top_idx
-    valid_idx_cpu = valid_idx.cpu() if valid_idx.is_cuda else valid_idx
-    a_list: list[int] = []
-    b_list: list[int] = []
-    for _ in range(pairs_per_type):
-        ai = int(torch.randint(0, top_idx_cpu.numel(), (1,), generator=generator).item())
-        bi = int(torch.randint(0, valid_idx_cpu.numel(), (1,), generator=generator).item())
-        a = int(top_idx_cpu[ai].item())
-        b = int(valid_idx_cpu[bi].item())
-        if a == b:
-            continue
-        if bool(torch.isclose(target_cpu[a], target_cpu[b]).item()):
-            continue
-        a_list.append(a)
-        b_list.append(b)
-
-    if not a_list:
+    # Sample all pairs in one vectorized call. Generator is CPU-bound for
+    # deterministic reproducibility; indices are moved to the target device once.
+    # The old per-pair Python loop hit ~3 .item() syncs per pair × pairs_per_type
+    # calls — the dominant CPU bottleneck before this rewrite.
+    pairs = int(pairs_per_type)
+    ai = torch.randint(0, int(top_idx.numel()), (pairs,), generator=generator)
+    bi = torch.randint(0, int(valid_idx.numel()), (pairs,), generator=generator)
+    if top_idx.is_cuda:
+        ai = ai.to(top_idx.device, non_blocking=True)
+        bi = bi.to(top_idx.device, non_blocking=True)
+    a_idx = top_idx[ai]
+    b_idx = valid_idx[bi]
+    keep = (a_idx != b_idx) & ~torch.isclose(target[a_idx], target[b_idx])
+    a_idx = a_idx[keep]
+    b_idx = b_idx[keep]
+    if a_idx.numel() == 0:
         return pred.new_tensor(0.0), 0
-
-    a_idx = torch.tensor(a_list, dtype=torch.long, device=pred.device)
-    b_idx = torch.tensor(b_list, dtype=torch.long, device=pred.device)
     sign = torch.sign(target[a_idx] - target[b_idx])
-    return F.margin_ranking_loss(pred[a_idx], pred[b_idx], sign, margin=margin), len(a_list)
+    return F.margin_ranking_loss(pred[a_idx], pred[b_idx], sign, margin=margin), int(a_idx.numel())
 
 
 def _selection_score(avg_tau: float, pred_std: float, loss: float | None = None) -> float:
@@ -352,11 +356,14 @@ def _predict_workload_scores(
     norm_points_dev = norm_points.to(device)
     norm_queries_dev = norm_queries.to(device)
     type_ids_dev = workload.type_ids.to(device)
+    # min_real_points=1: F1 diagnostics need predictions for every point, so keep
+    # tiny windows that the main training loop skips for speed.
     windows = build_trajectory_windows(
         points=norm_points,
         boundaries=boundaries,
         window_length=model_config.window_length,
         stride=model_config.window_stride,
+        min_real_points=1,
     )
     windows = [
         TrajectoryBatch(
@@ -416,13 +423,25 @@ def _validation_query_f1(
         model_config=model_config,
         device=device,
     )
-    retained_mask = simplify_with_temporal_score_hybrid(
-        scores,
-        boundaries,
-        model_config.compression_ratio,
-        temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
-        diversity_bonus=float(getattr(model_config, "mlqds_diversity_bonus", 0.05)),
-    )
+    mode = str(getattr(model_config, "simplification_mode", "score_coverage")).lower()
+    if mode == "score_coverage":
+        retained_mask = simplify_with_score_and_coverage(
+            scores,
+            boundaries,
+            model_config.compression_ratio,
+            coverage_lambda=float(getattr(model_config, "coverage_lambda", 0.5)),
+            coverage_sigma_fraction=float(getattr(model_config, "coverage_sigma_fraction", 0.5)),
+        )
+    elif mode == "topk":
+        retained_mask = simplify_with_scores(scores, boundaries, model_config.compression_ratio)
+    else:
+        retained_mask = simplify_with_temporal_score_hybrid(
+            scores,
+            boundaries,
+            model_config.compression_ratio,
+            temporal_fraction=float(getattr(model_config, "mlqds_temporal_fraction", 0.50)),
+            diversity_bonus=float(getattr(model_config, "mlqds_diversity_bonus", 0.05)),
+        )
     answer_agg, answer_pt, combined_agg, combined_pt = score_retained_mask(
         points=points,
         boundaries=boundaries,
@@ -492,6 +511,8 @@ def train_model(
         boundaries=train_boundaries,
         typed_queries=workload.typed_queries,
         seed=seed,
+        knn_label_variant=str(getattr(model_config, "knn_label_variant", "legacy")),
+        range_label_variant=str(getattr(model_config, "range_label_variant", "legacy")),
     )
     residual_label_mode = str(getattr(model_config, "residual_label_mode", "none")).lower()
     if residual_label_mode not in {"none", "temporal"}:
@@ -522,10 +543,38 @@ def train_model(
         type_embed_dim=model_config.type_embed_dim,
         query_chunk_size=model_config.query_chunk_size,
         dropout=model_config.dropout,
+        use_cls_token=bool(getattr(model_config, "use_cls_token", True)),
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
+
+    # Multi-GPU training via nn.DataParallel when 2+ visible GPUs.
+    # We wrap only for the training loop; diagnostics + inference still use the
+    # underlying module (model.module) for unchanged behaviour. DataParallel is
+    # math-equivalent to single-GPU at the same effective batch size, so no
+    # quality regression — purely a wall-clock speedup.
+    n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    use_data_parallel = n_gpus >= 2 and bool(getattr(model_config, "use_data_parallel", True))
+    # torch.compile was attempted here but disabled on AI Lab — the compute nodes'
+    # gcc/triton toolchain failed to compile the inductor CUDA helper module,
+    # crashing the run on the first forward pass (after the wrap call succeeded
+    # because compile is lazy). Re-enable only if you have verified compile works
+    # by running a dry forward pass at startup.
+    train_model_handle = nn.DataParallel(model) if use_data_parallel else model
+    if use_data_parallel:
+        print(f"  [training] using nn.DataParallel across {n_gpus} GPUs", flush=True)
+
+    # Mixed-precision (AMP) for ~1.3-1.5x training speedup on supported GPUs.
+    # Forward+loss are computed in fp16 under autocast; gradients are scaled by
+    # GradScaler so small fp16 grads don't underflow. Master weights stay fp32 in
+    # the optimizer, so convergence is numerically unchanged for the transformer
+    # + BCE/ranking losses we use here.
+    use_amp = bool(getattr(model_config, "use_amp", True)) and torch.cuda.is_available()
+    scaler_amp = torch.cuda.amp.GradScaler(enabled=use_amp)
+    if use_amp:
+        print(f"  [training] using torch.cuda.amp mixed-precision training", flush=True)
+
     norm_points_dev = norm_points.to(device)
     norm_queries_dev = norm_queries.to(device)
     type_ids_dev = workload.type_ids.to(device)
@@ -554,6 +603,32 @@ def train_model(
     # Diagnostic pass operates on single windows so we can cheaply subsample a
     # fraction of them (batched diagnostics would waste the remaining lanes).
     diag_windows = single_windows
+
+    # Precompute, for every (batch_idx, b_in_batch, type_idx), whether the
+    # window contains at least one positive labelled point of that type.
+    # This was previously checked inside the training inner loop with a
+    # `.any().item()` sync per batch × type — which costs roughly
+    # n_batches * NUM_QUERY_TYPES * n_epochs GPU↔CPU syncs (= tens of thousands
+    # per training run). Doing it once up-front trades n_batches syncs for
+    # zero per-step syncs, then we just look up a Python list at runtime.
+    has_positives_per_batch: list[list[list[bool]]] = []
+    for w_batch in windows:
+        B = int(w_batch.points.shape[0])
+        per_batch_per_b: list[list[bool]] = []
+        for b in range(B):
+            idx_row = w_batch.global_indices[b]
+            valid = idx_row >= 0
+            global_idx = idx_row[valid]
+            row: list[bool] = []
+            if global_idx.numel() == 0:
+                row = [False] * NUM_QUERY_TYPES
+            else:
+                lbls = training_targets_dev[global_idx]
+                msks = labelled_mask_dev[global_idx]
+                has = (msks & (lbls > 0)).any(dim=0)  # (NUM_QUERY_TYPES,)
+                row = has.tolist()
+            per_batch_per_b.append(row)
+        has_positives_per_batch.append(per_batch_per_b)
     diag_every = max(1, int(getattr(model_config, "diagnostic_every", 1)))
     diag_fraction = float(getattr(model_config, "diagnostic_window_fraction", 1.0))
     diag_fraction = min(1.0, max(0.05, diag_fraction))
@@ -612,6 +687,36 @@ def train_model(
     best_epoch = 0
     best_state_dict: dict[str, torch.Tensor] | None = None
     epochs_no_improve = 0
+    consecutive_collapse_diags = 0
+    # Trip-wire is enabled only for kNN-only workloads. Historical data shows
+    # kNN-only collapse is terminal (model never recovers, 4+ GPU-hours wasted).
+    # Other workloads — especially range/clustering with sparse labels in the
+    # first few epochs — can transiently look "collapsed" then recover, so we
+    # don't auto-abort them. The collapse_penalty in selection_score still
+    # rejects collapsed epochs as checkpoint candidates either way.
+    _mix_dict = _normalized_mix_dict(train_mix or _query_frequency_mix(workload))
+    is_knn_only = _mix_dict.get("knn", 0.0) >= 0.95
+    # F1-diag start epoch: skip F1 diagnostics until this epoch (model is too
+    # noisy early to give a useful validation signal). kNN-only workloads
+    # override to 0 because they can collapse before epoch 15 and need fast
+    # F1-based detection. Configured via ModelConfig.f1_diagnostic_start_epoch.
+    f1_diag_start_epoch = int(getattr(model_config, "f1_diagnostic_start_epoch", 15) or 0)
+    if is_knn_only:
+        f1_diag_start_epoch = 0
+    if is_knn_only:
+        print(
+            f"  [training] collapse trip-wire ENABLED (kNN-only workload; "
+            f"abort after {COLLAPSE_TRIP_WIRE_DIAGS} consecutive pred_std<1e-3 epochs); "
+            f"F1 diag starts at epoch 1",
+            flush=True,
+        )
+    else:
+        print(
+            f"  [training] collapse trip-wire disabled (non-kNN-only workload; "
+            f"collapsed epochs still rejected as best-checkpoint candidates via selection penalty); "
+            f"F1 diag starts at epoch {max(1, f1_diag_start_epoch)}",
+            flush=True,
+        )
     epoch_w = len(str(effective_epochs))
     epochs_trained = 0
     for epoch in range(effective_epochs):
@@ -619,64 +724,76 @@ def train_model(
         model.train()
         epoch_mix = _sample_epoch_mix(model_config.dirichlet_alpha, g).to(device)
         epoch_type_weights = _combine_epoch_type_weights(base_type_weights, epoch_mix)
+        # Materialise weights to Python floats ONCE per epoch (single sync) so
+        # the inner loop can compare with a Python float instead of paying for
+        # per-(batch × type) .item() syncs.
+        epoch_type_weights_cpu: list[float] = epoch_type_weights.detach().cpu().tolist()
+        active_type_indices: list[int] = [t for t in range(NUM_QUERY_TYPES) if epoch_type_weights_cpu[t] > 0.0]
         epoch_loss = torch.tensor(0.0, device=device)
         positive_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
         skipped_zero_windows = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
         ranking_pair_counts = torch.zeros((NUM_QUERY_TYPES,), dtype=torch.long)
 
-        for w in windows:
-            pred_batch = model(
-                points=w.points,
-                queries=norm_queries_dev,
-                query_type_ids=type_ids_dev,
-                padding_mask=w.padding_mask,
-            )
-            # pred_batch: (B, L, T).  Accumulate per-window loss terms across
-            # the batch and backprop once per batch — this is what makes the
-            # GPU actually saturated compared to the old batch=1 loop.
-            loss_terms: list[torch.Tensor] = []
-            B = pred_batch.shape[0]
-            for b in range(B):
-                idx = w.global_indices[b]
-                valid_window = idx >= 0
-                global_idx = idx[valid_window]
-                pred_valid = pred_batch[b][valid_window]
-
-                for t in range(NUM_QUERY_TYPES):
-                    type_weight = epoch_type_weights[t]
-                    if float(type_weight.item()) <= 0.0:
-                        continue
-                    t_labels = training_targets_dev[global_idx, t]
-                    t_mask = labelled_mask_dev[global_idx, t]
-                    if not bool((t_mask & (t_labels > 0)).any().item()):
-                        skipped_zero_windows[t] += 1
-                        continue
-                    t_pred = pred_valid[:, t]
-                    positive_windows[t] += 1
-                    rank_loss, pair_count = _ranking_loss_for_type(
-                        pred=t_pred,
-                        target=t_labels,
-                        valid_mask=t_mask,
-                        pairs_per_type=model_config.ranking_pairs_per_type,
-                        top_quantile=model_config.ranking_top_quantile,
-                        margin=model_config.rank_margin,
-                        generator=g,
-                    )
-                    ranking_pair_counts[t] += int(pair_count)
-                    pointwise_term = _balanced_pointwise_loss(t_pred, t_labels, t_mask, generator=g)
-                    loss_terms.append(type_weight * (rank_loss + model_config.pointwise_loss_weight * pointwise_term))
-
-            if loss_terms:
-                loss = (
-                    torch.stack(loss_terms).sum() / float(B)
-                    + model_config.l2_score_weight * (pred_batch ** 2).mean()
+        for batch_idx, w in enumerate(windows):
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                pred_batch = train_model_handle(
+                    points=w.points,
+                    queries=norm_queries_dev,
+                    query_type_ids=type_ids_dev,
+                    padding_mask=w.padding_mask,
                 )
-                opt.zero_grad()
-                loss.backward()
+                # pred_batch: (B, L, T).  Accumulate per-window loss terms across
+                # the batch and backprop once per batch — this is what makes the
+                # GPU actually saturated compared to the old batch=1 loop.
+                loss_terms: list[torch.Tensor] = []
+                B = pred_batch.shape[0]
+                hp_batch = has_positives_per_batch[batch_idx]  # precomputed Python list
+                for b in range(B):
+                    idx = w.global_indices[b]
+                    valid_window = idx >= 0
+                    global_idx = idx[valid_window]
+                    pred_valid = pred_batch[b][valid_window]
+                    hp_b = hp_batch[b]
+
+                    for t in active_type_indices:
+                        if not hp_b[t]:
+                            skipped_zero_windows[t] += 1
+                            continue
+                        type_weight = epoch_type_weights[t]
+                        t_labels = training_targets_dev[global_idx, t]
+                        t_mask = labelled_mask_dev[global_idx, t]
+                        t_pred = pred_valid[:, t]
+                        positive_windows[t] += 1
+                        rank_loss, pair_count = _ranking_loss_for_type(
+                            pred=t_pred,
+                            target=t_labels,
+                            valid_mask=t_mask,
+                            pairs_per_type=model_config.ranking_pairs_per_type,
+                            top_quantile=model_config.ranking_top_quantile,
+                            margin=model_config.rank_margin,
+                            generator=g,
+                        )
+                        ranking_pair_counts[t] += int(pair_count)
+                        pointwise_term = _balanced_pointwise_loss(t_pred, t_labels, t_mask, generator=g)
+                        loss_terms.append(type_weight * (rank_loss + model_config.pointwise_loss_weight * pointwise_term))
+
+                if loss_terms:
+                    loss = (
+                        torch.stack(loss_terms).sum() / float(B)
+                        + model_config.l2_score_weight * (pred_batch ** 2).mean()
+                    )
+                else:
+                    loss = None
+
+            if loss is not None:
+                opt.zero_grad(set_to_none=True)
+                scaler_amp.scale(loss).backward()
                 clip_norm = float(getattr(model_config, "gradient_clip_norm", 0.0) or 0.0)
                 if clip_norm > 0.0:
+                    scaler_amp.unscale_(opt)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
-                opt.step()
+                scaler_amp.step(opt)
+                scaler_amp.update()
                 epoch_loss = epoch_loss + loss.detach()
 
         # Diagnostic pass only on selected epochs (every `diag_every` epochs and
@@ -721,44 +838,24 @@ def train_model(
                     else 0.0
                 ),
             }
-            for type_idx in range(NUM_QUERY_TYPES):
-                stats[f"positive_windows_t{type_idx}"] = float(positive_windows[type_idx].item())
-                stats[f"skipped_zero_windows_t{type_idx}"] = float(skipped_zero_windows[type_idx].item())
-                stats[f"ranking_pairs_t{type_idx}"] = float(ranking_pair_counts[type_idx].item())
-            for t in range(NUM_QUERY_TYPES):
-                pt = full_pred[:, t]
-                stats[f"pred_p50_t{t}"] = float(_safe_quantile(pt, 0.50).item())
-                stats[f"pred_p90_t{t}"] = float(_safe_quantile(pt, 0.90).item())
-                stats[f"pred_p99_t{t}"] = float(_safe_quantile(pt, 0.99).item())
-                labelled_type = labelled_mask_dev[:, t]
-                positive_type = labelled_type & (training_targets_dev[:, t] > 0)
-                labelled_count = max(1, int(labelled_type.sum().item()))
-                stats[f"positive_fraction_t{t}"] = float(positive_type.sum().item() / labelled_count)
-                if bool(positive_type.any().item()):
-                    stats[f"label_p95_t{t}"] = float(_safe_quantile(training_targets_dev[positive_type, t], 0.95).item())
-                else:
-                    stats[f"label_p95_t{t}"] = 0.0
-                eval_mask = labelled_mask_dev[:, t] & covered_mask
-                if bool(eval_mask.any().item()):
-                    # Reset eval_g to the same state each epoch so the diagnostic
-                    # subsample is identical across epochs, giving stable tau trends.
-                    eval_g.manual_seed(int(seed) + 777)
-                    p_sample, y_sample = _discriminative_sample(
-                        pt[eval_mask].detach().cpu(),
-                        training_targets_dev[eval_mask, t].detach().cpu(),
-                        n_each=100,
-                        generator=eval_g,
-                    )
-                    stats[f"kendall_tau_t{t}"] = _kendall_tau(p_sample, y_sample)
-                else:
-                    stats[f"kendall_tau_t{t}"] = 0.0
-
+            # Per-type quantiles, positive_fraction, label_p95, kendall_tau, and
+            # ranking-pair / positive-window counts removed: none of them feed
+            # training decisions for the uniform_gap selection metric and they
+            # were noise in the logs. The essentials remain: pred_std (collapse
+            # detection), loss, val_query_f1 (per type), val_uniform_f1 gap
+            # (per type) computed below in the F1 diag block.
             if stats["pred_std"] < 1e-3:
                 stats["collapse_warning"] = 1.0
 
+            # Honour f1_diag_start_epoch: skip F1 diag before that epoch unless
+            # this is the final epoch (always run at end). 1-indexed (epoch+1).
+            past_start = (epoch + 1) >= max(1, f1_diag_start_epoch)
             should_run_f1 = has_validation_f1 and (
-                selection_metric == "f1"
-                or (f1_diag_every > 0 and ((epoch + 1) % f1_diag_every == 0 or is_last_epoch))
+                is_last_epoch
+                or (past_start and (
+                    selection_metric == "f1"
+                    or (f1_diag_every > 0 and (epoch + 1) % f1_diag_every == 0)
+                ))
             )
             if should_run_f1:
                 query_f1, per_type_f1 = _validation_query_f1(
@@ -804,8 +901,6 @@ def train_model(
         epochs_trained = epoch + 1
 
         if is_diag_epoch:
-            tau_vals = [stats[f"kendall_tau_t{t}"] for t in active_type_ids]
-            avg_tau = sum(tau_vals) / max(1, len(tau_vals))
             collapse = "  COLLAPSE" if stats.get("collapse_warning") else ""
             if selection_metric == "uniform_gap" and "val_query_f1" in stats and validation_uniform_result is not None:
                 uniform_f1, uniform_per_type = validation_uniform_result
@@ -826,7 +921,10 @@ def train_model(
             elif selection_metric == "f1" and "val_query_f1" in stats:
                 selection = _f1_selection_score(stats["val_query_f1"], stats["pred_std"])
             else:
-                selection = _selection_score(avg_tau, stats["pred_std"], stats["loss"])
+                # avg_tau removed (kendall_tau no longer computed). For
+                # selection_metric=loss this just makes selection = -loss with
+                # the collapse penalty — same primary signal as before.
+                selection = _selection_score(0.0, stats["pred_std"], stats["loss"])
             stats["selection_score"] = selection
             selection_history.append(float(selection))
             window = selection_history[-smoothing_window:]
@@ -848,7 +946,7 @@ def train_model(
             )
             print(
                 f"  [{run_tag}] epoch {epoch + 1:0{epoch_w}d}/{effective_epochs}  "
-                f"loss={stats['loss']:.8f}  avg_tau={avg_tau:+.3f}  "
+                f"loss={stats['loss']:.8f}  "
                 f"pred_std={stats['pred_std']:.6g}  select={selection:+.3f}{smoothed_label}  "
                 f"({epoch_dt:.2f}s){collapse}{best_marker}",
                 flush=True,
@@ -872,24 +970,25 @@ def train_model(
                     f"clustering={stats.get('val_query_f1_gap_clustering', 0.0):+.6f}",
                     flush=True,
                 )
-            diag_parts = []
-            for type_idx in active_type_ids:
-                type_name = ID_TO_QUERY_NAME.get(type_idx, f"t{type_idx}")
-                diag_parts.append(
-                    f"{type_name}:pos={stats[f'positive_fraction_t{type_idx}']:.4f},"
-                    f"p95={stats[f'label_p95_t{type_idx}']:.3f},"
-                    f"pairs={int(stats[f'ranking_pairs_t{type_idx}'])},"
-                    f"skip={int(stats[f'skipped_zero_windows_t{type_idx}'])}"
-                )
-            if diag_parts:
-                print(f"    [{run_tag}] label_diag  " + "  ".join(diag_parts), flush=True)
-
             if is_new_best_model:
                 best_selection = smoothed_selection
                 best_loss = stats["loss"]
                 best_f1 = float(stats.get("val_query_f1", best_f1))
                 best_epoch = epoch + 1
                 best_state_dict = _model_state_on_cpu(model)
+
+            if stats.get("collapse_warning", 0.0) > 0.0:
+                consecutive_collapse_diags += 1
+            else:
+                consecutive_collapse_diags = 0
+            if is_knn_only and consecutive_collapse_diags >= COLLAPSE_TRIP_WIRE_DIAGS:
+                print(
+                    f"  [{run_tag}] collapse trip-wire at epoch {epoch + 1:0{epoch_w}d}: "
+                    f"pred_std<1e-3 for {consecutive_collapse_diags} consecutive diag epochs — "
+                    f"aborting kNN-only training and restoring best checkpoint to avoid wasted compute",
+                    flush=True,
+                )
+                break
 
             if patience > 0:
                 if is_new_best_model:

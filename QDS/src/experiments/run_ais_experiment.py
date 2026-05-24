@@ -10,83 +10,9 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from src.data.ais_loader import generate_synthetic_ais_data, load_ais_csv
-from src.data.trajectory_cache import load_or_build_ais_cache
 from src.experiments.experiment_cli import build_parser
 from src.experiments.experiment_config import build_experiment_config
 from src.experiments.experiment_pipeline_helpers import resolve_workload_mixes, run_experiment_pipeline
-
-
-def _normalized_gap_arg(value: float | None) -> float | None:
-    """Normalize CLI gap controls so <=0 disables time-gap segmentation."""
-    if value is None:
-        return None
-    value = float(value)
-    return None if value <= 0.0 else value
-
-
-def _cap_loaded_trajectories(
-    trajectories,
-    mmsis: list[int] | None,
-    max_trajectories: int | None,
-):
-    """Cap loaded trajectories for smoke runs while keeping MMSIs aligned."""
-    if max_trajectories is None:
-        return trajectories, mmsis
-    cap = int(max_trajectories)
-    if cap <= 0:
-        raise ValueError("--max_trajectories must be positive when provided.")
-    if len(trajectories) <= cap:
-        return trajectories, mmsis
-    capped = trajectories[:cap]
-    capped_mmsis = mmsis[:cap] if mmsis is not None else None
-    print(f"[load-data] capped trajectories to {cap}", flush=True)
-    return capped, capped_mmsis
-
-
-def _log_load_audit(label: str, audit) -> None:
-    """Print a compact AIS load audit for repeatable run logs."""
-    length = audit.segment_length_stats
-    gaps = audit.time_gap_stats
-    print(
-        f"[load-data] {label} audit: rows={audit.rows_loaded} "
-        f"dropped_invalid={audit.rows_dropped_invalid} "
-        f"duplicates={audit.duplicate_timestamp_rows} "
-        f"mmsis={audit.input_mmsi_count} "
-        f"segments={audit.output_segment_count} "
-        f"points={audit.output_point_count} "
-        f"short_segments_dropped={audit.dropped_short_segments} "
-        f"gap_splits={audit.time_gap_over_threshold_count} "
-        f"segment_len_p50={length.get('p50', 0.0):.1f} "
-        f"segment_len_p95={length.get('p95', 0.0):.1f} "
-        f"max_gap_s={gaps.get('max', 0.0):.1f}",
-        flush=True,
-    )
-
-
-def _load_csv_trajectories(label: str, csv_path: str, args, load_kwargs: dict) -> tuple:
-    """Load one CSV either through the Parquet cache or directly from source."""
-    if args.cache_dir:
-        cache = load_or_build_ais_cache(
-            csv_path,
-            cache_dir=args.cache_dir,
-            refresh_cache=bool(args.refresh_cache),
-            **load_kwargs,
-        )
-        state = "hit" if cache.cache_hit else "built"
-        print(f"[load-data] cache {state}: {cache.cache_dir}", flush=True)
-        _log_load_audit(label, cache.audit)
-        audit_payload = cache.audit.to_dict()
-        audit_payload["cache"] = cache.cache_metadata()
-        return cache.trajectories, cache.mmsis, cache.audit, audit_payload
-
-    trajectories, mmsis, audit = load_ais_csv(
-        csv_path,
-        **load_kwargs,
-        return_mmsis=True,
-        return_audit=True,
-    )
-    _log_load_audit(label, audit)
-    return trajectories, mmsis, audit, audit.to_dict()
 
 
 def _project_root() -> Path:
@@ -120,26 +46,15 @@ def main() -> None:
     config = build_experiment_config(
         n_ships=args.n_ships,
         n_points=args.n_points,
-        min_points_per_segment=args.min_points_per_segment,
-        max_points_per_segment=args.max_points_per_segment,
-        max_time_gap_seconds=_normalized_gap_arg(args.max_time_gap_seconds),
-        max_segments=args.max_segments,
-        max_trajectories=args.max_trajectories,
-        cache_dir=args.cache_dir,
-        refresh_cache=args.refresh_cache,
         n_queries=args.n_queries,
         query_coverage=args.query_coverage,
         max_queries=args.max_queries,
         range_spatial_fraction=args.range_spatial_fraction,
         range_time_fraction=args.range_time_fraction,
-        range_min_point_hits=args.range_min_point_hits,
-        range_max_point_hit_fraction=args.range_max_point_hit_fraction,
-        range_min_trajectory_hits=args.range_min_trajectory_hits,
-        range_max_trajectory_hit_fraction=args.range_max_trajectory_hit_fraction,
-        range_max_box_volume_fraction=args.range_max_box_volume_fraction,
-        range_duplicate_iou_threshold=args.range_duplicate_iou_threshold,
-        range_acceptance_max_attempts=args.range_acceptance_max_attempts,
         knn_k=args.knn_k,
+        knn_t_half_window_fraction=args.knn_t_half_window_fraction,
+        similarity_time_fraction=args.similarity_time_fraction,
+        similarity_top_k=args.similarity_top_k,
         epochs=args.epochs,
         lr=args.lr,
         pointwise_loss_weight=args.pointwise_loss_weight,
@@ -158,6 +73,8 @@ def main() -> None:
         diagnostic_window_fraction=args.diagnostic_window_fraction,
         checkpoint_selection_metric=args.checkpoint_selection_metric,
         f1_diagnostic_every=args.f1_diagnostic_every,
+        f1_diagnostic_start_epoch=args.f1_diagnostic_start_epoch,
+        train_batch_size=args.train_batch_size,
         checkpoint_uniform_gap_weight=args.checkpoint_uniform_gap_weight,
         checkpoint_type_penalty_weight=args.checkpoint_type_penalty_weight,
         checkpoint_smoothing_window=args.checkpoint_smoothing_window,
@@ -165,6 +82,13 @@ def main() -> None:
         mlqds_temporal_fraction=args.mlqds_temporal_fraction,
         mlqds_diversity_bonus=args.mlqds_diversity_bonus,
         residual_label_mode=args.residual_label_mode,
+        simplification_mode=args.simplification_mode,
+        coverage_lambda=args.coverage_lambda,
+        coverage_sigma_fraction=args.coverage_sigma_fraction,
+        use_cls_token=str(args.use_cls_token).lower() == "true",
+        knn_label_variant=args.knn_label_variant,
+        range_label_variant=args.range_label_variant,
+        length_preservation_weight=args.length_preservation_weight,
     )
 
     coverage_msg = (
@@ -184,20 +108,11 @@ def main() -> None:
         f"smoothing_window={args.checkpoint_smoothing_window}  "
         f"f1_variant={args.checkpoint_f1_variant}  "
         f"range_spatial_fraction={args.range_spatial_fraction}  range_time_fraction={args.range_time_fraction}  "
-        f"range_min_point_hits={args.range_min_point_hits}  "
-        f"range_max_point_hit_fraction={args.range_max_point_hit_fraction}  "
-        f"range_min_trajectory_hits={args.range_min_trajectory_hits}  "
-        f"range_max_trajectory_hit_fraction={args.range_max_trajectory_hit_fraction}  "
-        f"range_max_box_volume_fraction={args.range_max_box_volume_fraction}  "
-        f"range_duplicate_iou_threshold={args.range_duplicate_iou_threshold}  "
-        f"range_acceptance_max_attempts={args.range_acceptance_max_attempts}  "
         f"knn_k={args.knn_k}  mlqds_temporal_fraction={args.mlqds_temporal_fraction}  "
         f"residual_label_mode={args.residual_label_mode}  "
-        f"min_points_per_segment={args.min_points_per_segment}  "
-        f"max_points_per_segment={args.max_points_per_segment}  "
-        f"max_time_gap_seconds={_normalized_gap_arg(args.max_time_gap_seconds)}  "
-        f"max_segments={args.max_segments}  cache_dir={args.cache_dir}  "
-        f"refresh_cache={args.refresh_cache}",
+        f"simplification_mode={args.simplification_mode}  coverage_lambda={args.coverage_lambda}  "
+        f"coverage_sigma_fraction={args.coverage_sigma_fraction}  use_cls_token={args.use_cls_token}  "
+        f"knn_label_variant={args.knn_label_variant}  range_label_variant={args.range_label_variant}",
         flush=True,
     )
 
@@ -205,47 +120,16 @@ def main() -> None:
     mmsis: list[int] | None = None
     eval_trajectories = None
     eval_mmsis: list[int] | None = None
-    data_audit = None
-    load_kwargs = {
-        "min_points_per_segment": args.min_points_per_segment,
-        "max_points_per_segment": args.max_points_per_segment,
-        "max_time_gap_seconds": _normalized_gap_arg(args.max_time_gap_seconds),
-        "max_segments": args.max_segments,
-    }
     if args.train_csv_path or args.eval_csv_path:
         if not args.train_csv_path or not args.eval_csv_path:
             parser.error("--train_csv_path/--train_csv and --eval_csv_path/--eval_csv must be supplied together.")
         print(f"[load-data] reading train CSV: {args.train_csv_path}", flush=True)
-        trajectories, mmsis, _train_audit, train_audit_payload = _load_csv_trajectories(
-            "train",
-            args.train_csv_path,
-            args,
-            load_kwargs,
-        )
-        trajectories, mmsis = _cap_loaded_trajectories(trajectories, mmsis, args.max_trajectories)
+        trajectories, mmsis = load_ais_csv(args.train_csv_path, return_mmsis=True)
         print(f"[load-data] reading eval CSV: {args.eval_csv_path}", flush=True)
-        eval_trajectories, eval_mmsis, _eval_audit, eval_audit_payload = _load_csv_trajectories(
-            "eval",
-            args.eval_csv_path,
-            args,
-            load_kwargs,
-        )
-        eval_trajectories, eval_mmsis = _cap_loaded_trajectories(
-            eval_trajectories,
-            eval_mmsis,
-            args.max_trajectories,
-        )
-        data_audit = {"train": train_audit_payload, "eval": eval_audit_payload}
+        eval_trajectories, eval_mmsis = load_ais_csv(args.eval_csv_path, return_mmsis=True)
     elif args.csv_path:
         print(f"[load-data] reading CSV: {args.csv_path}", flush=True)
-        trajectories, mmsis, _audit, audit_payload = _load_csv_trajectories(
-            "csv",
-            args.csv_path,
-            args,
-            load_kwargs,
-        )
-        trajectories, mmsis = _cap_loaded_trajectories(trajectories, mmsis, args.max_trajectories)
-        data_audit = {"csv": audit_payload}
+        trajectories, mmsis = load_ais_csv(args.csv_path, return_mmsis=True)
     else:
         print(f"[load-data] generating synthetic data "
               f"(n_ships={config.data.n_ships}, n_points={config.data.n_points_per_ship})", flush=True)
@@ -280,13 +164,17 @@ def main() -> None:
         trajectory_mmsis=mmsis,
         eval_trajectories=eval_trajectories,
         eval_trajectory_mmsis=eval_mmsis,
-        data_audit=data_audit,
     )
 
     print("\nMatched-workload table")
     print(out.matched_table)
     print("\nGeometric-distortion table (lower is better; SED = time-synchronous, PED = perpendicular, in km)")
     print(out.geometric_table)
+    print("\n" + out.length_retention_whole_set_table)
+    print("\n" + out.length_retention_eval_query_table)
+    print("\n" + out.length_retention_in_query_table)
+    print("\n" + out.top_best_queries_table)
+    print("\n" + out.top_worst_queries_table)
     print("\nDistribution-shift table")
     print(out.shift_table)
 

@@ -1,0 +1,223 @@
+[config] model=turn_aware  workload=range  epochs=40  n_queries=50  query_coverage=0.3  max_queries=2000  compression_ratio=0.3  lr=0.0005  pointwise_loss_weight=0.25  gradient_clip_norm=1.0  diagnostic_every=5  checkpoint_selection_metric=uniform_gap  f1_diagnostic_every=0  uniform_gap_weight=0.5  type_penalty_weight=1.0  smoothing_window=5  f1_variant=answer  range_spatial_fraction=0.015  range_time_fraction=0.0833  knn_k=50  mlqds_temporal_fraction=0.3  residual_label_mode=none  simplification_mode=score_coverage  coverage_lambda=0.5  coverage_sigma_fraction=0.5  use_cls_token=true  knn_label_variant=legacy  range_label_variant=legacy
+[load-data] reading train CSV: /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/preproessed_AIS_files/preprocessed_2026-02-02_to_02-08.7days.csv
+[load-data] reading eval CSV: /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/preproessed_AIS_files/preprocessed_2026-02-10.csv
+[load-data] train=2571 eval=1713 trajectories loaded in 367.05s
+[pipeline] train=2571 trajectories, eval=1713 trajectories, train_mix=range=1.0, eval_mix=range=1.0
+[split] starting...
+  split mode=separate CSVs  train=2186  eval=1713
+  checkpoint-selection validation=385 trajectories
+[split] done in 0.00s
+[build-datasets] starting...
+  point split: total=60,252,733  train=43,931,124 (72.9%)  selection=8,709,475 (14.5%)  eval=7,612,134 (12.6%)
+[build-datasets] done in 1.06s
+[generate-workloads] starting...
+  train_workload=544 queries  coverage=30.01% (13184690/43931124)
+  eval_workload=544 queries  coverage=64.34% (4898005/7612134)
+  selection_workload=544 queries  coverage=29.03% (2528398/8709475)
+[generate-workloads] done in 248.07s
+[write-queries-geojson] starting...
+  wrote  544 range queries to /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/Query_border_files/run_experiment_range_cr0p30_7day_0202_to_0208_eval_2026-02-10_cov0p30_837119/queries_range.geojson
+  wrote    0 knn queries to /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/Query_border_files/run_experiment_range_cr0p30_7day_0202_to_0208_eval_2026-02-10_cov0p30_837119/queries_knn.geojson
+  wrote    0 similarity queries to /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/Query_border_files/run_experiment_range_cr0p30_7day_0202_to_0208_eval_2026-02-10_cov0p30_837119/queries_similarity.geojson
+  wrote    0 clustering queries to /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/Query_border_files/run_experiment_range_cr0p30_7day_0202_to_0208_eval_2026-02-10_cov0p30_837119/queries_clustering.geojson
+[write-queries-geojson] done in 0.03s
+[train-model (40 epochs)] starting...
+  [training] using nn.DataParallel across 2 GPUs
+  [training] using torch.cuda.amp mixed-precision training
+  [main] validation uniform_f1=0.489325  range=0.489325  knn=0.000000  similarity=0.000000  clustering=0.000000
+  [training] collapse trip-wire disabled (non-kNN-only workload; collapsed epochs still rejected as best-checkpoint candidates via selection penalty); F1 diag starts at epoch 999
+  [main] epoch 01/40  loss=0.07346022  pred_std=0.0227699  select=-0.073  smoothed_w5=-0.073  (346.71s)
+  [main] epoch 02/40  loss=0.07076893  (no-diag)  (318.75s)
+  [main] epoch 03/40  loss=0.07068522  (no-diag)  (315.49s)
+  [main] epoch 04/40  loss=0.07069351  (no-diag)  (314.18s)
+  [main] epoch 05/40  loss=0.07068190  pred_std=0.0229513  select=-0.071  smoothed_w5=-0.072  (336.64s)  *** NEW BEST MODEL ***
+  [main] epoch 06/40  loss=0.07066784  (no-diag)  (317.65s)
+  [main] epoch 07/40  loss=0.07065796  (no-diag)  (318.75s)
+  [main] epoch 08/40  loss=0.07063624  (no-diag)  (318.46s)
+  [main] epoch 09/40  loss=0.07059345  (no-diag)  (309.60s)
+  [main] epoch 10/40  loss=0.07057154  pred_std=0.0393114  select=-0.071  smoothed_w5=-0.072  (344.03s)  *** NEW BEST MODEL ***
+  [main] epoch 11/40  loss=0.07056488  (no-diag)  (314.46s)
+  [main] epoch 12/40  loss=0.07053340  (no-diag)  (312.83s)
+  [main] epoch 13/40  loss=0.07052427  (no-diag)  (273.69s)
+  [main] epoch 14/40  loss=0.07051536  (no-diag)  (316.56s)
+  [main] epoch 15/40  loss=0.07051765  pred_std=0.0510977  select=-0.071  smoothed_w5=-0.071  (345.59s)  *** NEW BEST MODEL ***
+  [main] epoch 16/40  loss=0.07049736  (no-diag)  (314.08s)
+  [main] epoch 17/40  loss=0.07048703  (no-diag)  (316.71s)
+  [main] epoch 18/40  loss=0.07046651  (no-diag)  (314.75s)
+  [main] epoch 19/40  loss=0.07049859  (no-diag)  (314.55s)
+  [main] epoch 20/40  loss=0.07044830  pred_std=0.057127  select=-0.070  smoothed_w5=-0.071  (344.03s)  *** NEW BEST MODEL ***
+  [main] epoch 21/40  loss=0.07042983  (no-diag)  (315.85s)
+  [main] epoch 22/40  loss=0.07042097  (no-diag)  (305.65s)
+  [main] epoch 23/40  loss=0.07041828  (no-diag)  (313.80s)
+  [main] epoch 24/40  loss=0.07039595  (no-diag)  (315.00s)
+  [main] epoch 25/40  loss=0.07044868  pred_std=0.0459585  select=-0.070  smoothed_w5=-0.071  (348.18s)  *** NEW BEST MODEL ***
+  [main] epoch 26/40  loss=0.07035930  (no-diag)  (320.18s)
+  [main] epoch 27/40  loss=0.07032932  (no-diag)  (316.35s)
+  [main] epoch 28/40  loss=0.07029538  (no-diag)  (316.62s)
+  [main] epoch 29/40  loss=0.07024814  (no-diag)  (311.08s)
+  [main] epoch 30/40  loss=0.07022309  pred_std=0.0827934  select=-0.070  smoothed_w5=-0.070  (299.06s)  *** NEW BEST MODEL ***
+  [main] epoch 31/40  loss=0.07019516  (no-diag)  (308.04s)
+  [main] epoch 32/40  loss=0.07014945  (no-diag)  (313.70s)
+  [main] epoch 33/40  loss=0.07010662  (no-diag)  (314.95s)
+  [main] epoch 34/40  loss=0.07007911  (no-diag)  (305.64s)
+  [main] epoch 35/40  loss=0.07005171  pred_std=0.107298  select=-0.070  smoothed_w5=-0.070  (329.36s)  *** NEW BEST MODEL ***
+  [main] epoch 36/40  loss=0.07002549  (no-diag)  (314.20s)
+  [main] epoch 37/40  loss=0.06999286  (no-diag)  (308.50s)
+  [main] epoch 38/40  loss=0.06997182  (no-diag)  (310.89s)
+  [main] epoch 39/40  loss=0.06994177  (no-diag)  (305.44s)
+  [main] epoch 40/40  loss=0.06991755  pred_std=0.10557  select=+0.490  smoothed_w5=+0.042  (1449.20s)  *** NEW BEST MODEL ***
+    [main] val_query_f1=0.489972  range=0.489972  knn=0.000000  similarity=0.000000  clustering=0.000000
+    [main] val_vs_uniform aggregate=+0.000646  type_deficit=0.000000  range=+0.000646  knn=+0.000000  similarity=+0.000000  clustering=+0.000000
+  [main] restored best diagnostic epoch 40/40 (selection=+0.042, loss=0.06991755, val_f1=0.489972)
+[train-model (40 epochs)] done in 14203.90s
+[save-model] starting...
+  saved checkpoint to /ceph/home/student.aau.dk/hq11zw/P8/QDS/qds_v2/src/models/saved_models/model_experiment_range_cr0p30_7day_0202_to_0208_eval_2026-02-10_cov0p30_837119.pt  (epochs_trained=40, best_epoch=40, best_loss=0.06991755, train_mix=range=1.0, eval_mix=range=1.0)
+[save-model] done in 0.09s
+[evaluate-matched] starting...
+[  precompute-query-cache] starting...
+[  precompute-query-cache] done in 0.00s
+[  eval MLQDS] starting...
+[  eval MLQDS] done in 6239.22s
+[  eval uniform] starting...
+[  eval uniform] done in 68.45s
+[  eval DouglasPeucker] starting...
+[  eval DouglasPeucker] done in 144.62s
+[  eval Oracle] starting...
+[  eval Oracle] done in 90.49s
+[evaluate-matched] done in 6569.48s
+[evaluate-shift] starting...
+[evaluate-shift] done in 0.00s
+[write-results] starting...
+  wrote results to /ceph/home/student.aau.dk/hq11zw/P8/QDS/qds_v2/results/experiment/experiment_range_cr0p30_837119
+[write-results] done in 0.05s
+[write-simplified-csv] starting...
+  wrote 2284409 retained points across 2284409 samples to /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/ML_processed_AIS_files/run_experiment_range_cr0p30_7day_0202_to_0208_eval_2026-02-10_cov0p30_837119/ML_simplified_eval.csv
+  wrote 2284409 retained points across 2284409 samples to /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/ML_processed_AIS_files/run_experiment_range_cr0p30_7day_0202_to_0208_eval_2026-02-10_cov0p30_837119/uniform_simplified_eval.csv
+  wrote 2284409 retained points across 2284409 samples to /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/ML_processed_AIS_files/run_experiment_range_cr0p30_7day_0202_to_0208_eval_2026-02-10_cov0p30_837119/DP_simplified_eval.csv
+[write-simplified-csv] done in 17.98s
+[write-query-points-csv] starting...
+  wrote 16239498 range query-point rows to /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/ML_processed_AIS_files/run_experiment_range_cr0p30_7day_0202_to_0208_eval_2026-02-10_cov0p30_837119/query_points_range.csv
+  wrote       0 knn query-point rows to /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/ML_processed_AIS_files/run_experiment_range_cr0p30_7day_0202_to_0208_eval_2026-02-10_cov0p30_837119/query_points_knn.csv
+  wrote       0 similarity query-point rows to /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/ML_processed_AIS_files/run_experiment_range_cr0p30_7day_0202_to_0208_eval_2026-02-10_cov0p30_837119/query_points_similarity.csv
+  wrote       0 clustering query-point rows to /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/ML_processed_AIS_files/run_experiment_range_cr0p30_7day_0202_to_0208_eval_2026-02-10_cov0p30_837119/query_points_clustering.csv
+[write-query-points-csv] done in 53.35s
+[pipeline] total runtime 21474.19s
+
+Matched-workload table
+Method                      AnswerF1  CombinedF1 Compression    AvgPtGap   Latency(ms)        Type
+--------------------------------------------------------------------------------------------------
+MLQDS                       0.467680    0.467680      0.3001        3.33    6193866.82         all
+  - range                   0.467680    0.467680                                             range
+  - knn                     0.000000    0.000000                                               knn
+  - similarity              0.000000    0.000000                                        similarity
+  - clustering              0.000000    0.000000                                        clustering
+uniform                     0.463555    0.463555      0.3001        3.33        168.28         all
+  - range                   0.463555    0.463555                                             range
+  - knn                     0.000000    0.000000                                               knn
+  - similarity              0.000000    0.000000                                        similarity
+  - clustering              0.000000    0.000000                                        clustering
+DouglasPeucker              0.460631    0.460631      0.3001        3.33      59627.48         all
+  - range                   0.460631    0.460631                                             range
+  - knn                     0.000000    0.000000                                               knn
+  - similarity              0.000000    0.000000                                        similarity
+  - clustering              0.000000    0.000000                                        clustering
+Oracle                      0.718739    0.718739      0.3004        3.33        884.22         all
+  - range                   0.718739    0.718739                                             range
+  - knn                     0.000000    0.000000                                               knn
+  - similarity              0.000000    0.000000                                        similarity
+  - clustering              0.000000    0.000000                                        clustering
+--------------------------------------------------------------------------------------------------
+Diff vs MLQDS (AnswerF1 / CombinedF1; abs and % vs baseline)
+  vs uniform               +0.004125   +0.004125                                               all
+      (% vs baseline)          +0.9%       +0.9%                                               all
+    - range                +0.004125   +0.004125                                             range
+      (% vs baseline)          +0.9%       +0.9%                                             range
+    - knn                  +0.000000   +0.000000                                               knn
+      (% vs baseline)            n/a         n/a                                               knn
+    - similarity           +0.000000   +0.000000                                        similarity
+      (% vs baseline)            n/a         n/a                                        similarity
+    - clustering           +0.000000   +0.000000                                        clustering
+      (% vs baseline)            n/a         n/a                                        clustering
+  vs DouglasPeucker        +0.007049   +0.007049                                               all
+      (% vs baseline)          +1.5%       +1.5%                                               all
+    - range                +0.007049   +0.007049                                             range
+      (% vs baseline)          +1.5%       +1.5%                                             range
+    - knn                  +0.000000   +0.000000                                               knn
+      (% vs baseline)            n/a         n/a                                               knn
+    - similarity           +0.000000   +0.000000                                        similarity
+      (% vs baseline)            n/a         n/a                                        similarity
+    - clustering           +0.000000   +0.000000                                        clustering
+      (% vs baseline)            n/a         n/a                                        clustering
+
+Geometric-distortion table (lower is better; SED = time-synchronous, PED = perpendicular, in km)
+Method                    AvgSED_km  MaxSED_km  AvgPED_km  MaxPED_km
+--------------------------------------------------------------------
+MLQDS                        0.0045     375.89     0.0009       1.99
+uniform                      0.0028     325.89     0.0006      17.41
+DouglasPeucker               0.0027     415.36     0.0002       0.32
+Oracle                       2.0540     488.81     0.9627     279.47
+
+Length retention — Scope 1: whole eval set (every trajectory ≥2 points)
+Method                    avg_orig_km  avg_simp_km  Retention   NTraj
+---------------------------------------------------------------------
+MLQDS                        117.9284     117.5969     0.9972    1710
+uniform                      117.9284     117.0036     0.9922    1710
+DouglasPeucker               117.9284     117.6300     0.9975    1710
+Oracle                         0.0000       0.0000     0.9055       0
+
+Length retention — Scope 2: trajectories any eval query touches (full polyline)
+Method                    avg_orig_km  avg_simp_km  Retention   NTraj
+---------------------------------------------------------------------
+MLQDS                        130.3849     130.0148     0.9972    1418
+uniform                      130.3849     129.4018     0.9925    1418
+DouglasPeucker               130.3849     130.0495     0.9974    1418
+
+Length retention — Scope 3: in-query segments (first_in-1 to last_in+1)
+Method                    avg_orig_km  avg_simp_km  Retention    NSeg
+---------------------------------------------------------------------
+MLQDS                         11.7936      11.5178     0.9766   23850
+uniform                       11.7936      11.5263     0.9773   23850
+DouglasPeucker                11.7936      11.6344     0.9865   23850
+
+Top 15 BEST queries (MLQDS in-query retention gap vs best baseline; positive = MLQDS won)
+rank    qid         type     gap_R      R_M      R_U     R_DP     F1_M     F1_U    F1_DP    in_q    rm_M    rm_U   rm_DP
+------------------------------------------------------------------------------------------------------------------------
+   1    187        range   +0.3746    0.854    0.479    0.416   0.5512   0.4625   0.0486    1004     622     702     979
+   2    411        range   +0.0460    0.926    0.725    0.880   0.4757   0.4615   0.4757    3384    2328    2369    2328
+   3    410        range   +0.0330    0.938    0.857    0.905   0.5485   0.4619   0.4020   28713   17862   20091   21491
+   4     84        range   +0.0327    0.996    0.963    0.962   0.5121   0.4614   0.4211   15682   10284   10979   11499
+   5    401        range   +0.0176    0.990    0.772    0.973   0.5441   0.4623   0.4575    2476    1551    1732    1742
+   6    419        range   +0.0151    0.786    0.567    0.771   0.4223   0.4623   0.3819    9156    6705    6403    6995
+   7    414        range   +0.0149    0.931    0.844    0.916   0.4622   0.4620   0.3995   19027   13309   13312   14278
+   8    467        range   +0.0146    0.975    0.961    0.922   0.4752   0.4626   0.4826    3440    2368    2405    2346
+   9     32        range   +0.0144    0.990    0.961    0.976   0.4722   0.4613   0.4185    4006    2768    2805    2946
+  10    387        range   +0.0144    0.936    0.861    0.921   0.4650   0.4617   0.4007   17873   12459   12508   13395
+  11    175        range   +0.0120    0.779    0.568    0.767   0.4159   0.4622   0.3777    8384    6183    5864    6432
+  12    478        range   +0.0111    0.946    0.873    0.935   0.4771   0.4613   0.4391   45625   31330   31948   32789
+  13    490        range   +0.0109    0.975    0.939    0.964   0.4341   0.4615   0.4214   63458   45864   44425   46518
+  14    481        range   +0.0104    0.973    0.950    0.962   0.4901   0.4613   0.4201   24546   16579   17187   18019
+  15    270        range   +0.0101    0.948    0.874    0.938   0.4725   0.4620   0.4440   55412   38270   38767   39602
+
+Top 15 WORST queries (MLQDS in-query retention gap vs best baseline; negative = MLQDS lost)
+rank    qid         type     gap_R      R_M      R_U     R_DP     F1_M     F1_U    F1_DP    in_q    rm_M    rm_U   rm_DP
+------------------------------------------------------------------------------------------------------------------------
+   1    525        range   -0.5699    0.424    0.382    0.994   0.5041   0.4628   0.4559    1199     795     838     845
+   2    228        range   -0.2906    0.410    0.410    0.701   0.4835   0.4613   0.4395    6932    4722    4854    4980
+   3    231        range   -0.2241    0.721    0.849    0.945   0.3827   0.4645   0.4957    1851    1413    1291    1241
+   4     53        range   -0.2217    0.776    0.296    0.998   0.3662   0.4628   0.5217    1468    1139    1026     950
+   5    340        range   -0.2081    0.767    0.968    0.975   0.4092   0.4618   0.4239   35356   26261   24743   25846
+   6    382        range   -0.2026    0.785    0.781    0.988   0.4734   0.4612   0.4548    6136    4233    4297    4330
+   7    210        range   -0.1301    0.848    0.952    0.978   0.4868   0.4611   0.4394    6307    4278    4417    4531
+   8     87        range   -0.1153    0.876    0.942    0.991   0.5166   0.4616   0.4087   10057    6555    7039    7474
+   9    341        range   -0.1151    0.874    0.989    0.987   0.3790   0.4619   0.4683   17183   13165   12023   11929
+  10    217        range   -0.0957    0.882    0.877    0.978   0.4546   0.4609   0.4833    3399    2399    2381    2316
+  11    219        range   -0.0957    0.893    0.950    0.988   0.4519   0.4615   0.4603    9855    6978    6899    6909
+  12    288        range   -0.0871    0.894    0.968    0.981   0.3507   0.4618   0.4774   23605   18586   16518   16204
+  13     50        range   -0.0864    0.907    0.983    0.993   0.4428   0.4615   0.4886   10289    7363    7203    6963
+  14    259        range   -0.0845    0.911    0.996    0.991   0.4583   0.4614   0.4190   11883    8351    8319    8734
+  15    444        range   -0.0815    0.883    0.928    0.965   0.5331   0.4613   0.4132    3456    2200    2420    2556
+
+Distribution-shift table
+Train\Eval                         range=1.0
+--------------------------------------------
+range=1.0                             0.4677

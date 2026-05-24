@@ -20,13 +20,13 @@ This module compares query-aware ML simplification against temporal, geometric, 
 
 ## Metrics
 
-- Range queries are scored over point hits inside the spatiotemporal box, so sparse point retention is measured by how much of the original query-hit mass it preserves rather than by one retained point recovering an entire trajectory.
-- kNN, similarity, and clustering queries report pure answer-set agreement as `AnswerF1`; `CombinedF1` additionally multiplies answer agreement by retained support-point quality for diagnostic comparison.
+- Range queries are scored over point hits inside the spatiotemporal box, so random point retention is measured by how much of the original query-hit mass it preserves rather than by one retained point recovering an entire trajectory.
+- kNN, similarity, and clustering queries still require answer-set agreement, but are also weighted by retained point support so a method is not fully rewarded for preserving only one point from an answer trajectory.
 - `f1_score(original, simplified)` - harmonic-mean agreement between original and simplified answer sets.
 - `clustering_f1(original_labels, simplified_labels)` - F1 over same-cluster trajectory co-membership pairs, ignoring noise label `-1`.
 - Retained point gap reports the average original-index spacing between consecutive retained points per trajectory. Lower values mean retained points are more evenly dense along the original trajectory, and the JSON output also includes normalized and max gap values.
-- `MethodEvaluation` stores aggregate F1, per-type F1, compression ratio, retained point gap, latency in milliseconds, geometry distortion, and length preservation. The legacy `avg_length_loss` property remains available as `1 - avg_length_preserved`.
+- `MethodEvaluation` stores aggregate F1, per-type F1, compression ratio, retained point gap, and latency in milliseconds.
 
 ## Reporting
 
-`evaluate_method` evaluates one simplification method against a typed query workload. `print_method_comparison_table` renders F1 values to six decimals so close methods are not hidden by rounding, includes `AvgPtGap` for retained-point spacing, and appends MLQDS gaps versus `uniform` and Douglas-Peucker when those baselines are present. `print_geometric_distortion_table` reports SED/PED plus `LengthPres` and `F1xLen`, where both length columns are higher-is-better. `print_shift_table` renders the train-vs-eval workload shift table written by the experiment pipeline. Tables should be read as higher-is-better F1 scores, while lower `AvgPtGap` means smaller average spacing between retained points.
+`evaluate_method` evaluates one simplification method against a typed query workload. `print_method_comparison_table` renders F1 values to six decimals so close methods are not hidden by rounding, includes `AvgPtGap` for retained-point spacing, and `print_shift_table` renders the train-vs-eval workload shift table written by the experiment pipeline. Tables should be read as higher-is-better F1 scores, while lower `AvgPtGap` means smaller average spacing between retained points.

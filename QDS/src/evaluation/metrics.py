@@ -79,13 +79,9 @@ class MethodEvaluation:
     max_retained_point_gap: float = 0.0
     geometric_distortion: dict[str, float] = field(default_factory=dict)
     avg_length_preserved: float = 1.0
+    length_preservation_aggregates: dict[str, float] = field(default_factory=dict)
     combined_query_shape_score: float = 0.0
     retained_mask: torch.Tensor | None = None
-
-    @property
-    def avg_length_loss(self) -> float:
-        """Compatibility view for older result consumers: lower is better."""
-        return float(max(0.0, min(1.0, 1.0 - self.avg_length_preserved)))
 
 
 def _trajectory_sed_ped_km(
@@ -154,7 +150,47 @@ def _trajectory_sed_ped_km(
     )
 
 
-def compute_length_preservation(
+def _per_trajectory_length_preserved(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+) -> tuple[list[float], list[float], list[float]]:
+    """Return per-trajectory (orig_km, simp_km, ratio) for trajectories with non-zero length.
+
+    A single shared helper feeds both the length-weighted aggregate
+    (compute_average_length_loss) and the distributional summary
+    (compute_length_preservation_aggregates), so the two views always agree on
+    which trajectories were eligible. Trajectories shorter than 2 points or with
+    zero original km are excluded — there is no meaningful "preservation" to report.
+    """
+    points_cpu = points.detach().cpu()
+    mask_cpu = retained_mask.detach().cpu().bool()
+    lats = points_cpu[:, 1]
+    lons = points_cpu[:, 2]
+
+    orig_kms: list[float] = []
+    simp_kms: list[float] = []
+    ratios: list[float] = []
+    for s, e in boundaries:
+        if e - s < 2:
+            continue
+        traj_lat = lats[s:e]
+        traj_lon = lons[s:e]
+        orig_km = _polyline_length_km(traj_lat, traj_lon)
+        if orig_km <= 1e-9:
+            continue
+        traj_mask = mask_cpu[s:e]
+        if int(traj_mask.sum().item()) >= 2:
+            simp_km = _polyline_length_km(traj_lat[traj_mask], traj_lon[traj_mask])
+        else:
+            simp_km = 0.0
+        orig_kms.append(float(orig_km))
+        simp_kms.append(float(simp_km))
+        ratios.append(float(max(0.0, min(1.0, simp_km / orig_km))))
+    return orig_kms, simp_kms, ratios
+
+
+def compute_average_length_loss(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     retained_mask: torch.Tensor,
@@ -169,40 +205,167 @@ def compute_length_preservation(
     dominate the score. This matches the headline avg_orig_km / avg_simp_km numbers
     printed alongside it.
     """
-    points_cpu = points.detach().cpu()
-    mask_cpu = retained_mask.detach().cpu().bool()
-    lats = points_cpu[:, 1]
-    lons = points_cpu[:, 2]
-
-    total_orig_km = 0.0
-    total_simp_km = 0.0
-    for s, e in boundaries:
-        if e - s < 2:
-            continue
-        traj_lat = lats[s:e]
-        traj_lon = lons[s:e]
-        orig_km = _polyline_length_km(traj_lat, traj_lon)
-        if orig_km <= 1e-9:
-            continue
-        traj_mask = mask_cpu[s:e]
-        if int(traj_mask.sum().item()) >= 2:
-            simp_km = _polyline_length_km(traj_lat[traj_mask], traj_lon[traj_mask])
-        else:
-            simp_km = 0.0
-        total_orig_km += orig_km
-        total_simp_km += simp_km
+    orig_kms, simp_kms, _ = _per_trajectory_length_preserved(points, boundaries, retained_mask)
+    total_orig_km = sum(orig_kms)
+    total_simp_km = sum(simp_kms)
     if total_orig_km <= 1e-9:
         return 1.0
     return float(max(0.0, min(1.0, total_simp_km / total_orig_km)))
 
 
-def compute_average_length_loss(
+def compute_in_query_length_retention(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     retained_mask: torch.Tensor,
-) -> float:
-    """Compatibility wrapper returning length loss in [0, 1]."""
-    return float(1.0 - compute_length_preservation(points, boundaries, retained_mask))
+    support_mask: torch.Tensor,
+) -> dict[str, float]:
+    """Length retention restricted to the in-query segment of each touched trajectory.
+
+    For each trajectory that contains at least one in-query point (per support_mask),
+    the segment evaluated runs from `first_in_query_point - 1` to `last_in_query_point + 1`
+    (clipped at trajectory ends). This is the third scope: not the whole eval set,
+    not the whole trajectory of any-touched-query, but the slice the query actually
+    cares about plus one anchor point on each side so the polyline length is
+    well-defined (the chord that enters/leaves the query region is counted).
+
+    Returns avg_orig_km, avg_simp_km, and the ratio (length_retention) over the
+    set of in-query segments. Trajectories with <2 in-query points or zero
+    original km are excluded.
+    """
+    points_cpu = points.detach().cpu()
+    retained_cpu = retained_mask.detach().cpu().bool()
+    support_cpu = support_mask.detach().cpu().bool()
+    lats = points_cpu[:, 1]
+    lons = points_cpu[:, 2]
+
+    orig_kms: list[float] = []
+    simp_kms: list[float] = []
+    for s, e in boundaries:
+        if e - s < 2:
+            continue
+        traj_support = support_cpu[s:e]
+        if int(traj_support.sum().item()) <= 0:
+            continue
+        in_idx = torch.where(traj_support)[0]
+        first_in = int(in_idx.min().item())
+        last_in = int(in_idx.max().item())
+        seg_start = max(0, first_in - 1)
+        seg_end = min((e - s) - 1, last_in + 1)
+        if seg_end - seg_start < 1:
+            continue
+        # Original polyline within the segment (always uses every original point in segment).
+        seg_lat = lats[s + seg_start : s + seg_end + 1]
+        seg_lon = lons[s + seg_start : s + seg_end + 1]
+        orig_km = _polyline_length_km(seg_lat, seg_lon)
+        if orig_km <= 1e-9:
+            continue
+        # Simplified polyline within the segment: only retained points in [seg_start, seg_end].
+        seg_retained = retained_cpu[s + seg_start : s + seg_end + 1]
+        if int(seg_retained.sum().item()) >= 2:
+            simp_km = _polyline_length_km(seg_lat[seg_retained], seg_lon[seg_retained])
+        else:
+            simp_km = 0.0
+        orig_kms.append(float(orig_km))
+        simp_kms.append(float(simp_km))
+
+    n = len(orig_kms)
+    if n == 0:
+        return {"avg_orig_km": 0.0, "avg_simp_km": 0.0, "retention": 1.0, "n_segments": 0}
+    sum_orig = sum(orig_kms)
+    sum_simp = sum(simp_kms)
+    retention = 1.0 if sum_orig <= 1e-9 else max(0.0, min(1.0, sum_simp / sum_orig))
+    return {
+        "avg_orig_km": float(sum_orig / n),
+        "avg_simp_km": float(sum_simp / n),
+        "retention": float(retention),
+        "n_segments": n,
+    }
+
+
+def compute_length_preserved_for_trajectories(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+    trajectory_indices: list[int] | None = None,
+) -> dict[str, float]:
+    """Length-weighted preservation for an explicit subset of trajectories.
+
+    Used when restricting the metric to query-relevant trajectories — pass the
+    list of trajectory indices that any eval query touches, and this returns
+    the same sum_simp_km / sum_orig_km ratio computed only over those. With
+    trajectory_indices=None falls back to all trajectories (matches the global
+    compute_average_length_loss).
+    """
+    if trajectory_indices is None:
+        sub_boundaries = boundaries
+    else:
+        sub_boundaries = [boundaries[i] for i in trajectory_indices if 0 <= i < len(boundaries)]
+        if not sub_boundaries:
+            return {"weighted_ratio": 1.0, "sum_orig_km": 0.0, "sum_simp_km": 0.0, "n_trajectories": 0}
+    orig_kms, simp_kms, _ = _per_trajectory_length_preserved(points, sub_boundaries, retained_mask)
+    total_orig = sum(orig_kms)
+    total_simp = sum(simp_kms)
+    ratio = 1.0 if total_orig <= 1e-9 else max(0.0, min(1.0, total_simp / total_orig))
+    return {
+        "weighted_ratio": float(ratio),
+        "sum_orig_km": float(total_orig),
+        "sum_simp_km": float(total_simp),
+        "n_trajectories": len(orig_kms),
+    }
+
+
+def compute_length_preservation_aggregates(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+) -> dict[str, float]:
+    """Whole-eval-set length-preservation summary, one number per aggregate.
+
+    Complements the length-weighted ratio in compute_average_length_loss by
+    surfacing distributional views that single-number ratio hides. All values
+    are computed once over the full set of evaluable trajectories (those with
+    >= 2 points and non-zero original km), independent of query type.
+
+    Keys (each in [0, 1] except n_trajectories):
+        weighted_ratio   sum_simp_km / sum_orig_km — same as avg_length_preserved
+        mean_per_traj    Unweighted mean per-trajectory ratio (every traj equal weight)
+        median_per_traj  Median per-trajectory ratio (robust to outliers)
+        p10_per_traj     10th-percentile ratio (lower tail / typical worst case)
+        min_per_traj     Worst trajectory ratio
+        frac_above_0p9   Fraction of trajectories with ratio >= 0.9
+        frac_above_0p95  Fraction of trajectories with ratio >= 0.95
+        n_trajectories   Count of evaluable trajectories
+    """
+    _, _, ratios = _per_trajectory_length_preserved(points, boundaries, retained_mask)
+    n = len(ratios)
+    if n == 0:
+        return {
+            "weighted_ratio": 1.0,
+            "mean_per_traj": 1.0,
+            "median_per_traj": 1.0,
+            "p10_per_traj": 1.0,
+            "min_per_traj": 1.0,
+            "frac_above_0p9": 1.0,
+            "frac_above_0p95": 1.0,
+            "n_trajectories": 0,
+        }
+    sorted_ratios = sorted(ratios)
+    if n % 2 == 1:
+        median = sorted_ratios[n // 2]
+    else:
+        median = 0.5 * (sorted_ratios[n // 2 - 1] + sorted_ratios[n // 2])
+    p10_idx = max(0, min(n - 1, int(round(0.1 * (n - 1)))))
+    p10 = sorted_ratios[p10_idx]
+    return {
+        "weighted_ratio": compute_average_length_loss(points, boundaries, retained_mask),
+        "mean_per_traj": float(sum(ratios) / n),
+        "median_per_traj": float(median),
+        "p10_per_traj": float(p10),
+        "min_per_traj": float(sorted_ratios[0]),
+        "frac_above_0p9": float(sum(1 for r in ratios if r >= 0.9) / n),
+        "frac_above_0p95": float(sum(1 for r in ratios if r >= 0.95) / n),
+        "n_trajectories": n,
+    }
 
 
 def _polyline_length_km(lats: torch.Tensor, lons: torch.Tensor) -> float:

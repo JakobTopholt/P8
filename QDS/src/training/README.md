@@ -22,10 +22,9 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 
 ## Label Construction
 
-- Range labels score points inside the spatiotemporal query box as point-level F1 hits, with extra weight for boundary crossings and cross-trajectory proximity. Range labels still normalize by query count like every other query type.
+- Range labels score every point inside the spatiotemporal query box as an individual point-level F1 hit, matching range evaluation.
 - kNN and similarity labels execute the query on the original data, identify the original trajectory-ID answer set, and assign points the F1 gain of recovering one true-positive trajectory ID.
-- Similarity and clustering labels can use the optional `turn_score` feature as a small shape prior.
-- Clustering labels execute the original clustering query, convert cluster labels to same-cluster trajectory pairs, and assign points in clustered trajectories the F1 gain of recovering their original co-membership pairs. Within a clustered query box, point mass is weighted by distance from the trajectory's in-box centroid.
+- Clustering labels execute the original clustering query, convert cluster labels to same-cluster trajectory pairs, and assign points in clustered trajectories the F1 gain of recovering their original co-membership pairs.
 - Labels are averaged per query type and clamped to `[0, 1]`, so higher labels directly mean higher expected query F1 contribution.
 - Training keeps those raw labels for reporting and oracle diagnostics, but rescales each active type internally so tiny F1 gains still produce useful gradients.
 - The old speed-mass, distance-decay, interpolation, and speed-baseline heuristics are no longer used.
@@ -37,7 +36,7 @@ This module builds typed F1-contribution labels, batches trajectory-local window
 - `ModelConfig.lr`, `pointwise_loss_weight`, and `gradient_clip_norm` are the main stability knobs for AIS-scale runs.
 - The current loop clamps the effective epoch count to at least 8.
 - The returned model is restored to the best diagnostic epoch by selection score. By default this is training loss with a small Kendall-tau tie signal and a collapse penalty for near-constant predictions.
-- Set `checkpoint_selection_metric="f1"` with a held-out validation workload to select checkpoints by query-F1 semantics used in final evaluation. `checkpoint_f1_variant="answer"` selects on pure answer-set F1; `checkpoint_f1_variant="combined"` selects on the legacy answer/support product. Use `checkpoint_selection_metric="uniform_gap"` when the restored checkpoint should also be judged against the fair `uniform` validation score; this subtracts weighted per-type deficits so clustering cannot mask weak range/kNN/similarity performance. `checkpoint_smoothing_window` can average the last K diagnostic selection scores before deciding which checkpoint is best, which reduces one-epoch F1 noise during Phase 3 runs. These metrics are useful for model selection, but they are intentionally not used as the training loss because final query F1 is discrete after per-trajectory top-k simplification and query execution.
+- Set `checkpoint_selection_metric="f1"` with a held-out validation workload to select checkpoints by the same query-F1 semantics used in final evaluation. Use `checkpoint_selection_metric="uniform_gap"` when the restored checkpoint should also be judged against the fair `newUniformTemporal` validation score; this subtracts weighted per-type deficits so clustering cannot mask weak range/kNN/similarity performance. These metrics are useful for model selection, but they are intentionally not used as the training loss because final query F1 is discrete after per-trajectory top-k simplification and query execution.
 - `f1_diagnostic_every` can record held-out query-F1 diagnostics while still selecting by loss. `TrainingOutputs.best_epoch`, `best_loss`, and `best_f1` record the selected checkpoint metadata.
 - The loop tracks loss, prediction spread, quantiles, Kendall tau-style diagnostics, and optional validation query F1 in `TrainingOutputs.history`. Diagnostics run every `diagnostic_every` epochs, which defaults to every epoch so each epoch can be considered for checkpoint restoration.
 - The current implementation uses trajectory-local windows with `window_length=512` and `window_stride=256` by default.

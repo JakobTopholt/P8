@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 
@@ -10,8 +12,11 @@ from src.evaluation.baselines import Method
 from src.evaluation.metrics import (
     MethodEvaluation,
     clustering_f1,
+    compute_average_length_loss,
     compute_geometric_distortion,
-    compute_length_preservation,
+    compute_in_query_length_retention,
+    compute_length_preservation_aggregates,
+    compute_length_preserved_for_trajectories,
     f1_score,
 )
 from src.queries.query_executor import execute_typed_query
@@ -178,12 +183,61 @@ def _clustering_support_mask(
     return _range_box_mask(points, params) & _ids_mask(point_trajectory_ids, clustered_ids)
 
 
+@dataclass
+class QueryEvalCache:
+    """Precomputed per-query data that doesn't depend on simplification method.
+
+    Eliminates the redundant computation in evaluate_method when multiple
+    methods (MLQDS, uniform, DP, Oracle) are scored on the same query set.
+    Without this each method recomputes full_res and support_mask for every
+    query, paying 4× the cost.
+
+    full_res:  ground-truth answer set per query (kNN/similarity/clustering).
+               Range is not cached (cheap point_f1 instead).
+    support:   per-point support mask per query (used by combined F1 product).
+    """
+
+    full_res: list[Any] = field(default_factory=list)       # per-query answer set
+    support: list[torch.Tensor] = field(default_factory=list)  # per-query mask
+
+
+def precompute_query_cache(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    typed_queries: list[dict],
+) -> QueryEvalCache:
+    """Build a QueryEvalCache for sharing across multiple method evaluations."""
+    full_traj = _split_by_boundaries(points, boundaries)
+    cache = QueryEvalCache()
+    empty_mask = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+    for query in typed_queries:
+        qtype = query["type"]
+        if qtype == "range":
+            # Range uses _range_point_f1 which doesn't need full_res. Cache a
+            # no-op placeholder to keep the per-query index aligned.
+            cache.full_res.append(None)
+            cache.support.append(empty_mask)
+            continue
+        full_res = execute_typed_query(points, full_traj, query, boundaries)
+        cache.full_res.append(full_res)
+        if qtype == "knn":
+            cache.support.append(_knn_representative_mask(points, boundaries, set(full_res), query["params"]))
+        elif qtype == "similarity":
+            cache.support.append(_similarity_support_mask(points, boundaries, set(full_res), query))
+        elif qtype == "clustering":
+            cache.support.append(_clustering_support_mask(points, boundaries, list(full_res), query["params"]))
+        else:
+            cache.support.append(empty_mask)
+    return cache
+
+
 def score_retained_mask(
     points: torch.Tensor,
     boundaries: list[tuple[int, int]],
     retained_mask: torch.Tensor,
     typed_queries: list[dict],
     workload_mix: dict[str, float],
+    cache: QueryEvalCache | None = None,
 ) -> tuple[float, dict[str, float], float, dict[str, float]]:
     """Score a precomputed retained mask with the final query-F1 semantics.
 
@@ -193,9 +247,11 @@ def score_retained_mask(
     The "combined" variant is the legacy answer_f1 * point_subset_f1 product
     kept for diagnostic comparison; it double-penalizes a method that returns
     the right answer set via different points than ground truth's "support".
+
+    cache: optional precomputed QueryEvalCache to skip per-query full_res and
+    support_mask recomputation across methods. Pass None to compute inline.
     """
     simplified = points[retained_mask]
-    full_traj = _split_by_boundaries(points, boundaries)
     simp_boundaries: list[tuple[int, int]] = []
     cursor = 0
     for start, end in boundaries:
@@ -203,10 +259,12 @@ def score_retained_mask(
         simp_boundaries.append((cursor, cursor + n))
         cursor += n
     simp_traj = _split_by_boundaries(simplified, simp_boundaries)
+    # Only need full_traj if cache is None (we'll be computing full_res inline)
+    full_traj = _split_by_boundaries(points, boundaries) if cache is None else None
 
     answer_scores: dict[str, list[float]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
     combined_scores: dict[str, list[float]] = {"range": [], "knn": [], "similarity": [], "clustering": []}
-    for query in typed_queries:
+    for q_idx, query in enumerate(typed_queries):
         qtype = query["type"]
         if qtype == "range":
             point_f1 = _range_point_f1(points, simplified, query["params"])
@@ -214,21 +272,31 @@ def score_retained_mask(
             combined_scores[qtype].append(point_f1)
             continue
 
-        full_res = execute_typed_query(points, full_traj, query, boundaries)
+        if cache is not None:
+            full_res = cache.full_res[q_idx]
+            support = cache.support[q_idx]
+        else:
+            full_res = execute_typed_query(points, full_traj, query, boundaries)
+            if qtype == "knn":
+                support = _knn_representative_mask(points, boundaries, set(full_res), query["params"])
+            elif qtype == "similarity":
+                support = _similarity_support_mask(points, boundaries, set(full_res), query)
+            elif qtype == "clustering":
+                support = _clustering_support_mask(points, boundaries, list(full_res), query["params"])
+            else:
+                support = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+
         simp_res = execute_typed_query(simplified, simp_traj, query, simp_boundaries)
         if qtype == "knn":
             ans = f1_score(set(full_res), set(simp_res))
-            support = _knn_representative_mask(points, boundaries, set(full_res), query["params"])
             answer_scores[qtype].append(ans)
             combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
         elif qtype == "similarity":
             ans = f1_score(set(full_res), set(simp_res))
-            support = _similarity_support_mask(points, boundaries, set(full_res), query)
             answer_scores[qtype].append(ans)
             combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
         elif qtype == "clustering":
             ans = clustering_f1(full_res, simp_res)
-            support = _clustering_support_mask(points, boundaries, list(full_res), query["params"])
             answer_scores[qtype].append(ans)
             combined_scores[qtype].append(ans * _point_subset_f1(retained_mask, support))
 
@@ -280,6 +348,7 @@ def evaluate_method(
     workload_mix: dict[str, float],
     compression_ratio: float,
     return_mask: bool = False,
+    cache: QueryEvalCache | None = None,
 ) -> MethodEvaluation:
     """Evaluate one simplification method on typed queries at matched ratio. See src/evaluation/README.md for details."""
     t0 = time.time()
@@ -292,11 +361,13 @@ def evaluate_method(
         retained_mask=retained_mask,
         typed_queries=typed_queries,
         workload_mix=workload_mix,
+        cache=cache,
     )
     comp = float(retained_mask.float().mean().item())
     avg_gap, avg_norm_gap, max_gap = _retained_point_gap_stats(retained_mask, boundaries)
     geometric = compute_geometric_distortion(points, boundaries, retained_mask)
-    avg_length_preserved = compute_length_preservation(points, boundaries, retained_mask)
+    length_aggs = compute_length_preservation_aggregates(points, boundaries, retained_mask)
+    avg_length_preserved = float(length_aggs.get("weighted_ratio", 1.0))
     combined = float(aggregate) * max(0.0, min(1.0, avg_length_preserved))
 
     return MethodEvaluation(
@@ -311,6 +382,7 @@ def evaluate_method(
         max_retained_point_gap=max_gap,
         geometric_distortion=geometric,
         avg_length_preserved=avg_length_preserved,
+        length_preservation_aggregates=length_aggs,
         combined_query_shape_score=combined,
         retained_mask=retained_mask if return_mask else None,
     )
@@ -365,14 +437,12 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
         return f"{100.0 * diff / baseline:+.1f}%"
 
     mlqds = results.get("MLQDS")
-    diff_references = [
-        ("uniform", results.get("uniform") or results.get("newUniformTemporal")),
-        ("DouglasPeucker", results.get("DouglasPeucker")),
-    ]
-    if mlqds is not None and any(ref is not None for _, ref in diff_references):
+    uniform = results.get("uniform")
+    dp = results.get("DouglasPeucker")
+    if mlqds is not None and (uniform is not None or dp is not None):
         lines.append("-" * len(header))
         lines.append(f"{'Diff vs MLQDS (AnswerF1 / CombinedF1; abs and % vs baseline)':<{col1}}")
-        for ref_name, ref in diff_references:
+        for ref_name, ref in (("uniform", uniform), ("DouglasPeucker", dp)):
             if ref is None:
                 continue
             agg_ans = mlqds.aggregate_f1 - ref.aggregate_f1
@@ -427,25 +497,22 @@ def print_method_comparison_table(results: dict[str, MethodEvaluation]) -> str:
 
 
 def print_geometric_distortion_table(results: dict[str, MethodEvaluation]) -> str:
-    """Render geometric-distortion + shape-aware utility comparison.
+    """Render geometric-distortion table (SED + PED in km; lower is better).
 
-    SED (Meratnia & de By 2004) and PED (Imai & Iri 1988; what Douglas-Peucker
-    minimises) are reported in km — lower is better. LengthPres is the fraction of
-    total path length preserved (sum_simp_km / sum_orig_km) in [0, 1] — higher is better.
-    F1xLen combines aggregate query F1 with shape preservation: equals F1 when shape
-    is perfect (length_preserved=1.0) and 0 when simplified trajectory collapses
-    (length_preserved=0.0) — higher is better. Use this column as the single
-    shape-aware utility number when comparing methods.
+    SED (Meratnia & de By 2004) is the time-synchronous distance from each
+    removed point to the linearly-interpolated chord between the two retained
+    points that bracket it in time. PED (Imai & Iri 1988; what Douglas-Peucker
+    minimises) is the perpendicular distance to the chord. Both are reported as
+    point-weighted averages over every removed point, plus the global maximum.
+    Length-retention numbers live in the dedicated 3-scope tables.
     """
-    col1, col2, col3, col4, col5, col6, col7 = 24, 11, 11, 11, 11, 13, 13
+    col1, col2, col3, col4, col5 = 24, 11, 11, 11, 11
     header = (
         f"{'Method':<{col1}}"
         f"{'AvgSED_km':>{col2}}"
         f"{'MaxSED_km':>{col3}}"
         f"{'AvgPED_km':>{col4}}"
         f"{'MaxPED_km':>{col5}}"
-        f"{'LengthPres':>{col6}}"
-        f"{'F1xLen':>{col7}}"
     )
     lines = [header, "-" * len(header)]
     for name, metrics in results.items():
@@ -456,10 +523,444 @@ def print_geometric_distortion_table(results: dict[str, MethodEvaluation]) -> st
             f"{g.get('max_sed_km', 0.0):>{col3}.2f}"
             f"{g.get('avg_ped_km', 0.0):>{col4}.4f}"
             f"{g.get('max_ped_km', 0.0):>{col5}.2f}"
-            f"{metrics.avg_length_preserved:>{col6}.4f}"
-            f"{metrics.combined_query_shape_score:>{col7}.6f}"
         )
     return "\n".join(lines)
+
+
+def _query_geom_summary(query: dict) -> dict[str, float | None]:
+    """Unified spatial/temporal summary for any query type.
+
+    Every query gets center_lat/center_lon/t_center plus, where defined, the
+    bbox edges (lat/lon min-max) and the time window (t_start/t_end). knn and
+    similarity have point-anchored regions so bbox edges come back as None;
+    clustering has no native time window. The CSV writer emits None as empty
+    strings so downstream plotting code can branch on which fields are present.
+    """
+    qtype = query["type"]
+    p = query["params"]
+    out: dict[str, float | None] = {
+        "center_lat": None, "center_lon": None,
+        "lat_min": None, "lat_max": None, "lon_min": None, "lon_max": None,
+        "t_start": None, "t_end": None, "t_center": None,
+        "radius": None, "t_half_window": None,
+    }
+    if qtype in ("range", "clustering"):
+        out["lat_min"] = float(p["lat_min"])
+        out["lat_max"] = float(p["lat_max"])
+        out["lon_min"] = float(p["lon_min"])
+        out["lon_max"] = float(p["lon_max"])
+        out["center_lat"] = (out["lat_min"] + out["lat_max"]) / 2.0
+        out["center_lon"] = (out["lon_min"] + out["lon_max"]) / 2.0
+        if qtype == "range":
+            out["t_start"] = float(p["t_start"])
+            out["t_end"] = float(p["t_end"])
+            out["t_center"] = (out["t_start"] + out["t_end"]) / 2.0
+    elif qtype == "knn":
+        out["center_lat"] = float(p["lat"])
+        out["center_lon"] = float(p["lon"])
+        out["t_center"] = float(p["t_center"])
+        out["t_half_window"] = float(p["t_half_window"])
+        out["t_start"] = out["t_center"] - out["t_half_window"]
+        out["t_end"] = out["t_center"] + out["t_half_window"]
+    elif qtype == "similarity":
+        out["center_lat"] = float(p["lat_query_centroid"])
+        out["center_lon"] = float(p["lon_query_centroid"])
+        out["radius"] = float(p.get("radius", 0.0))
+        out["t_start"] = float(p["t_start"])
+        out["t_end"] = float(p["t_end"])
+        out["t_center"] = (out["t_start"] + out["t_end"]) / 2.0
+    return out
+
+
+def _query_support_mask(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    query: dict,
+    full_traj: list[torch.Tensor],
+) -> torch.Tensor:
+    """Return the per-point support mask for one eval query.
+
+    Range: in-box points. kNN/similarity: representative points within the
+    query window for each trajectory in the full answer set. Clustering: in-box
+    points belonging to clustered (non-noise) trajectories. The mask defines
+    "data points the query touches" used by per-query length-preservation and
+    by the per-type query_points CSVs.
+    """
+    qtype = query["type"]
+    if qtype == "range":
+        return _range_box_mask(points, query["params"])
+    full_res = execute_typed_query(points, full_traj, query, boundaries)
+    if qtype == "knn":
+        return _knn_representative_mask(points, boundaries, set(full_res), query["params"])
+    if qtype == "similarity":
+        return _similarity_support_mask(points, boundaries, set(full_res), query)
+    if qtype == "clustering":
+        return _clustering_support_mask(points, boundaries, list(full_res), query["params"])
+    return torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+
+
+def _query_answer_f1(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+    query: dict,
+    full_traj: list[torch.Tensor],
+    simp_points: torch.Tensor,
+    simp_boundaries: list[tuple[int, int]],
+    simp_traj: list[torch.Tensor],
+) -> float:
+    """Compute the same per-query AnswerF1 used by score_retained_mask."""
+    qtype = query["type"]
+    if qtype == "range":
+        return _range_point_f1(points, simp_points, query["params"])
+    full_res = execute_typed_query(points, full_traj, query, boundaries)
+    simp_res = execute_typed_query(simp_points, simp_traj, query, simp_boundaries)
+    if qtype == "clustering":
+        return clustering_f1(full_res, simp_res)
+    return f1_score(set(full_res), set(simp_res))
+
+
+def _trajectories_touching_mask(mask: torch.Tensor, boundaries: list[tuple[int, int]]) -> list[int]:
+    """Return indices of trajectories with at least one True point in mask."""
+    out: list[int] = []
+    for i, (s, e) in enumerate(boundaries):
+        if e > s and bool(mask[s:e].any().item()):
+            out.append(i)
+    return out
+
+
+def build_query_support_masks(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    typed_queries: list[dict],
+) -> list[torch.Tensor]:
+    """One per-point boolean mask per query (same order as typed_queries)."""
+    full_traj = _split_by_boundaries(points, boundaries)
+    return [_query_support_mask(points, boundaries, q, full_traj) for q in typed_queries]
+
+
+def compute_eval_query_length_preservation(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_masks_by_method: dict[str, torch.Tensor],
+    typed_queries: list[dict],
+) -> dict[str, dict[str, float]]:
+    """Length preservation restricted to trajectories any eval query touches.
+
+    Returns per-method dicts with weighted_ratio / sum_orig_km / sum_simp_km /
+    n_trajectories. Useful when the eval workload only covers part of the
+    fleet — preserving km on stationary/never-queried boats inflates the
+    whole-set number, this strips them out.
+    """
+    full_traj = _split_by_boundaries(points, boundaries)
+    union = torch.zeros((points.shape[0],), dtype=torch.bool, device=points.device)
+    for q in typed_queries:
+        union |= _query_support_mask(points, boundaries, q, full_traj)
+    traj_idx = _trajectories_touching_mask(union, boundaries)
+    return {
+        name: compute_length_preserved_for_trajectories(points, boundaries, mask, trajectory_indices=traj_idx)
+        for name, mask in retained_masks_by_method.items()
+    }
+
+
+def compute_per_query_diagnostics(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_masks_by_method: dict[str, torch.Tensor],
+    typed_queries: list[dict],
+) -> list[dict]:
+    """Per-query AnswerF1 + length preservation + point counts, all methods.
+
+    For each eval query the returned dict carries the support mask size,
+    per-method retained-vs-removed counts inside the support, per-method
+    AnswerF1, and per-method weighted length preservation restricted to the
+    trajectories the query touches. This is the source of truth for the
+    top-15 best/worst tables and for any per-query downstream report.
+    """
+    full_traj = _split_by_boundaries(points, boundaries)
+    out: list[dict] = []
+    method_names = list(retained_masks_by_method.keys())
+    simp_cache: dict[str, tuple[torch.Tensor, list[tuple[int, int]], list[torch.Tensor]]] = {}
+    for name, mask in retained_masks_by_method.items():
+        simp_pts = points[mask]
+        simp_bnd: list[tuple[int, int]] = []
+        cursor = 0
+        for s, e in boundaries:
+            n = int(mask[s:e].sum().item())
+            simp_bnd.append((cursor, cursor + n))
+            cursor += n
+        simp_cache[name] = (simp_pts, simp_bnd, _split_by_boundaries(simp_pts, simp_bnd))
+
+    for q_idx, query in enumerate(typed_queries):
+        support = _query_support_mask(points, boundaries, query, full_traj)
+        n_in = int(support.sum().item())
+        traj_idx = _trajectories_touching_mask(support, boundaries)
+        per_method: dict[str, dict[str, float]] = {}
+        for name in method_names:
+            mask = retained_masks_by_method[name]
+            simp_pts, simp_bnd, simp_traj = simp_cache[name]
+            n_retained_in = int((mask & support).sum().item())
+            # Scope 2 view: full polyline of trajectories the query touches.
+            length_full = compute_length_preserved_for_trajectories(points, boundaries, mask, trajectory_indices=traj_idx)
+            # Scope 3 view: in-query segments (first_in-1 to last_in+1).
+            length_inquery = compute_in_query_length_retention(points, boundaries, mask, support)
+            f1 = _query_answer_f1(points, boundaries, mask, query, full_traj, simp_pts, simp_bnd, simp_traj)
+            per_method[name] = {
+                "answer_f1": float(f1),
+                # Backwards-compat field — Scope-2 retention (full trajectories of touched queries).
+                "length_preserved": float(length_full["weighted_ratio"]),
+                # New: Scope-3 retention restricted to in-query segments only.
+                "in_query_retention": float(length_inquery["retention"]),
+                "in_query_orig_km": float(length_inquery["avg_orig_km"] * max(1, length_inquery["n_segments"])),
+                "in_query_simp_km": float(length_inquery["avg_simp_km"] * max(1, length_inquery["n_segments"])),
+                "in_query_n_segments": int(length_inquery["n_segments"]),
+                "n_retained_in_query": n_retained_in,
+                "n_removed_in_query": int(n_in - n_retained_in),
+                "n_trajectories_touched": int(length_full["n_trajectories"]),
+            }
+        out.append({
+            "query_idx": q_idx,
+            "type": str(query["type"]),
+            "n_points_in_query": n_in,
+            "n_trajectories_touched": len(traj_idx),
+            "geom": _query_geom_summary(query),
+            "per_method": per_method,
+        })
+    return out
+
+
+def _gap_vs_baselines(diag_per_method: dict[str, dict[str, float]]) -> tuple[float, str]:
+    """For one query, return (gap, best_baseline_name) where gap = MLQDS_F1 - best_baseline_F1.
+
+    Best baseline is the higher of uniform vs DouglasPeucker — beating that
+    is the bar the model has to clear. Gap > 0 means MLQDS won, gap < 0 means
+    the better of the two baselines beat MLQDS.
+    """
+    if "MLQDS" not in diag_per_method:
+        return 0.0, ""
+    mlqds = diag_per_method["MLQDS"]["answer_f1"]
+    candidates = [(name, diag_per_method[name]["answer_f1"]) for name in ("uniform", "DouglasPeucker") if name in diag_per_method]
+    if not candidates:
+        return 0.0, ""
+    best_name, best_f1 = max(candidates, key=lambda x: x[1])
+    return float(mlqds - best_f1), best_name
+
+
+def _retention_gap_vs_baselines(diag_per_method: dict[str, dict[str, float]]) -> tuple[float, str]:
+    """For one query, return (gap, best_baseline_name) where gap = MLQDS_in_query_retention − best_baseline.
+
+    Mirrors _gap_vs_baselines but on Scope-3 length retention. Used to rank
+    queries when the user cares about length preservation more than F1.
+    """
+    if "MLQDS" not in diag_per_method:
+        return 0.0, ""
+    mlqds = diag_per_method["MLQDS"].get("in_query_retention", 0.0)
+    candidates = [(name, diag_per_method[name].get("in_query_retention", 0.0)) for name in ("uniform", "DouglasPeucker") if name in diag_per_method]
+    if not candidates:
+        return 0.0, ""
+    best_name, best_r = max(candidates, key=lambda x: x[1])
+    return float(mlqds - best_r), best_name
+
+
+def print_top_queries_table(diagnostics: list[dict], k: int = 15, mode: str = "best") -> str:
+    """Render the top-K best (or worst) queries by MLQDS Scope-3 retention gap.
+
+    "best" = top-K queries where MLQDS-in-query-retention exceeds the better of
+    uniform/DP by the most. "worst" = bottom-K (where MLQDS loses by the most).
+    Each row reports per-query AnswerF1 (for context, doesn't drive the rank)
+    and the in-query retention numbers that drive the ranking.
+    """
+    scored = [(d, *_retention_gap_vs_baselines(d.get("per_method", {}))) for d in diagnostics]
+    if mode == "best":
+        ranked = sorted(scored, key=lambda x: x[1], reverse=True)[:k]
+        title = f"Top {k} BEST queries (MLQDS in-query retention gap vs best baseline; positive = MLQDS won)"
+    else:
+        ranked = sorted(scored, key=lambda x: x[1])[:k]
+        title = f"Top {k} WORST queries (MLQDS in-query retention gap vs best baseline; negative = MLQDS lost)"
+
+    cols = ["rank", "qid", "type", "gap_R", "R_M", "R_U", "R_DP", "F1_M", "F1_U", "F1_DP", "in_q", "rm_M", "rm_U", "rm_DP"]
+    widths = [4, 5, 11, 8, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6]
+    header = "  ".join(f"{c:>{w}}" for c, w in zip(cols, widths))
+    lines = [title, header, "-" * len(header)]
+    for rank, (d, gap, _) in enumerate(ranked, start=1):
+        pm = d.get("per_method", {})
+        m = pm.get("MLQDS", {})
+        u = pm.get("uniform", {})
+        dp = pm.get("DouglasPeucker", {})
+        row = [
+            f"{rank}", f"{d['query_idx']}", d["type"],
+            f"{gap:+.4f}",
+            f"{m.get('in_query_retention', 0.0):.3f}",
+            f"{u.get('in_query_retention', 0.0):.3f}",
+            f"{dp.get('in_query_retention', 0.0):.3f}",
+            f"{m.get('answer_f1', 0.0):.4f}",
+            f"{u.get('answer_f1', 0.0):.4f}",
+            f"{dp.get('answer_f1', 0.0):.4f}",
+            f"{d['n_points_in_query']}",
+            f"{m.get('n_removed_in_query', 0)}",
+            f"{u.get('n_removed_in_query', 0)}",
+            f"{dp.get('n_removed_in_query', 0)}",
+        ]
+        lines.append("  ".join(f"{v:>{w}}" for v, w in zip(row, widths)))
+    return "\n".join(lines)
+
+
+def write_top_queries_csv(diagnostics: list[dict], out_path: str, k: int = 15, mode: str = "best") -> None:
+    """Persist the top-K best (or worst) per-query rows ranked by Scope-3 retention gap.
+
+    Ranking metric: MLQDS_in_query_retention − max(uniform, DP) in_query_retention.
+    F1 columns are kept as context but don't drive the ordering. The CSV carries
+    the unified spatial/temporal summary (center_lat/center_lon/t_center plus
+    type-specific extents) so plotting code can render each query's region on a
+    map without re-parsing the original query dicts.
+    """
+    scored = [(d, *_retention_gap_vs_baselines(d.get("per_method", {}))) for d in diagnostics]
+    if mode == "best":
+        ranked = sorted(scored, key=lambda x: x[1], reverse=True)[:k]
+    else:
+        ranked = sorted(scored, key=lambda x: x[1])[:k]
+    cols = [
+        "rank", "query_idx", "type", "retention_gap_vs_best_baseline",
+        "MLQDS_in_query_retention", "uniform_in_query_retention", "DP_in_query_retention",
+        "MLQDS_F1", "uniform_F1", "DP_F1",
+        "n_points_in_query", "n_trajectories_touched",
+        "MLQDS_n_removed", "uniform_n_removed", "DP_n_removed",
+        "MLQDS_in_query_orig_km", "MLQDS_in_query_simp_km",
+        "uniform_in_query_orig_km", "uniform_in_query_simp_km",
+        "DP_in_query_orig_km", "DP_in_query_simp_km",
+        "center_lat", "center_lon", "t_center",
+        "lat_min", "lat_max", "lon_min", "lon_max",
+        "t_start", "t_end", "radius", "t_half_window",
+    ]
+
+    def _fmt(v: float | int | None, places: int = 6) -> str:
+        if v is None:
+            return ""
+        if isinstance(v, int):
+            return str(v)
+        return f"{float(v):.{places}f}"
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(",".join(cols) + "\n")
+        for rank, (d, gap, _) in enumerate(ranked, start=1):
+            pm = d.get("per_method", {})
+            m = pm.get("MLQDS", {}); u = pm.get("uniform", {}); dp = pm.get("DouglasPeucker", {})
+            g = d.get("geom", {})
+            row = [
+                str(rank), str(d.get("query_idx", "")), str(d.get("type", "")),
+                _fmt(gap, 6),
+                _fmt(m.get("in_query_retention"), 6), _fmt(u.get("in_query_retention"), 6), _fmt(dp.get("in_query_retention"), 6),
+                _fmt(m.get("answer_f1"), 6), _fmt(u.get("answer_f1"), 6), _fmt(dp.get("answer_f1"), 6),
+                str(int(d.get("n_points_in_query", 0))), str(int(d.get("n_trajectories_touched", 0))),
+                str(int(m.get("n_removed_in_query", 0))), str(int(u.get("n_removed_in_query", 0))), str(int(dp.get("n_removed_in_query", 0))),
+                _fmt(m.get("in_query_orig_km"), 4), _fmt(m.get("in_query_simp_km"), 4),
+                _fmt(u.get("in_query_orig_km"), 4), _fmt(u.get("in_query_simp_km"), 4),
+                _fmt(dp.get("in_query_orig_km"), 4), _fmt(dp.get("in_query_simp_km"), 4),
+                _fmt(g.get("center_lat"), 6), _fmt(g.get("center_lon"), 6), _fmt(g.get("t_center"), 3),
+                _fmt(g.get("lat_min"), 6), _fmt(g.get("lat_max"), 6), _fmt(g.get("lon_min"), 6), _fmt(g.get("lon_max"), 6),
+                _fmt(g.get("t_start"), 3), _fmt(g.get("t_end"), 3),
+                _fmt(g.get("radius"), 6), _fmt(g.get("t_half_window"), 3),
+            ]
+            f.write(",".join(row) + "\n")
+
+
+def _retention_rows(
+    method_aggs: dict[str, dict[str, float]],
+    n_field: str,
+    n_label: str,
+) -> str:
+    """Shared 4-column rendering for the 3 length-retention scope tables."""
+    col1, col2, col3, col4, col5 = 24, 13, 13, 11, 8
+    header = (
+        f"{'Method':<{col1}}"
+        f"{'avg_orig_km':>{col2}}"
+        f"{'avg_simp_km':>{col3}}"
+        f"{'Retention':>{col4}}"
+        f"{n_label:>{col5}}"
+    )
+    lines = [header, "-" * len(header)]
+    for name, agg in method_aggs.items():
+        lines.append(
+            f"{name:<{col1}}"
+            f"{agg.get('avg_orig_km', 0.0):>{col2}.4f}"
+            f"{agg.get('avg_simp_km', 0.0):>{col3}.4f}"
+            f"{agg.get('retention', 0.0):>{col4}.4f}"
+            f"{int(agg.get(n_field, 0)):>{col5}d}"
+        )
+    return "\n".join(lines)
+
+
+def print_length_retention_whole_set_table(
+    results: dict[str, MethodEvaluation],
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+) -> str:
+    """Length retention scope 1: every trajectory ≥2 points in the eval set.
+
+    Per method: avg_orig_km, avg_simp_km, retention (= sum_simp_km / sum_orig_km;
+    1.0 = perfect). Higher retention is better. NTraj is the count of
+    trajectories that contributed (length ≥ 2 points and non-zero km).
+    """
+    aggs: dict[str, dict[str, float]] = {}
+    for name, metrics in results.items():
+        if metrics.retained_mask is None:
+            aggs[name] = {"avg_orig_km": 0.0, "avg_simp_km": 0.0, "retention": metrics.avg_length_preserved, "n_trajectories": 0}
+            continue
+        agg = compute_length_preserved_for_trajectories(points, boundaries, metrics.retained_mask)
+        n = int(agg.get("n_trajectories", 0))
+        aggs[name] = {
+            "avg_orig_km": (agg["sum_orig_km"] / n) if n > 0 else 0.0,
+            "avg_simp_km": (agg["sum_simp_km"] / n) if n > 0 else 0.0,
+            "retention": float(agg["weighted_ratio"]),
+            "n_trajectories": n,
+        }
+    return "Length retention — Scope 1: whole eval set (every trajectory ≥2 points)\n" + _retention_rows(aggs, "n_trajectories", "NTraj")
+
+
+def print_length_retention_eval_query_table(per_method_aggs: dict[str, dict[str, float]]) -> str:
+    """Length retention scope 2: trajectories any eval query touches (full polyline)."""
+    aggs: dict[str, dict[str, float]] = {}
+    for name, agg in per_method_aggs.items():
+        n = int(agg.get("n_trajectories", 0))
+        aggs[name] = {
+            "avg_orig_km": float(agg.get("sum_orig_km", 0.0)) / n if n > 0 else 0.0,
+            "avg_simp_km": float(agg.get("sum_simp_km", 0.0)) / n if n > 0 else 0.0,
+            "retention": float(agg.get("weighted_ratio", 0.0)),
+            "n_trajectories": n,
+        }
+    return "Length retention — Scope 2: trajectories any eval query touches (full polyline)\n" + _retention_rows(aggs, "n_trajectories", "NTraj")
+
+
+def aggregate_in_query_retention_across_diagnostics(
+    diagnostics: list[dict],
+    method_names: list[str],
+) -> dict[str, dict[str, float]]:
+    """Sum per-query Scope-3 numbers into per-method aggregates."""
+    out: dict[str, dict[str, float]] = {n: {"sum_orig_km": 0.0, "sum_simp_km": 0.0, "n_segments": 0} for n in method_names}
+    for d in diagnostics:
+        for name in method_names:
+            pm = d.get("per_method", {}).get(name, {})
+            out[name]["sum_orig_km"] += float(pm.get("in_query_orig_km", 0.0))
+            out[name]["sum_simp_km"] += float(pm.get("in_query_simp_km", 0.0))
+            out[name]["n_segments"] += int(pm.get("in_query_n_segments", 0))
+    return out
+
+
+def print_length_retention_in_query_table(in_query_aggs: dict[str, dict[str, float]]) -> str:
+    """Length retention scope 3: in-query segments only (first_in-1 to last_in+1)."""
+    aggs: dict[str, dict[str, float]] = {}
+    for name, agg in in_query_aggs.items():
+        n = int(agg.get("n_segments", 0))
+        sum_orig = float(agg.get("sum_orig_km", 0.0))
+        sum_simp = float(agg.get("sum_simp_km", 0.0))
+        retention = 1.0 if sum_orig <= 1e-9 else max(0.0, min(1.0, sum_simp / sum_orig))
+        aggs[name] = {
+            "avg_orig_km": sum_orig / n if n > 0 else 0.0,
+            "avg_simp_km": sum_simp / n if n > 0 else 0.0,
+            "retention": retention,
+            "n_segments": n,
+        }
+    return "Length retention — Scope 3: in-query segments (first_in-1 to last_in+1)\n" + _retention_rows(aggs, "n_segments", "NSeg")
 
 
 def print_shift_table(shift_grid: dict[str, dict[str, float]]) -> str:

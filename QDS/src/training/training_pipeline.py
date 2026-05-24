@@ -63,8 +63,18 @@ def load_checkpoint(path: str) -> ModelArtifacts:
         num_layers=cfg.model.num_layers,
         type_embed_dim=cfg.model.type_embed_dim,
         dropout=cfg.model.dropout,
+        use_cls_token=bool(getattr(cfg.model, "use_cls_token", True)),
     )
-    model.load_state_dict(payload["model_state"])
+    # strict=False so older checkpoints (saved before CLS token / per-head
+    # temperature were added) still load — the new parameters fall back to
+    # their identity-at-init values, giving deterministic and unchanged
+    # behaviour for those checkpoints.
+    missing, unexpected = model.load_state_dict(payload["model_state"], strict=False)
+    if missing or unexpected:
+        print(
+            f"  [load_checkpoint] state_dict mismatch  missing={list(missing)}  unexpected={list(unexpected)}",
+            flush=True,
+        )
     model.eval()
     scaler = FeatureScaler.from_dict(payload["scaler"])
     return ModelArtifacts(
@@ -99,21 +109,44 @@ def windowed_predict(
     Using per-window inference ensures the transformer never attends across
     trajectory boundaries, matching the behaviour seen during training.
     """
-    windows = build_trajectory_windows(norm_points, boundaries, window_length, window_stride)
+    # min_real_points=1: at inference every trajectory needs a prediction window,
+    # even tiny ones. (Training skips near-empty windows for speed.)
+    windows = build_trajectory_windows(
+        norm_points, boundaries, window_length, window_stride, min_real_points=1
+    )
     windows = batch_windows(windows, max(1, int(batch_size)))
     n = norm_points.shape[0]
     all_pred = norm_points.new_zeros((n, NUM_QUERY_TYPES))
     pred_count = norm_points.new_zeros((n,))
 
     model.eval()
+    # build_trajectory_windows produces tensors on norm_points.device; the
+    # model can be on a different device (typically cuda for inference). Move
+    # window tensors lazily so the model.forward call always sees same-device
+    # tensors. Queries / query_type_ids only need to be moved once.
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = norm_points.device
+    queries_dev = queries.to(model_device) if queries.device != model_device else queries
+    qti_dev = (
+        query_type_ids.to(model_device)
+        if query_type_ids.device != model_device else query_type_ids
+    )
     with torch.no_grad():
         for w in windows:
-            wp = model(
-                points=w.points,
-                queries=queries,
-                query_type_ids=query_type_ids,
-                padding_mask=w.padding_mask,
+            w_points = w.points.to(model_device) if w.points.device != model_device else w.points
+            w_pad = (
+                w.padding_mask.to(model_device)
+                if w.padding_mask.device != model_device else w.padding_mask
             )
+            wp = model(
+                points=w_points,
+                queries=queries_dev,
+                query_type_ids=qti_dev,
+                padding_mask=w_pad,
+            )
+            wp = wp.to(all_pred.device) if wp.device != all_pred.device else wp
             for batch_idx in range(wp.shape[0]):
                 widx = w.global_indices[batch_idx]
                 valid = widx >= 0

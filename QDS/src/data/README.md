@@ -7,8 +7,6 @@ This module loads AIS trajectories into per-trajectory tensors and provides the 
 | File | Purpose |
 | --- | --- |
 | `ais_loader.py` | Load AIS CSV files or generate deterministic synthetic trajectories. |
-| `combine_days.py` | Utility for concatenating preprocessed CSVs while preserving MMSIs by default. |
-| `trajectory_cache.py` | Persist segmented AIS tensors as Parquet plus manifest/audit metadata. |
 | `trajectory_dataset.py` | Wrap a list of trajectory tensors and expose flattened points plus trajectory boundaries. |
 
 ## AIS Tensor Schema
@@ -28,32 +26,10 @@ Each trajectory tensor has 8 columns:
 
 ## Loader Behavior
 
-- `load_ais_csv(...)` accepts common column aliases: `mmsi` / `ship_id` / `vessel_id`, `lat` / `latitude`, `lon` / `longitude`, `speed` / `sog`, `heading` / `cog`, and `timestamp` / `time` / `datetime`.
+- `load_ais_csv(csv_path, max_points_per_ship=None)` accepts common column aliases: `mmsi` / `ship_id` / `vessel_id`, `lat` / `latitude`, `lon` / `longitude`, `speed` / `sog`, `heading` / `cog`, and `timestamp` / `time` / `datetime`.
 - Rows are grouped by vessel id, sorted by timestamp, and trajectories shorter than 4 points are dropped.
-- By default, one MMSI track is split into new trajectory segments when consecutive points are more than `3600` seconds apart.
-- `min_points_per_segment` controls short-segment dropping.
-- `max_points_per_segment` down-samples long segments with evenly spaced indices. The legacy `max_points_per_ship` argument is still accepted as an alias.
-- `max_time_gap_seconds=None` disables time-gap segmentation.
-- `max_segments` is a loader-level safety cap for smoke runs.
-- `return_audit=True` appends an `AISLoadAudit` object containing invalid-row counts, duplicate timestamp counts, time-gap stats, segment length stats, segment counts, dropped short segments, and downsampling counts.
+- If `max_points_per_ship` is set, long trajectories are downsampled with evenly spaced indices.
 - `generate_synthetic_ais_data(n_ships=24, n_points_per_ship=200, seed=42)` produces deterministic pseudo-realistic trajectories when no CSV is supplied.
-
-## Segmented Cache
-
-`trajectory_cache.py` stores the post-cleaning, post-segmentation tensor rows as
-`points.parquet` with a sibling `manifest.json`. The manifest is keyed by source
-file path, file size, modification time, cache schema version, and segmentation
-config, so changing the source file or controls creates a separate cache entry.
-Use `--cache_dir` on experiment/inference commands to enable it, and
-`--refresh_cache` to rebuild a matching entry.
-
-## Multi-Day CSV Combination
-
-Use `python -m src.data.combine_days --input ... --output ...` when Phase 3
-runs need one combined training CSV. The utility preserves MMSIs by default so
-`load_ais_csv` can segment continuous vessels by timestamp gaps across file
-boundaries. Use `--offset-mmsi-per-file` only for compatibility experiments
-where every input file should be treated as an isolated vessel set.
 
 ## Dataset Helpers
 

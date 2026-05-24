@@ -12,8 +12,18 @@ from src.evaluation.evaluate_methods import (
     print_method_comparison_table,
     score_retained_mask,
 )
-from src.evaluation.metrics import MethodEvaluation, clustering_f1, compute_length_preservation, f1_score
-from src.simplification.simplify_trajectories import simplify_with_temporal_score_hybrid
+from src.evaluation.metrics import (
+    MethodEvaluation,
+    clustering_f1,
+    compute_average_length_loss,
+    compute_in_query_length_retention,
+    compute_length_preservation_aggregates,
+    f1_score,
+)
+from src.simplification.simplify_trajectories import (
+    simplify_with_score_and_coverage,
+    simplify_with_temporal_score_hybrid,
+)
 
 
 class KeepAllMethod:
@@ -252,6 +262,47 @@ def test_retained_point_gap_stats_measure_original_spacing() -> None:
     assert max_gap == pytest.approx(3.0)
 
 
+def test_length_preservation_aggregates_summarise_whole_set_with_one_value() -> None:
+    """One straight (length-preserved) trajectory and one collapsed trajectory.
+
+    Two trajectories of equal original length: traj A keeps its endpoints over a
+    straight chord (ratio 1.0 since intermediate points lie on the chord); traj B
+    keeps only one point so ratio collapses to 0.0. This pins the distributional
+    aggregates against per-trajectory weighting expectations.
+    """
+    traj_a = torch.stack([torch.tensor([float(i), 0.0, float(i), 1.0]) for i in range(5)])
+    traj_b = torch.stack([torch.tensor([float(i), 10.0, float(i), 1.0]) for i in range(5)])
+    points = torch.cat([traj_a, traj_b], dim=0)
+    boundaries = [(0, 5), (5, 10)]
+    retained = torch.tensor(
+        [True, False, False, False, True,
+         True, False, False, False, False],
+        dtype=torch.bool,
+    )
+
+    aggs = compute_length_preservation_aggregates(points, boundaries, retained)
+
+    assert aggs["n_trajectories"] == 2
+    assert aggs["mean_per_traj"] == pytest.approx(0.5)
+    assert aggs["median_per_traj"] == pytest.approx(0.5)
+    assert aggs["min_per_traj"] == pytest.approx(0.0)
+    assert aggs["frac_above_0p9"] == pytest.approx(0.5)
+    assert aggs["frac_above_0p95"] == pytest.approx(0.5)
+    assert aggs["weighted_ratio"] == pytest.approx(
+        compute_average_length_loss(points, boundaries, retained)
+    )
+
+
+def test_length_preservation_aggregates_handle_empty_eval_set() -> None:
+    """All-singleton trajectories: nothing is evaluable, so default to 1.0."""
+    points = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
+    aggs = compute_length_preservation_aggregates(points, [(0, 1)], torch.tensor([True]))
+
+    assert aggs["n_trajectories"] == 0
+    assert aggs["mean_per_traj"] == pytest.approx(1.0)
+    assert aggs["median_per_traj"] == pytest.approx(1.0)
+
+
 def test_method_comparison_table_labels_f1() -> None:
     table = print_method_comparison_table(
         {
@@ -292,55 +343,117 @@ def test_method_comparison_table_shows_close_f1_values() -> None:
     assert "0.182423" in table
 
 
-def test_method_comparison_table_reports_canonical_baseline_diffs() -> None:
-    table = print_method_comparison_table(
-        {
-            "MLQDS": MethodEvaluation(
-                aggregate_f1=0.6,
-                per_type_f1={"range": 0.6},
-                compression_ratio=0.2,
-                latency_ms=0.0,
-            ),
-            "uniform": MethodEvaluation(
-                aggregate_f1=0.5,
-                per_type_f1={"range": 0.5},
-                compression_ratio=0.2,
-                latency_ms=0.0,
-            ),
-            "DouglasPeucker": MethodEvaluation(
-                aggregate_f1=0.55,
-                per_type_f1={"range": 0.55},
-                compression_ratio=0.2,
-                latency_ms=0.0,
-            ),
-        }
+def test_in_query_length_retention_uses_first_in_minus_one_to_last_in_plus_one() -> None:
+    """Scope 3 length retention covers in-query points plus 1 anchor on each side.
+
+    Build a single trajectory with 6 sequential points along a straight line. The
+    support_mask marks points 2 and 3 as in-query (query "touches" idx 2-3). The
+    in-query segment must therefore run idx 1..4 (one outside on each side, clipped
+    at trajectory ends). Original polyline length over idx 1..4 = 3 km × deg
+    factor; retention with all retained = 1.0; retention with only idx 1 and 4
+    retained ≈ 1.0 too (chord between same endpoints, same length on a straight
+    line); retention with only idx 1 retained = 0 (need ≥2 retained for any length).
+    """
+    # 6 points along constant-lon meridian, lat steps of 0.001 degrees so haversine
+    # distances are non-zero but small.
+    points = torch.tensor([
+        [0.0, 55.000, 12.0, 1.0],
+        [1.0, 55.001, 12.0, 1.0],
+        [2.0, 55.002, 12.0, 1.0],   # in_query
+        [3.0, 55.003, 12.0, 1.0],   # in_query
+        [4.0, 55.004, 12.0, 1.0],
+        [5.0, 55.005, 12.0, 1.0],
+    ], dtype=torch.float32)
+    boundaries = [(0, 6)]
+    support = torch.tensor([False, False, True, True, False, False])
+    # Retention = 1.0 when all in-segment points are kept (idx 1..4 retained).
+    retained_full = torch.tensor([False, True, True, True, True, False])
+    out_full = compute_in_query_length_retention(points, boundaries, retained_full, support)
+    assert out_full["n_segments"] == 1
+    assert out_full["retention"] == pytest.approx(1.0, abs=1e-4)
+
+    # Retention also = 1.0 when ONLY the two endpoints of the segment are kept,
+    # because the trajectory is straight (chord length == sum of step lengths).
+    retained_chord = torch.tensor([False, True, False, False, True, False])
+    out_chord = compute_in_query_length_retention(points, boundaries, retained_chord, support)
+    assert out_chord["retention"] == pytest.approx(1.0, abs=1e-4)
+
+    # When fewer than 2 retained points fall in the segment, simp_km is treated as 0.
+    retained_one = torch.tensor([False, True, False, False, False, False])
+    out_one = compute_in_query_length_retention(points, boundaries, retained_one, support)
+    assert out_one["retention"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_in_query_length_retention_handles_no_query_touched_trajectories() -> None:
+    """Trajectory with empty support mask is excluded from the aggregate."""
+    points = torch.tensor([
+        [0.0, 55.0, 12.0, 1.0],
+        [1.0, 55.001, 12.0, 1.0],
+    ], dtype=torch.float32)
+    boundaries = [(0, 2)]
+    support = torch.zeros(2, dtype=torch.bool)
+    retained = torch.ones(2, dtype=torch.bool)
+    out = compute_in_query_length_retention(points, boundaries, retained, support)
+    assert out["n_segments"] == 0
+    assert out["retention"] == pytest.approx(1.0)
+
+
+def test_score_coverage_simplifier_length_weight_zero_is_legacy_behaviour() -> None:
+    """With length_preservation_weight=0 the simplifier output is bit-identical to legacy.
+
+    This guards the opt-in nature of the length term: if the user doesn't ask for it,
+    nothing should change in the existing score+coverage code path.
+    """
+    n = 40
+    scores = torch.linspace(0.0, 1.0, n)
+    points = torch.stack([
+        torch.arange(n, dtype=torch.float32),       # t
+        torch.zeros(n, dtype=torch.float32),         # lat
+        torch.linspace(0.0, 1.0, n),                 # lon
+    ], dim=1)
+    boundaries = [(0, n)]
+    legacy = simplify_with_score_and_coverage(
+        scores, boundaries, compression_ratio=0.20,
+        coverage_lambda=0.5, coverage_sigma_fraction=0.5,
     )
-
-    assert "Diff vs MLQDS" in table
-    assert "vs uniform" in table
-    assert "vs DouglasPeucker" in table
-    assert "vs Random" not in table
-
-
-def test_length_preservation_and_legacy_loss_are_complements() -> None:
-    points = torch.tensor(
-        [
-            [0.0, 0.0, 0.0, 1.0],
-            [1.0, 0.0, 1.0, 1.0],
-            [2.0, 0.0, 2.0, 1.0],
-        ],
-        dtype=torch.float32,
+    with_zero_mu = simplify_with_score_and_coverage(
+        scores, boundaries, compression_ratio=0.20,
+        coverage_lambda=0.5, coverage_sigma_fraction=0.5,
+        points=points, length_preservation_weight=0.0,
     )
-    retained = torch.tensor([True, False, True])
+    assert torch.equal(legacy, with_zero_mu)
 
-    preserved = compute_length_preservation(points, [(0, 3)], retained)
-    metrics = MethodEvaluation(
-        aggregate_f1=0.8,
-        per_type_f1={"range": 0.8},
-        compression_ratio=2.0 / 3.0,
-        latency_ms=0.0,
-        avg_length_preserved=preserved,
+
+def test_score_coverage_simplifier_length_weight_prefers_off_chord_points() -> None:
+    """When length term is enabled, off-chord points get retained over on-chord ones.
+
+    Build a 5-point trajectory: 4 collinear (on-chord) + 1 off-chord 'detour' point.
+    With cr that picks one interior point, the length term should select the off-chord
+    point instead of the highest-score on-chord one.
+    """
+    # Indices 0,1,2,3 are colinear lat=0; index 2 is a detour at lat=1 (off chord).
+    # Score gives index 1 the highest score so legacy would pick it; length term
+    # should override and pick index 2 because it's off the chord.
+    points = torch.tensor([
+        [0.0, 0.0, 0.0],   # 0 endpoint
+        [1.0, 0.0, 0.25],  # 1 on chord, but high score
+        [2.0, 1.0, 0.50],  # 2 off chord — geometric detour
+        [3.0, 0.0, 0.75],  # 3 on chord
+        [4.0, 0.0, 1.00],  # 4 endpoint
+    ], dtype=torch.float32)
+    scores = torch.tensor([0.0, 1.0, 0.5, 0.0, 0.0], dtype=torch.float32)
+    boundaries = [(0, 5)]
+    # Pick exactly 3 of 5: 2 endpoints + 1 interior.
+    legacy = simplify_with_score_and_coverage(
+        scores, boundaries, compression_ratio=0.6,
+        coverage_lambda=0.0, coverage_sigma_fraction=0.5,
     )
-
-    assert preserved == pytest.approx(1.0)
-    assert metrics.avg_length_loss == pytest.approx(0.0)
+    weighted = simplify_with_score_and_coverage(
+        scores, boundaries, compression_ratio=0.6,
+        coverage_lambda=0.0, coverage_sigma_fraction=0.5,
+        points=points, length_preservation_weight=10.0,
+    )
+    # Legacy with no coverage prefers the high-score index 1 (on-chord).
+    assert legacy[1].item() and not legacy[2].item()
+    # With length weight, the off-chord index 2 wins instead.
+    assert weighted[2].item() and not weighted[1].item()

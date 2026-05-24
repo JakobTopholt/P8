@@ -65,19 +65,23 @@ def test_smaller_range_fraction_reduces_query_footprint() -> None:
     """Assert range footprint controls let high query counts avoid blanket coverage."""
     trajectories = generate_synthetic_ais_data(n_ships=6, n_points_per_ship=80, seed=456)
 
+    # Time fractions are fractions-of-24h; the synthetic span is ~3h, so use small
+    # values to keep coverage below saturation for both workloads.
     default_workload = generate_typed_query_workload(
         trajectories=trajectories,
-        n_queries=80,
+        n_queries=20,
         workload_mix={"range": 1.0},
         seed=8,
+        range_spatial_fraction=0.04,
+        range_time_fraction=0.01,
     )
     small_workload = generate_typed_query_workload(
         trajectories=trajectories,
-        n_queries=80,
+        n_queries=20,
         workload_mix={"range": 1.0},
         seed=8,
-        range_spatial_fraction=0.02,
-        range_time_fraction=0.04,
+        range_spatial_fraction=0.01,
+        range_time_fraction=0.002,
     )
 
     assert small_workload.coverage_fraction is not None

@@ -90,3 +90,48 @@ dmypy.json
 .DS_Store
 .pypirc
 .vscode/settings.json
+
+# ---------------------------------
+# Experiment outputs (qds_v2)
+# Each run writes these under results/<phase>/<run_tag>_<jobid>/ — generated,
+# not source. Saved model checkpoints are also generated and large.
+# ---------------------------------
+QDS/qds_v2/results/
+QDS/qds_v2/src/models/saved_models/
+
+# Per-run output files in case any leak into other directories
+example_run.json
+inference_run.json
+matched_table.txt
+shift_table.txt
+geometric_distortion_table.txt
+length_preservation_table.txt
+eval_query_length_table.txt
+length_retention_whole_set_table.txt
+length_retention_eval_query_table.txt
+length_retention_in_query_table.txt
+length_retention_*.txt
+top_best_queries_table.txt
+top_worst_queries_table.txt
+top_best_queries.csv
+top_worst_queries.csv
+query_points_*.csv
+ML_simplified_eval.csv
+uniform_simplified_eval.csv
+DP_simplified_eval.csv
+*.pt
+
+# ---------------------------------
+# Selected experiment artifacts under AISDATA that SHOULD be tracked.
+# These rules must come AFTER the AISDATA/* and *.pt blanket-ignores above
+# so the negations take effect (last matching rule wins in .gitignore).
+# ---------------------------------
+!AISDATA/model/
+!AISDATA/model/*.pt
+!AISDATA/experiment/
+!AISDATA/experiment/*.txt
+!AISDATA/generalized_experiment/
+!AISDATA/generalized_experiment/*.txt
+!AISDATA/bash_file_cr01/
+!AISDATA/bash_file_cr01/*.sh
+!AISDATA/README.md

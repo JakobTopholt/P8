@@ -8,7 +8,6 @@ import torch
 
 from src.experiments.experiment_config import TypedQueryWorkload
 from src.queries.query_types import normalize_workload_mix, pad_query_features
-from src.queries.workload_diagnostics import range_query_diagnostic
 
 DENSITY_ANCHOR_PROBABILITY = 0.70
 DENSITY_GRID_BINS = 64
@@ -16,18 +15,43 @@ DEFAULT_RANGE_SPATIAL_FRACTION = 0.08
 DEFAULT_RANGE_TIME_FRACTION = 0.15
 DEFAULT_SIMILARITY_RADIUS_FRACTION = 0.04
 DEFAULT_SIMILARITY_TIME_FRACTION = 0.04
+DEFAULT_KNN_T_HALF_WINDOW_FRACTION = 0.25
 DEFAULT_KNN_K = 12
 
+# Time fractions are interpreted as a fraction of a single calendar day (24h),
+# not a fraction of the full data span. This makes absolute window sizes
+# identical between 1-day eval and multi-day train without further scaling.
+SECONDS_PER_DAY = 86400.0
 
-def _trajectory_boundaries(trajectories: list[torch.Tensor]) -> list[tuple[int, int]]:
-    """Return flattened boundaries for generated trajectory lists."""
-    boundaries: list[tuple[int, int]] = []
-    cursor = 0
-    for traj in trajectories:
-        end = cursor + int(traj.shape[0])
-        boundaries.append((cursor, end))
-        cursor = end
-    return boundaries
+
+def _clip_to_anchor_day(
+    anchor_t: float, t_start: float, t_end: float, b: dict[str, float]
+) -> tuple[float, float]:
+    """Clip [t_start, t_end] to the anchor's calendar day (Unix midnight UTC).
+
+    When single_day_clip is enabled, query time bounds are restricted to a
+    single calendar day containing the anchor so train queries on multi-day
+    data look structurally identical to single-day eval queries.
+
+    If the target window fits inside the available day-bounds, it's preserved
+    by shifting (becoming asymmetric around the anchor when necessary). Only
+    when the target exceeds the available day-bounds is it truncated.
+    """
+    day_start = (anchor_t // SECONDS_PER_DAY) * SECONDS_PER_DAY
+    day_end = day_start + SECONDS_PER_DAY
+    avail_lo = max(b["t_min"], day_start)
+    avail_hi = min(b["t_max"], day_end)
+    target_width = t_end - t_start
+    if target_width >= (avail_hi - avail_lo):
+        return avail_lo, avail_hi
+    lo, hi = t_start, t_end
+    if lo < avail_lo:
+        hi += (avail_lo - lo)
+        lo = avail_lo
+    if hi > avail_hi:
+        lo -= (hi - avail_hi)
+        hi = avail_hi
+    return max(avail_lo, lo), min(avail_hi, hi)
 
 
 def _dataset_bounds(points: torch.Tensor) -> dict[str, float]:
@@ -138,6 +162,7 @@ def _make_range_query(
     density_weights: torch.Tensor | None = None,
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
+    single_day_clip: bool = False,
 ) -> dict[str, Any]:
     """Generate one range query. See src/queries/README.md for details."""
     spatial_fraction = float(range_spatial_fraction)
@@ -147,7 +172,15 @@ def _make_range_query(
     p = _pick_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
     lat_w = spatial_fraction * (b["lat_max"] - b["lat_min"]) * (0.5 + torch.rand(1, generator=generator).item())
     lon_w = spatial_fraction * (b["lon_max"] - b["lon_min"]) * (0.5 + torch.rand(1, generator=generator).item())
-    t_w = time_fraction * (b["t_max"] - b["t_min"]) * (0.5 + torch.rand(1, generator=generator).item())
+    t_w = time_fraction * SECONDS_PER_DAY * (0.5 + torch.rand(1, generator=generator).item())
+    anchor_t = float(p[0].item())
+    raw_t_start = anchor_t - t_w
+    raw_t_end = anchor_t + t_w
+    if single_day_clip:
+        t_start, t_end = _clip_to_anchor_day(anchor_t, raw_t_start, raw_t_end, b)
+    else:
+        t_start = max(b["t_min"], raw_t_start)
+        t_end = min(b["t_max"], raw_t_end)
     return {
         "type": "range",
         "params": {
@@ -155,8 +188,8 @@ def _make_range_query(
             "lat_max": float(min(b["lat_max"], p[1].item() + lat_w)),
             "lon_min": float(max(b["lon_min"], p[2].item() - lon_w)),
             "lon_max": float(min(b["lon_max"], p[2].item() + lon_w)),
-            "t_start": float(max(b["t_min"], p[0].item() - t_w)),
-            "t_end": float(min(b["t_max"], p[0].item() + t_w)),
+            "t_start": float(t_start),
+            "t_end": float(t_end),
         },
     }
 
@@ -168,17 +201,26 @@ def _make_knn_query(
     anchor_mask: torch.Tensor | None = None,
     density_weights: torch.Tensor | None = None,
     knn_k: int | None = DEFAULT_KNN_K,
+    knn_t_half_window_fraction: float = DEFAULT_KNN_T_HALF_WINDOW_FRACTION,
+    single_day_clip: bool = False,
 ) -> dict[str, Any]:
     """Generate one kNN query. See src/queries/README.md for details."""
     p = _pick_point(points, generator, candidate_mask=anchor_mask, density_weights=density_weights)
     k = int(knn_k) if knn_k is not None and int(knn_k) > 0 else int(torch.randint(3, 8, (1,), generator=generator).item())
+    anchor_t = float(p[0].item())
+    raw_half = float(knn_t_half_window_fraction * SECONDS_PER_DAY)
+    if single_day_clip:
+        lo, hi = _clip_to_anchor_day(anchor_t, anchor_t - raw_half, anchor_t + raw_half, b)
+        t_half = min(anchor_t - lo, hi - anchor_t)
+    else:
+        t_half = raw_half
     return {
         "type": "knn",
         "params": {
             "lat": float(p[1].item()),
             "lon": float(p[2].item()),
-            "t_center": float(p[0].item()),
-            "t_half_window": float(0.25 * (b["t_max"] - b["t_min"])),  # 25% of day ≈ 6 h
+            "t_center": anchor_t,
+            "t_half_window": float(max(0.0, t_half)),
             "k": max(1, k),
         },
     }
@@ -190,10 +232,13 @@ def _make_similarity_query(
     b: dict[str, float],
     generator: torch.Generator,
     anchor_mask: torch.Tensor | None = None,
+    similarity_time_fraction: float = DEFAULT_SIMILARITY_TIME_FRACTION,
+    similarity_top_k: int = 5,
+    single_day_clip: bool = False,
 ) -> dict[str, Any]:
     """Generate one similarity query with a reference snippet. See src/queries/README.md for details."""
     p = _pick_point(points, generator, candidate_mask=anchor_mask)
-    t_half = DEFAULT_SIMILARITY_TIME_FRACTION * (b["t_max"] - b["t_min"])
+    t_half = similarity_time_fraction * SECONDS_PER_DAY
     radius = DEFAULT_SIMILARITY_RADIUS_FRACTION * max(b["lat_max"] - b["lat_min"], b["lon_max"] - b["lon_min"])
 
     traj_idx = int(torch.randint(0, len(trajectories), (1,), generator=generator).item())
@@ -201,15 +246,24 @@ def _make_similarity_query(
     center = int(torch.randint(2, max(3, traj.shape[0] - 2), (1,), generator=generator).item())
     ref = traj[max(0, center - 2) : min(traj.shape[0], center + 3), :3]
 
+    anchor_t = float(p[0].item())
+    raw_t_start = anchor_t - t_half
+    raw_t_end = anchor_t + t_half
+    if single_day_clip:
+        t_start, t_end = _clip_to_anchor_day(anchor_t, raw_t_start, raw_t_end, b)
+    else:
+        t_start = max(b["t_min"], raw_t_start)
+        t_end = min(b["t_max"], raw_t_end)
+
     return {
         "type": "similarity",
         "params": {
             "lat_query_centroid": float(p[1].item()),
             "lon_query_centroid": float(p[2].item()),
-            "t_start": float(max(b["t_min"], p[0].item() - t_half)),
-            "t_end": float(min(b["t_max"], p[0].item() + t_half)),
+            "t_start": float(t_start),
+            "t_end": float(t_end),
             "radius": float(radius),
-            "top_k": 5,
+            "top_k": int(max(1, similarity_top_k)),
         },
         "reference": ref.tolist(),
     }
@@ -223,6 +277,7 @@ def _make_clustering_query(
     density_weights: torch.Tensor | None = None,
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
+    single_day_clip: bool = False,
 ) -> dict[str, Any]:
     """Generate one clustering query. See src/queries/README.md for details."""
     rq = _make_range_query(
@@ -233,6 +288,7 @@ def _make_clustering_query(
         density_weights=density_weights,
         range_spatial_fraction=range_spatial_fraction,
         range_time_fraction=range_time_fraction,
+        single_day_clip=single_day_clip,
     )
     params = dict(rq["params"])
     params.update(
@@ -364,6 +420,10 @@ def _make_query(
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
     knn_k: int | None = DEFAULT_KNN_K,
+    knn_t_half_window_fraction: float = DEFAULT_KNN_T_HALF_WINDOW_FRACTION,
+    similarity_time_fraction: float = DEFAULT_SIMILARITY_TIME_FRACTION,
+    similarity_top_k: int = 5,
+    single_day_clip: bool = False,
 ) -> dict[str, Any]:
     """Generate one query of a named type."""
     if name == "range":
@@ -375,6 +435,7 @@ def _make_query(
             density_weights=density_weights,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
+            single_day_clip=single_day_clip,
         )
     if name == "knn":
         return _make_knn_query(
@@ -384,9 +445,20 @@ def _make_query(
             anchor_mask=anchor_mask,
             density_weights=density_weights,
             knn_k=knn_k,
+            knn_t_half_window_fraction=knn_t_half_window_fraction,
+            single_day_clip=single_day_clip,
         )
     if name == "similarity":
-        return _make_similarity_query(points, trajectories, b, generator, anchor_mask=anchor_mask)
+        return _make_similarity_query(
+            points,
+            trajectories,
+            b,
+            generator,
+            anchor_mask=anchor_mask,
+            similarity_time_fraction=similarity_time_fraction,
+            similarity_top_k=similarity_top_k,
+            single_day_clip=single_day_clip,
+        )
     if name == "clustering":
         return _make_clustering_query(
             points,
@@ -396,6 +468,7 @@ def _make_query(
             density_weights=density_weights,
             range_spatial_fraction=range_spatial_fraction,
             range_time_fraction=range_time_fraction,
+            single_day_clip=single_day_clip,
         )
     raise ValueError(f"Unsupported query type: {name}")
 
@@ -404,7 +477,6 @@ def _finalize_workload(
     points: torch.Tensor,
     typed: list[dict[str, Any]],
     generator: torch.Generator,
-    generation_diagnostics: dict[str, Any] | None = None,
 ) -> TypedQueryWorkload:
     """Shuffle, featurize, and attach point-coverage metadata."""
     if typed:
@@ -423,89 +495,7 @@ def _finalize_workload(
         coverage_fraction=coverage_fraction,
         covered_points=covered_points,
         total_points=total_points,
-        generation_diagnostics=generation_diagnostics,
     )
-
-
-def _range_acceptance_enabled(
-    range_min_point_hits: int | None,
-    range_max_point_hit_fraction: float | None,
-    range_min_trajectory_hits: int | None,
-    range_max_trajectory_hit_fraction: float | None,
-    range_max_box_volume_fraction: float | None,
-    range_duplicate_iou_threshold: float | None,
-) -> bool:
-    """Return whether any range acceptance filter is active."""
-    return any(
-        value is not None
-        for value in (
-            range_min_point_hits,
-            range_max_point_hit_fraction,
-            range_min_trajectory_hits,
-            range_max_trajectory_hit_fraction,
-            range_max_box_volume_fraction,
-            range_duplicate_iou_threshold,
-        )
-    )
-
-
-def _range_acceptance_state(enabled: bool, max_attempts: int | None, requested_queries: int) -> dict[str, Any]:
-    """Create JSON-safe acceptance counters for workload generation."""
-    return {
-        "enabled": bool(enabled),
-        "attempts": 0,
-        "accepted": 0,
-        "rejected": 0,
-        "rejection_reasons": {},
-        "exhausted": False,
-        "max_attempts": int(max_attempts) if max_attempts is not None else None,
-        "requested_queries": int(requested_queries),
-    }
-
-
-def _record_rejection(state: dict[str, Any], reason: str) -> None:
-    """Update range acceptance rejection counters."""
-    state["rejected"] = int(state.get("rejected", 0)) + 1
-    reasons = state.setdefault("rejection_reasons", {})
-    reasons[reason] = int(reasons.get(reason, 0)) + 1
-
-
-def _accept_range_query(
-    query: dict[str, Any],
-    points: torch.Tensor,
-    boundaries: list[tuple[int, int]],
-    accepted_range_queries: list[dict[str, Any]],
-    bounds: dict[str, float],
-    *,
-    range_min_point_hits: int | None,
-    range_max_point_hit_fraction: float | None,
-    range_min_trajectory_hits: int | None,
-    range_max_trajectory_hit_fraction: float | None,
-    range_max_box_volume_fraction: float | None,
-    range_duplicate_iou_threshold: float | None,
-) -> tuple[bool, str]:
-    """Validate a generated range query against optional acceptance filters."""
-    diagnostic = range_query_diagnostic(
-        points,
-        boundaries,
-        query,
-        query_index=len(accepted_range_queries),
-        previous_range_queries=accepted_range_queries,
-        bounds=bounds,
-        max_point_hit_fraction=range_max_point_hit_fraction,
-        max_trajectory_hit_fraction=range_max_trajectory_hit_fraction,
-        max_box_volume_fraction=range_max_box_volume_fraction,
-        duplicate_iou_threshold=range_duplicate_iou_threshold,
-    )
-    if range_min_point_hits is not None and diagnostic["point_hits"] < int(range_min_point_hits):
-        return False, "too_few_point_hits"
-    if range_min_trajectory_hits is not None and diagnostic["trajectory_hits"] < int(range_min_trajectory_hits):
-        return False, "too_few_trajectory_hits"
-    if diagnostic["is_too_broad"]:
-        return False, "too_broad"
-    if range_duplicate_iou_threshold is not None and diagnostic["near_duplicate_of"] is not None:
-        return False, "near_duplicate"
-    return True, "accepted"
 
 
 def generate_typed_query_workload(
@@ -518,14 +508,11 @@ def generate_typed_query_workload(
     range_spatial_fraction: float = DEFAULT_RANGE_SPATIAL_FRACTION,
     range_time_fraction: float = DEFAULT_RANGE_TIME_FRACTION,
     knn_k: int | None = DEFAULT_KNN_K,
+    knn_t_half_window_fraction: float = DEFAULT_KNN_T_HALF_WINDOW_FRACTION,
+    similarity_time_fraction: float = DEFAULT_SIMILARITY_TIME_FRACTION,
+    similarity_top_k: int = 5,
     front_load_knn: int = 0,
-    range_min_point_hits: int | None = None,
-    range_max_point_hit_fraction: float | None = None,
-    range_min_trajectory_hits: int | None = None,
-    range_max_trajectory_hit_fraction: float | None = None,
-    range_max_box_volume_fraction: float | None = None,
-    range_duplicate_iou_threshold: float | None = None,
-    range_acceptance_max_attempts: int | None = None,
+    single_day_clip: bool = False,
 ) -> TypedQueryWorkload:
     """Generate a mixed typed-query workload and padded feature tensor. See src/queries/README.md for details.
 
@@ -535,7 +522,6 @@ def generate_typed_query_workload(
     """
     points = torch.cat(trajectories, dim=0)
     b = _dataset_bounds(points)
-    boundaries = _trajectory_boundaries(trajectories)
 
     mix = normalize_workload_mix(workload_mix)
     g = torch.Generator().manual_seed(int(seed))
@@ -544,66 +530,6 @@ def generate_typed_query_workload(
     names = list(mix.keys())
     weights = torch.tensor([mix[n] for n in names], dtype=torch.float32)
     coverage_target = _normalize_target_coverage(target_coverage)
-    acceptance_enabled = _range_acceptance_enabled(
-        range_min_point_hits,
-        range_max_point_hit_fraction,
-        range_min_trajectory_hits,
-        range_max_trajectory_hit_fraction,
-        range_max_box_volume_fraction,
-        range_duplicate_iou_threshold,
-    )
-    requested_for_attempts = max(1, int(n_queries))
-    default_max_attempts = 50 * requested_for_attempts if acceptance_enabled else None
-    max_range_attempts = (
-        int(range_acceptance_max_attempts)
-        if range_acceptance_max_attempts is not None
-        else default_max_attempts
-    )
-    if max_range_attempts is not None and max_range_attempts <= 0:
-        raise ValueError("range_acceptance_max_attempts must be positive when provided.")
-    range_acceptance = _range_acceptance_state(acceptance_enabled, max_range_attempts, requested_for_attempts)
-    accepted_range_queries: list[dict[str, Any]] = []
-
-    def build_query(name: str, anchor_mask: torch.Tensor | None = None) -> dict[str, Any] | None:
-        """Build one query, applying optional range acceptance filters."""
-        if name == "range" and acceptance_enabled:
-            if max_range_attempts is not None and int(range_acceptance["attempts"]) >= max_range_attempts:
-                range_acceptance["exhausted"] = True
-                return None
-            range_acceptance["attempts"] = int(range_acceptance["attempts"]) + 1
-        query = _make_query(
-            name,
-            points,
-            trajectories,
-            b,
-            g,
-            anchor_mask=anchor_mask,
-            density_weights=density_weights,
-            range_spatial_fraction=range_spatial_fraction,
-            range_time_fraction=range_time_fraction,
-            knn_k=knn_k,
-        )
-        if name != "range" or not acceptance_enabled:
-            return query
-        accepted, reason = _accept_range_query(
-            query,
-            points,
-            boundaries,
-            accepted_range_queries,
-            b,
-            range_min_point_hits=range_min_point_hits,
-            range_max_point_hit_fraction=range_max_point_hit_fraction,
-            range_min_trajectory_hits=range_min_trajectory_hits,
-            range_max_trajectory_hit_fraction=range_max_trajectory_hit_fraction,
-            range_max_box_volume_fraction=range_max_box_volume_fraction,
-            range_duplicate_iou_threshold=range_duplicate_iou_threshold,
-        )
-        if not accepted:
-            _record_rejection(range_acceptance, reason)
-            return None
-        range_acceptance["accepted"] = int(range_acceptance["accepted"]) + 1
-        accepted_range_queries.append({"params": query["params"], "query_index": len(accepted_range_queries)})
-        return query
 
     if coverage_target is not None:
         requested_queries = max(1, int(n_queries))
@@ -616,17 +542,43 @@ def generate_typed_query_workload(
         query_limit = max(requested_queries, int(max_queries) if max_queries is not None else requested_queries)
 
         # Generate kNN queries first so they always get their initial quota even
-        # when other types advance coverage faster.
+        # when other types advance coverage faster. SKIP per-query coverage
+        # updates here: each kNN query covers ~k×~few-points (~60 typically),
+        # so updating the coverage mask after every front-load query is ~99%
+        # wasted Python overhead. Compute the kNN front-load's contribution to
+        # `covered` ONCE after the loop (union of all their point masks).
         if front_load_knn > 0 and "knn" in names:
             knn_idx = names.index("knn")
+            front_load_queries: list[dict[str, Any]] = []
             for _ in range(min(front_load_knn, query_limit)):
-                query = build_query("knn", anchor_mask=None)
-                if query is None:
-                    break
+                query = _make_query(
+                    "knn", points, trajectories, b, g,
+                    anchor_mask=None,
+                    density_weights=density_weights,
+                    range_spatial_fraction=range_spatial_fraction,
+                    range_time_fraction=range_time_fraction,
+                    knn_k=knn_k,
+                    knn_t_half_window_fraction=knn_t_half_window_fraction,
+                    similarity_time_fraction=similarity_time_fraction,
+                    similarity_top_k=similarity_top_k,
+                    single_day_clip=single_day_clip,
+                )
                 typed.append(query)
+                front_load_queries.append(query)
                 counts[knn_idx] += 1
-                covered |= point_coverage_mask_for_query(points, query)
+            # One-shot union of front-load kNN coverage (much faster than
+            # incrementally updating after each query).
+            if front_load_queries:
+                covered |= query_coverage_mask(points, front_load_queries)
 
+        # Buffer kNN queries during the proportional loop and apply their
+        # coverage in batches. kNN per-query coverage is ~60 points (k=12-50 ×
+        # representatives) on multi-million-point datasets — the O(N) per-query
+        # haversine + topk cost dominates while the marginal coverage signal
+        # is negligible. Other types (range/clustering/similarity) keep the
+        # per-query update since each one moves coverage by 0.1-1%.
+        knn_buffer: list[dict[str, Any]] = []
+        KNN_COVERAGE_BATCH = 100  # flush every N kNN queries
         while len(typed) < query_limit:
             current_coverage = float(covered.float().mean().item()) if points.shape[0] > 0 else 0.0
             if len(typed) >= requested_queries and current_coverage >= coverage_target:
@@ -635,16 +587,37 @@ def generate_typed_query_workload(
             type_idx = int(torch.argmax(desired - counts.float()).item())
             name = names[type_idx]
             anchor_mask = (~covered) if current_coverage < coverage_target else None
-            query = build_query(name, anchor_mask=anchor_mask)
-            if query is None:
-                if name == "range" and range_acceptance.get("exhausted"):
-                    break
-                continue
+            query = _make_query(
+                name,
+                points,
+                trajectories,
+                b,
+                g,
+                anchor_mask=anchor_mask,
+                density_weights=density_weights,
+                range_spatial_fraction=range_spatial_fraction,
+                range_time_fraction=range_time_fraction,
+                knn_k=knn_k,
+                knn_t_half_window_fraction=knn_t_half_window_fraction,
+                similarity_time_fraction=similarity_time_fraction,
+                similarity_top_k=similarity_top_k,
+                single_day_clip=single_day_clip,
+            )
             typed.append(query)
             counts[type_idx] += 1
-            covered |= point_coverage_mask_for_query(points, query)
+            if name == "knn":
+                knn_buffer.append(query)
+                if len(knn_buffer) >= KNN_COVERAGE_BATCH:
+                    covered |= query_coverage_mask(points, knn_buffer)
+                    knn_buffer.clear()
+            else:
+                covered |= point_coverage_mask_for_query(points, query)
+        # Flush any remaining buffered kNN queries.
+        if knn_buffer:
+            covered |= query_coverage_mask(points, knn_buffer)
+            knn_buffer.clear()
 
-        return _finalize_workload(points, typed, g, generation_diagnostics={"range_acceptance": range_acceptance})
+        return _finalize_workload(points, typed, g)
 
     counts = torch.floor(weights * n_queries).to(torch.long)
     while int(counts.sum().item()) < n_queries:
@@ -657,17 +630,36 @@ def generate_typed_query_workload(
         knn_idx = names.index("knn")
         n_front = min(front_load_knn, int(counts[knn_idx].item()))
         for _ in range(n_front):
-            query = build_query("knn")
-            if query is not None:
-                typed.append(query)
+            typed.append(_make_query(
+                "knn", points, trajectories, b, g,
+                density_weights=density_weights,
+                range_spatial_fraction=range_spatial_fraction,
+                range_time_fraction=range_time_fraction,
+                knn_k=knn_k,
+                knn_t_half_window_fraction=knn_t_half_window_fraction,
+                similarity_time_fraction=similarity_time_fraction,
+                similarity_top_k=similarity_top_k,
+                single_day_clip=single_day_clip,
+            ))
         counts[knn_idx] = max(0, counts[knn_idx] - n_front)
     for name, count in zip(names, counts.tolist()):
         for _ in range(int(count)):
-            query = build_query(name)
-            if query is None:
-                if name == "range" and range_acceptance.get("exhausted"):
-                    break
-                continue
-            typed.append(query)
+            typed.append(
+                _make_query(
+                    name,
+                    points,
+                    trajectories,
+                    b,
+                    g,
+                    density_weights=density_weights,
+                    range_spatial_fraction=range_spatial_fraction,
+                    range_time_fraction=range_time_fraction,
+                    knn_k=knn_k,
+                    knn_t_half_window_fraction=knn_t_half_window_fraction,
+                    similarity_time_fraction=similarity_time_fraction,
+                    similarity_top_k=similarity_top_k,
+                    single_day_clip=single_day_clip,
+                )
+            )
 
-    return _finalize_workload(points, typed, g, generation_diagnostics={"range_acceptance": range_acceptance})
+    return _finalize_workload(points, typed, g)

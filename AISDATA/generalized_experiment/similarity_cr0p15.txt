@@ -1,0 +1,85 @@
+[load-checkpoint] /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/model/model_similarity_cr0p15.pt
+[device] inference on cuda
+[device] NVIDIA L4
+  model_type=turn_aware  epochs_trained=50  train_mix={'similarity': 1.0}  eval_mix={'similarity': 1.0}
+[eval-config] eval_mix={'similarity': 1.0}  compression_ratio=0.15
+[load-data] reading CSV: /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/preproessed_AIS_files/preprocessed_2026-02-10.csv
+[load-data] 1713 trajectories in 41.67s
+[dataset] points=7612134  trajectories=1713
+[workload] loading saved queries from /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/Query_border_files/run_experiment_similarity_cr0p15_7day_0202_to_0208_eval_2026-02-10_cov0p30_833298
+  [read_queries_geojson] WARNING: 114 similarity queries loaded without 'reference' field — feature dims 5:8 will be zero.
+[workload] generated 114 queries in 1.13s  coverage=88.56% (6741340/7612134)
+[no-query-model] MLQDS will receive an EMPTY workload — eval queries are unchanged.
+[eval] precomputing query cache ...
+[eval] query cache built in 29.58s
+[eval] MLQDS ...
+[eval] MLQDS done in 3640.41s
+[eval] uniform ...
+[eval] uniform done in 29.24s
+[eval] DouglasPeucker ...
+[eval] DouglasPeucker done in 58.37s
+[eval] computing Scope-3 in-query retention ...
+[eval] Scope-3 computed in 7.01s
+
+Matched-workload AnswerF1 table (no-query model; per-type breakdown + Diff vs DP)
+Method                      AnswerF1  CombinedF1 Compression    AvgPtGap   Latency(ms)        Type
+--------------------------------------------------------------------------------------------------
+MLQDS                       0.989474    0.258077      0.1501        6.67    3613838.54         all
+  - range                   0.000000    0.000000                                             range
+  - knn                     0.000000    0.000000                                               knn
+  - similarity              0.989474    0.258077                                        similarity
+  - clustering              0.000000    0.000000                                        clustering
+uniform                     0.996491    0.259975      0.1501        6.67        135.87         all
+  - range                   0.000000    0.000000                                             range
+  - knn                     0.000000    0.000000                                               knn
+  - similarity              0.996491    0.259975                                        similarity
+  - clustering              0.000000    0.000000                                        clustering
+DouglasPeucker              0.957895    0.254144      0.1501        6.67      34791.20         all
+  - range                   0.000000    0.000000                                             range
+  - knn                     0.000000    0.000000                                               knn
+  - similarity              0.957895    0.254144                                        similarity
+  - clustering              0.000000    0.000000                                        clustering
+--------------------------------------------------------------------------------------------------
+Diff vs MLQDS (AnswerF1 / CombinedF1; abs and % vs baseline)
+  vs uniform               -0.007018   -0.001898                                               all
+      (% vs baseline)          -0.7%       -0.7%                                               all
+    - range                +0.000000   +0.000000                                             range
+      (% vs baseline)            n/a         n/a                                             range
+    - knn                  +0.000000   +0.000000                                               knn
+      (% vs baseline)            n/a         n/a                                               knn
+    - similarity           -0.007018   -0.001898                                        similarity
+      (% vs baseline)          -0.7%       -0.7%                                        similarity
+    - clustering           +0.000000   +0.000000                                        clustering
+      (% vs baseline)            n/a         n/a                                        clustering
+  vs DouglasPeucker        +0.031579   +0.003932                                               all
+      (% vs baseline)          +3.3%       +1.5%                                               all
+    - range                +0.000000   +0.000000                                             range
+      (% vs baseline)            n/a         n/a                                             range
+    - knn                  +0.000000   +0.000000                                               knn
+      (% vs baseline)            n/a         n/a                                               knn
+    - similarity           +0.031579   +0.003932                                        similarity
+      (% vs baseline)          +3.3%       +1.5%                                        similarity
+    - clustering           +0.000000   +0.000000                                        clustering
+      (% vs baseline)            n/a         n/a                                        clustering
+
+Whole-dataset F1 table (aggregate across all eval queries)
+Method                        AnswerF1    CombinedF1   Compression
+------------------------------------------------------------------
+MLQDS                         0.989474      0.258077        0.1501
+uniform                       0.996491      0.259975        0.1501
+DouglasPeucker                0.957895      0.254144        0.1501
+
+Length retention — Scope 1: whole eval set (every trajectory ≥2 points)
+Method                    avg_orig_km  avg_simp_km  Retention   NTraj
+---------------------------------------------------------------------
+MLQDS                        117.9284     117.3085     0.9947    1710
+uniform                      117.9284     116.4909     0.9878    1710
+DouglasPeucker               117.9284     117.3021     0.9947    1710
+
+Length retention — Scope 3: in-query segments (first_in-1 to last_in+1)
+Method                    avg_orig_km  avg_simp_km  Retention    NSeg
+---------------------------------------------------------------------
+MLQDS                         31.6270      30.0762     0.9510     568
+uniform                       31.6270      28.8477     0.9121     568
+DouglasPeucker                31.6270      31.3474     0.9912     568
+[write] results -> /ceph/home/student.aau.dk/hq11zw/P8/QDS/qds_v2/results/noquery_generalize/noqgen_similarity_cr0p15_850523

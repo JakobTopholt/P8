@@ -13,6 +13,7 @@ import torch
 from src.experiments.experiment_config import TypedQueryWorkload
 from src.simplification.simplify_trajectories import (
     evenly_spaced_indices,
+    simplify_with_score_and_coverage,
     simplify_with_scores,
     simplify_with_temporal_score_hybrid,
 )
@@ -44,19 +45,27 @@ class MLQDSMethod:
     workload_mix: dict[str, float]
     temporal_fraction: float = 0.75
     diversity_bonus: float = 0.05
+    simplification_mode: str = "score_coverage"
+    coverage_lambda: float = 0.5
+    coverage_sigma_fraction: float = 0.5
+    length_preservation_weight: float = 0.0
 
     def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
         """Simplify using workload-weighted typed scores.
 
-        If the workload contains no queries, keep every point because there is
-        no query F1 objective to optimize. Otherwise, use the learned workload-
-        weighted score with a temporal-coverage base, then fill the remaining
-        budget with learned query-aware scores.
+        With an EMPTY workload, the model still runs (cross-attention returns
+        zeros for n_queries=0; type heads see only the transformer-encoder
+        output ``h``). This produces a "no-query" importance score reflecting
+        whatever the encoder learned during training — useful for testing
+        whether a single-workload model generalises to new days without
+        per-day query generation. The early-return-keep-all-points behaviour
+        was removed (May 2026) to enable this test path. Note: the model was
+        trained with queries always present, so scores under the no-query path
+        are uncalibrated; quality is workload-dependent and must be measured
+        empirically (see benchmark_inference_latency.py for a tiny harness).
 
         See ``src/evaluation/README.md`` for details.
         """
-        if not self.workload.typed_queries:
-            return torch.ones((points.shape[0],), dtype=torch.bool, device=points.device)
 
         point_dim = self.trained.model.point_dim
         p, q = self.trained.scaler.transform(points[:, :point_dim], self.workload.query_features)
@@ -77,20 +86,46 @@ class MLQDSMethod:
         # Rank-normalize per head within each trajectory before mixing so
         # head magnitudes (e.g. range head saturating high while sim head stays
         # low) don't dominate the workload-weighted sum.
+        #
+        # Optimization: vectorize the inner per-type loop into a single
+        # argsort over (length, n_active_types). Filter to active types (mix>0)
+        # first so single-workload inference (e.g. range-only) does ~4x less
+        # argsort work than the old per-type Python loop. Identical math:
+        # argsort().argsort() is the rank operator, applied per column.
+        active_mask = mix > 0.0
+        active_indices = torch.where(active_mask)[0]
+        active_weights = mix[active_indices].to(pred.device)
         score = pred.new_zeros((pred.shape[0],))
-        n_types = pred.shape[1]
+        if active_indices.numel() == 0:
+            # workload_mix collapsed to zero — fall back to uniform across types
+            active_indices = torch.arange(pred.shape[1])
+            active_weights = torch.full(
+                (active_indices.numel(),), 1.0 / float(active_indices.numel()),
+                device=pred.device,
+            )
         for s, e in boundaries:
             length = e - s
             if length <= 0:
                 continue
             denom = float(max(1, length - 1))
-            for t_idx in range(n_types):
-                w = float(mix[t_idx].item())
-                if w <= 0.0:
-                    continue
-                head = pred[s:e, t_idx]
-                ranks = head.argsort().argsort().to(torch.float32) / denom
-                score[s:e] = score[s:e] + w * ranks
+            heads = pred[s:e, active_indices]  # (length, n_active)
+            # argsort(dim=0).argsort(dim=0) gives per-column ranks within the
+            # trajectory — same as the old loop, batched across active types.
+            ranks = heads.argsort(dim=0).argsort(dim=0).to(torch.float32) / denom
+            score[s:e] = (ranks * active_weights.unsqueeze(0)).sum(dim=1)
+        mode = str(self.simplification_mode).lower()
+        if mode == "score_coverage":
+            return simplify_with_score_and_coverage(
+                score,
+                boundaries,
+                compression_ratio,
+                coverage_lambda=self.coverage_lambda,
+                coverage_sigma_fraction=self.coverage_sigma_fraction,
+                points=points if self.length_preservation_weight > 0.0 else None,
+                length_preservation_weight=self.length_preservation_weight,
+            )
+        if mode == "topk":
+            return simplify_with_scores(score, boundaries, compression_ratio)
         return simplify_with_temporal_score_hybrid(
             score,
             boundaries,
@@ -98,6 +133,20 @@ class MLQDSMethod:
             temporal_fraction=self.temporal_fraction,
             diversity_bonus=self.diversity_bonus,
         )
+
+
+@dataclass
+class RandomMethod:
+    """Random baseline method. See src/evaluation/README.md for details."""
+
+    name: str = "Random"
+    seed: int = 0
+
+    def simplify(self, points: torch.Tensor, boundaries: list[tuple[int, int]], compression_ratio: float) -> torch.Tensor:
+        """Retain random points per trajectory at matched ratio. See src/evaluation/README.md for details."""
+        g = torch.Generator().manual_seed(int(self.seed))
+        scores = torch.rand((points.shape[0],), generator=g)
+        return simplify_with_scores(scores, boundaries, compression_ratio)
 
 
 @dataclass

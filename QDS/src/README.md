@@ -16,7 +16,7 @@ data -> queries -> training -> simplification -> evaluation -> experiments.
 | `simplification/` | Trajectory-local top-k simplification. |
 | `evaluation/` | Baselines, F1 metrics, and tabular reporting. |
 | `experiments/` | CLI parsing, config dataclasses, and the end-to-end pipeline. |
-| `visualization/` | Minimal extension point for plotting utilities; current run outputs are JSON, CSV, GeoJSON, and fixed-width tables. |
+| `visualization/` | Placeholder package for future plotting utilities. |
 
 ## Module Notes
 
