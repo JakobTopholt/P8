@@ -1006,6 +1006,66 @@ def print_length_retention_in_query_by_length_table(
     return "\n".join(lines)
 
 
+def print_length_retention_whole_set_by_length_table(
+    bucketed_aggs: dict[str, dict[str, dict[str, float]]],
+    bucket_order: list[str],
+) -> str:
+    """Render Scope-1 WHOLE-trajectory retention split by total trajectory length.
+
+    ``bucketed_aggs`` maps method -> bucket_label -> {sum_orig_km, sum_simp_km,
+    sum_ratio, n_traj} (from ``compute_whole_traj_retention_bucketed``). One
+    sub-table is printed per length bucket. Two retention columns are shown:
+    ``Ret_wt`` = length-weighted (sum_simp_km / sum_orig_km, comparable to the
+    headline Scope-1 number) and ``Ret_mean`` = unweighted per-trajectory mean
+    (every trajectory equal weight), which surfaces the small-trajectory loss the
+    weighted aggregate hides. ``avg_orig_km`` here is the WHOLE trajectory length.
+    """
+    lines: list[str] = [
+        "Length retention — Scope 1 by trajectory length (WHOLE trajectory, bucketed by total km)",
+        "avg_orig_km/avg_ret_km = avg whole-traj length original/retained; Ret_wt = length-weighted (sum_simp/sum_orig);",
+        "Ret_mean = unweighted per-trajectory mean; pts_kept/pts_rem = avg data points kept/removed per trajectory; NTraj = trajectories scored",
+    ]
+    col1, col2, col4, col5, col6 = 26, 12, 9, 9, 8
+    for bucket in bucket_order:
+        n_any = max(
+            (int(bucketed_aggs[m].get(bucket, {}).get("n_traj", 0)) for m in bucketed_aggs),
+            default=0,
+        )
+        lines.append(f"\n  [{bucket} km]  (NTraj={n_any})")
+        header = (
+            f"{'Method':<{col1}}"
+            f"{'avg_orig_km':>{col2}}"
+            f"{'avg_ret_km':>{col2}}"
+            f"{'Ret_wt':>{col4}}"
+            f"{'Ret_mean':>{col4}}"
+            f"{'pts_kept':>{col5}}"
+            f"{'pts_rem':>{col5}}"
+            f"{'NTraj':>{col6}}"
+        )
+        lines.append(header)
+        lines.append("-" * len(header))
+        for name, per_bucket in bucketed_aggs.items():
+            agg = per_bucket.get(bucket, {})
+            n = int(agg.get("n_traj", 0))
+            sum_orig = float(agg.get("sum_orig_km", 0.0))
+            sum_simp = float(agg.get("sum_simp_km", 0.0))
+            ret_wt = 1.0 if sum_orig <= 1e-9 else max(0.0, min(1.0, sum_simp / sum_orig))
+            ret_mean = (float(agg.get("sum_ratio", 0.0)) / n) if n > 0 else 0.0
+            pts_kept = (float(agg.get("sum_pts_kept", 0)) / n) if n > 0 else 0.0
+            pts_rem = ((float(agg.get("sum_pts", 0)) - float(agg.get("sum_pts_kept", 0))) / n) if n > 0 else 0.0
+            lines.append(
+                f"{name:<{col1}}"
+                f"{(sum_orig / n if n > 0 else 0.0):>{col2}.4f}"
+                f"{(sum_simp / n if n > 0 else 0.0):>{col2}.4f}"
+                f"{ret_wt:>{col4}.4f}"
+                f"{ret_mean:>{col4}.4f}"
+                f"{pts_kept:>{col5}.1f}"
+                f"{pts_rem:>{col5}.1f}"
+                f"{n:>{col6}d}"
+            )
+    return "\n".join(lines)
+
+
 def print_shift_table(shift_grid: dict[str, dict[str, float]]) -> str:
     """Render train-mix to eval-mix aggregate F1 matrix table. See src/evaluation/README.md for details."""
     eval_cols = sorted({k for row in shift_grid.values() for k in row.keys()})

@@ -315,6 +315,20 @@ SCOPE3_LENGTH_BUCKETS: list[tuple[float, float, str]] = [
     (0.0, 15.0, "0-15"),
 ]
 
+# Finer buckets for the whole-trajectory (Scope-1) length table: the 0-15 km
+# class is split into 5-15 and 0-5 so the smallest trajectories — where length
+# loss is largest — are resolved separately.
+SCOPE1_LENGTH_BUCKETS: list[tuple[float, float, str]] = [
+    (200.0, float("inf"), "200+"),
+    (150.0, 200.0, "150-200"),
+    (100.0, 150.0, "100-150"),
+    (50.0, 100.0, "50-100"),
+    (25.0, 50.0, "25-50"),
+    (15.0, 25.0, "15-25"),
+    (5.0, 15.0, "5-15"),
+    (0.0, 5.0, "0-5"),
+]
+
 
 def _bucket_label_for_length(full_km: float, buckets: list[tuple[float, float, str]]) -> str | None:
     """Return the bucket label whose [lo, hi) range contains full_km, else None."""
@@ -403,6 +417,65 @@ def compute_in_query_length_retention_bucketed(
         out[label]["sum_orig_km"] += float(orig_km)
         out[label]["sum_simp_km"] += float(simp_km)
         out[label]["n_segments"] += 1
+    return out
+
+
+def compute_whole_traj_retention_bucketed(
+    points: torch.Tensor,
+    boundaries: list[tuple[int, int]],
+    retained_mask: torch.Tensor,
+    full_traj_km: list[float],
+    buckets: list[tuple[float, float, str]] = SCOPE1_LENGTH_BUCKETS,
+) -> dict[str, dict[str, float]]:
+    """Scope-1 WHOLE-trajectory retention split into buckets by total length.
+
+    Companion to ``compute_in_query_length_retention_bucketed`` but over the
+    ENTIRE trajectory rather than the in-query segment: each trajectory's full
+    orig/simp km (same definition as ``_per_trajectory_length_preserved``) is
+    accumulated into the bucket of its own full polyline length. This answers
+    "for trajectories of a given total length, how much of their length is kept"
+    — and, unlike the single length-weighted whole-set ratio, it exposes the
+    small-vs-large trajectory gap that the aggregate hides.
+
+    Also accumulates point counts per bucket (original / kept) so callers can
+    report how many data points are kept vs removed on average per trajectory.
+
+    Returns ``{bucket_label: {sum_orig_km, sum_simp_km, sum_ratio, n_traj,
+    sum_pts, sum_pts_kept}}`` so a caller can report the length-weighted ratio
+    (sum_simp_km / sum_orig_km), the unweighted per-trajectory mean
+    (sum_ratio / n_traj), and average points kept/removed (sum_pts* / n_traj).
+    """
+    points_cpu = points.detach().cpu()
+    mask_cpu = retained_mask.detach().cpu().bool()
+    lats = points_cpu[:, 1]
+    lons = points_cpu[:, 2]
+
+    out: dict[str, dict[str, float]] = {
+        label: {"sum_orig_km": 0.0, "sum_simp_km": 0.0, "sum_ratio": 0.0,
+                "n_traj": 0, "sum_pts": 0, "sum_pts_kept": 0}
+        for _, _, label in buckets
+    }
+    for tid, (s, e) in enumerate(boundaries):
+        if e - s < 2:
+            continue
+        traj_lat = lats[s:e]
+        traj_lon = lons[s:e]
+        orig_km = _polyline_length_km(traj_lat, traj_lon)
+        if orig_km <= 1e-9:
+            continue
+        traj_mask = mask_cpu[s:e]
+        n_pts = e - s
+        n_kept = int(traj_mask.sum().item())
+        simp_km = _polyline_length_km(traj_lat[traj_mask], traj_lon[traj_mask]) if n_kept >= 2 else 0.0
+        label = _bucket_label_for_length(float(full_traj_km[tid]) if tid < len(full_traj_km) else float(orig_km), buckets)
+        if label is None:
+            continue
+        out[label]["sum_orig_km"] += float(orig_km)
+        out[label]["sum_simp_km"] += float(simp_km)
+        out[label]["sum_ratio"] += float(max(0.0, min(1.0, simp_km / orig_km)))
+        out[label]["n_traj"] += 1
+        out[label]["sum_pts"] += int(n_pts)
+        out[label]["sum_pts_kept"] += n_kept
     return out
 
 

@@ -342,13 +342,16 @@ def main() -> None:
         _split_by_boundaries,
         print_length_retention_in_query_table,
         print_length_retention_in_query_by_length_table,
+        print_length_retention_whole_set_by_length_table,
     )
     from src.evaluation.metrics import (
         compute_in_query_length_retention,
         compute_in_query_length_retention_bucketed,
+        compute_whole_traj_retention_bucketed,
         compute_full_trajectory_lengths_km,
         count_trajectories_by_length_bucket,
         SCOPE3_LENGTH_BUCKETS,
+        SCOPE1_LENGTH_BUCKETS,
     )
     print("[eval] computing Scope-3 in-query retention ...", flush=True)
     t_s3 = time.perf_counter()
@@ -401,6 +404,20 @@ def main() -> None:
         raise RuntimeError("MLQDS retained mask was not captured during inference evaluation.")
 
     length_retention_whole_set_table = print_length_retention_whole_set_table(results, points, boundaries)
+    # Scope-1 split by total trajectory length: how much of the WHOLE trajectory
+    # is kept, per length class. Reuses full_traj_km computed above for buckets.
+    whole_set_bucketed: dict[str, dict[str, dict[str, float]]] = {}
+    for name in method_names_s3:
+        mask = results[name].retained_mask
+        if mask is None:
+            continue
+        whole_set_bucketed[name] = compute_whole_traj_retention_bucketed(
+            points, boundaries, mask, full_traj_km, buckets=SCOPE1_LENGTH_BUCKETS
+        )
+    scope1_bucket_order = [label for _, _, label in SCOPE1_LENGTH_BUCKETS]
+    length_retention_whole_set_by_length_table = print_length_retention_whole_set_by_length_table(
+        whole_set_bucketed, scope1_bucket_order
+    )
     out_dir = Path(args.results_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     if args.no_query_model:
@@ -412,10 +429,12 @@ def main() -> None:
         print("\nMatched-workload AnswerF1 table (no-query model; per-type breakdown + Diff vs DP)")
         print(matched_table)
         print("\n" + length_retention_whole_set_table)
+        print("\n" + length_retention_whole_set_by_length_table)
         print("\n" + length_retention_in_query_table)
         print("\n" + length_retention_in_query_by_length_table)
         (out_dir / "matched_table.txt").write_text(matched_table + "\n", encoding="utf-8")
         (out_dir / "length_retention_whole_set_table.txt").write_text(length_retention_whole_set_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_whole_set_by_length_table.txt").write_text(length_retention_whole_set_by_length_table + "\n", encoding="utf-8")
         (out_dir / "length_retention_in_query_table.txt").write_text(length_retention_in_query_table + "\n", encoding="utf-8")
         (out_dir / "length_retention_in_query_by_length_table.txt").write_text(length_retention_in_query_by_length_table + "\n", encoding="utf-8")
         geometric_table = ""
@@ -427,11 +446,13 @@ def main() -> None:
         print("\nGeometric-distortion table (lower is better; SED = time-synchronous, PED = perpendicular, in km)")
         print(geometric_table)
         print("\n" + length_retention_whole_set_table)
+        print("\n" + length_retention_whole_set_by_length_table)
         print("\n" + length_retention_in_query_table)
         print("\n" + length_retention_in_query_by_length_table)
         (out_dir / "matched_table.txt").write_text(table + "\n", encoding="utf-8")
         (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
         (out_dir / "length_retention_whole_set_table.txt").write_text(length_retention_whole_set_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_whole_set_by_length_table.txt").write_text(length_retention_whole_set_by_length_table + "\n", encoding="utf-8")
         (out_dir / "length_retention_in_query_table.txt").write_text(length_retention_in_query_table + "\n", encoding="utf-8")
         (out_dir / "length_retention_in_query_by_length_table.txt").write_text(length_retention_in_query_by_length_table + "\n", encoding="utf-8")
 
