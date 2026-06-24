@@ -1,31 +1,34 @@
 # QDS Repository
 
-This repository contains two versions of the AIS query-driven simplification project:
+QDS is the current shift-aware rebuild of the AIS query-driven simplification pipeline. It loads AIS trajectories, generates typed query workloads, trains a query-conditioned ranking model, and evaluates the resulting simplifier against learned and geometric baselines under matched and shifted workloads.
 
-- `qds_project/` - the legacy v1 implementation and documentation.
-- `qds_v2/` - the current shift-aware rebuild with typed query workloads and distribution-shift evaluation.
+## What Is In This Folder
 
-Start with `qds_v2/README.md` if you want the active system. Use `qds_project/README.md` when you need the original architecture for comparison.
+- `requirements.txt` - Python dependencies for the v2 stack.
+- `src/` - package code for loading data, building queries, training models, and running experiments.
+- `tests/` - regression tests that guard the rebuild.
+- `results/` - retained reference outputs and benchmark artifacts.
 
-## Repository Layout
+## Environment And Smoke Checks
 
-| Path | Purpose |
-| --- | --- |
-| `qds_project/` | Original pipeline, tests, and results. |
-| `qds_v2/` | Rebuilt pipeline, tests, and results. |
-| `qds_project/requirements.txt` | Dependencies for the legacy system. |
-| `qds_v2/requirements.txt` | Dependencies for the v2 stack. |
+The sprint environment is the repository-level virtual environment at `../.venv`
+when commands are run from `QDS`. Requirements are pinned in
+`requirements.txt` for the local QDS checks.
 
-## How The Two Trees Differ
-
-- `qds_project` documents the earlier query-driven simplification pipeline.
-- `qds_v2` adds typed query workloads, query-conditioned training, shift-aware evaluation, and the turn-aware model variant.
-- Both trees keep their own `src/`, `tests/`, and `results/` folders so experiments stay isolated.
-
-## Outputs
-
-In `qds_v2`, the main experiment artifacts are `results/example_run.json`, `results/matched_table.txt`, and `results/shift_table.txt`.
+```bash
+cd QDS
+../.venv/bin/python -m pip install -r requirements.txt
+make check-env
+make test
+```
 
 ## Validation
 
-Each tree ships with its own regression suite. In `qds_v2`, the tests cover attention leakage, query type ID requirements, scaler persistence, top-k behavior, in-distribution gains, and training stability.
+The `tests/` folder focuses on the rebuild-specific regressions:
+
+- `test_beats_random_in_distribution.py` - in-distribution performance guard.
+- `test_no_cross_trajectory_attention_leakage.py` - attention leakage guard.
+- `test_query_type_ids_required.py` - query type ID contract.
+- `test_scaler_persisted.py` - scaler persistence.
+- `test_topk_no_positional_bias.py` - deterministic top-k behavior.
+- `test_training_does_not_collapse.py` - training stability.
