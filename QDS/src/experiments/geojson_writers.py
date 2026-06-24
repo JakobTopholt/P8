@@ -65,6 +65,11 @@ def _query_to_feature(q: dict[str, Any]) -> dict[str, Any]:
         props["t_start_hm"] = _seconds_to_hhmm(float(props["t_start"]))
     if "t_end" in props:
         props["t_end_hm"] = _seconds_to_hhmm(float(props["t_end"]))
+    # Preserve the similarity reference snippet (a list of [t,lat,lon] rows) as a
+    # JSON string so read_queries_geojson can reconstruct the full query. Without
+    # this, --queries_from would lose the reference and break similarity scoring.
+    if qtype == "similarity" and q.get("reference"):
+        props["reference_json"] = json.dumps(q["reference"])
     return {
         "type": "Feature",
         "geometry": geom,
@@ -98,10 +103,12 @@ def read_queries_geojson(in_dir: str) -> list[dict[str, Any]]:
     eval workload saved by ``--save_queries_dir`` into a later inference run
     so eval numbers are comparable without regenerating queries.
 
-    Limitation: similarity queries lose the ``reference`` field on round-trip
-    (GeoJSON properties only carry primitive values). The model will then see
-    zeros in similarity feature dims 5:8 — acceptable for diagnostic re-runs
-    on the same model, but flagged via a warning print.
+    Similarity queries round-trip fully when written by the current writer: the
+    ``reference`` snippet is stored as ``reference_json`` in the GeoJSON
+    properties and reconstructed here. Older GeoJSON files written before that
+    change lack ``reference_json``; those similarity queries load without a
+    reference (flagged via a warning) and should not be used for similarity
+    eval (the DTW match / support mask need the reference).
     """
     in_path = Path(in_dir)
     typed: list[dict[str, Any]] = []
@@ -116,7 +123,7 @@ def read_queries_geojson(in_dir: str) -> list[dict[str, Any]]:
             props = feat.get("properties", {})
             params = {
                 k: v for k, v in props.items()
-                if k not in ("query_type", "t_start_hm", "t_end_hm")
+                if k not in ("query_type", "t_start_hm", "t_end_hm", "reference_json")
             }
             if qtype == "knn":
                 params["k"] = int(params["k"])
@@ -124,13 +131,17 @@ def read_queries_geojson(in_dir: str) -> list[dict[str, Any]]:
                 params["min_samples"] = int(params["min_samples"])
             entry: dict[str, Any] = {"type": qtype, "params": params}
             if qtype == "similarity":
-                # reference field is not round-tripped through GeoJSON
-                sim_missing_reference += 1
+                ref_json = props.get("reference_json")
+                if ref_json:
+                    entry["reference"] = json.loads(ref_json)
+                else:
+                    sim_missing_reference += 1
             typed.append(entry)
     if sim_missing_reference > 0:
         print(
             f"  [read_queries_geojson] WARNING: {sim_missing_reference} similarity "
-            f"queries loaded without 'reference' field — feature dims 5:8 will be zero.",
+            f"queries loaded WITHOUT a 'reference' (old GeoJSON without reference_json) "
+            f"— similarity scoring will be unreliable for these.",
             flush=True,
         )
     return typed

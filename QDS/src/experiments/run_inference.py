@@ -85,6 +85,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--knn_k", type=int, default=12, help="Number of nearest trajectories in generated kNN queries.")
     p.add_argument(
+        "--similarity_time_fraction",
+        type=float,
+        default=0.04,
+        help="Similarity query time half-window as a fraction of dataset time span. Match the training value (0.0833 for 7-day experiments).",
+    )
+    p.add_argument(
+        "--similarity_top_k",
+        type=int,
+        default=5,
+        help="Number of trajectories returned by each generated similarity query. Match the training value (e.g. 50 for top_k=50 models).",
+    )
+    p.add_argument(
         "--workload_mix",
         type=str,
         default=None,
@@ -230,6 +242,8 @@ def main() -> None:
             range_spatial_fraction=args.range_spatial_fraction,
             range_time_fraction=args.range_time_fraction,
             knn_k=args.knn_k,
+            similarity_time_fraction=args.similarity_time_fraction,
+            similarity_top_k=args.similarity_top_k,
         )
     coverage_msg = ""
     if workload.coverage_fraction is not None:
@@ -327,14 +341,32 @@ def main() -> None:
         _query_support_mask,
         _split_by_boundaries,
         print_length_retention_in_query_table,
+        print_length_retention_in_query_by_length_table,
+        print_length_retention_whole_set_by_length_table,
     )
-    from src.evaluation.metrics import compute_in_query_length_retention
+    from src.evaluation.metrics import (
+        compute_in_query_length_retention,
+        compute_in_query_length_retention_bucketed,
+        compute_whole_traj_retention_bucketed,
+        compute_full_trajectory_lengths_km,
+        count_trajectories_by_length_bucket,
+        SCOPE3_LENGTH_BUCKETS,
+        SCOPE1_LENGTH_BUCKETS,
+    )
     print("[eval] computing Scope-3 in-query retention ...", flush=True)
     t_s3 = time.perf_counter()
     full_traj_s3 = _split_by_boundaries(points, boundaries)
+    full_traj_km = compute_full_trajectory_lengths_km(points, boundaries)
+    bucket_order = [label for _, _, label in SCOPE3_LENGTH_BUCKETS]
+    traj_counts_by_bucket = count_trajectories_by_length_bucket(full_traj_km)
     method_names_s3 = [m.name for m in methods]
     s3_aggs: dict[str, dict[str, float]] = {
         n: {"sum_orig_km": 0.0, "sum_simp_km": 0.0, "n_segments": 0} for n in method_names_s3
+    }
+    # Per-method, per-length-bucket running sums for the Scope-3 sub-scope.
+    s3_bucketed: dict[str, dict[str, dict[str, float]]] = {
+        n: {label: {"sum_orig_km": 0.0, "sum_simp_km": 0.0, "n_segments": 0} for label in bucket_order}
+        for n in method_names_s3
     }
     for q_idx, query in enumerate(workload.typed_queries):
         # Reuse cached support for non-range types; recompute range cheaply.
@@ -353,7 +385,18 @@ def main() -> None:
                 s3_aggs[name]["sum_orig_km"] += float(iq["avg_orig_km"]) * n_seg
                 s3_aggs[name]["sum_simp_km"] += float(iq["avg_simp_km"]) * n_seg
                 s3_aggs[name]["n_segments"] += n_seg
+            # Sub-scope: bucket the same segments by parent-trajectory length.
+            bkt = compute_in_query_length_retention_bucketed(
+                points, boundaries, mask, support, full_traj_km
+            )
+            for label, agg in bkt.items():
+                s3_bucketed[name][label]["sum_orig_km"] += agg["sum_orig_km"]
+                s3_bucketed[name][label]["sum_simp_km"] += agg["sum_simp_km"]
+                s3_bucketed[name][label]["n_segments"] += agg["n_segments"]
     length_retention_in_query_table = print_length_retention_in_query_table(s3_aggs)
+    length_retention_in_query_by_length_table = print_length_retention_in_query_by_length_table(
+        s3_bucketed, bucket_order, traj_counts=traj_counts_by_bucket
+    )
     print(f"[eval] Scope-3 computed in {time.perf_counter() - t_s3:.2f}s", flush=True)
 
     mlqds_mask = results["MLQDS"].retained_mask
@@ -361,37 +404,39 @@ def main() -> None:
         raise RuntimeError("MLQDS retained mask was not captured during inference evaluation.")
 
     length_retention_whole_set_table = print_length_retention_whole_set_table(results, points, boundaries)
+    # Scope-1 split by total trajectory length: how much of the WHOLE trajectory
+    # is kept, per length class. Reuses full_traj_km computed above for buckets.
+    whole_set_bucketed: dict[str, dict[str, dict[str, float]]] = {}
+    for name in method_names_s3:
+        mask = results[name].retained_mask
+        if mask is None:
+            continue
+        whole_set_bucketed[name] = compute_whole_traj_retention_bucketed(
+            points, boundaries, mask, full_traj_km, buckets=SCOPE1_LENGTH_BUCKETS
+        )
+    scope1_bucket_order = [label for _, _, label in SCOPE1_LENGTH_BUCKETS]
+    length_retention_whole_set_by_length_table = print_length_retention_whole_set_by_length_table(
+        whole_set_bucketed, scope1_bucket_order
+    )
     out_dir = Path(args.results_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     if args.no_query_model:
         # No-query generalization mode: the model scored points WITHOUT seeing
         # queries, but eval F1 is still computed against the real eval queries.
-        # Report BOTH the per-query/per-type AnswerF1 table (matched-workload)
-        # AND the whole-dataset aggregate summary, plus Scope-1 + Scope-3.
+        # The matched-workload table's "all" row already carries the aggregate
+        # AnswerF1, so the separate whole-dataset table is redundant and omitted.
         matched_table = print_method_comparison_table(results)
-        col1, col2, col3, col4 = 24, 14, 14, 14
-        ws_lines = [
-            f"{'Method':<{col1}}{'AnswerF1':>{col2}}{'CombinedF1':>{col3}}{'Compression':>{col4}}",
-        ]
-        ws_lines.append("-" * (col1 + col2 + col3 + col4))
-        for name, m in results.items():
-            ws_lines.append(
-                f"{name:<{col1}}"
-                f"{m.aggregate_f1:>{col2}.6f}"
-                f"{m.aggregate_combined_f1:>{col3}.6f}"
-                f"{m.compression_ratio:>{col4}.4f}"
-            )
-        ws_table = "\n".join(ws_lines)
         print("\nMatched-workload AnswerF1 table (no-query model; per-type breakdown + Diff vs DP)")
         print(matched_table)
-        print("\nWhole-dataset F1 table (aggregate across all eval queries)")
-        print(ws_table)
         print("\n" + length_retention_whole_set_table)
+        print("\n" + length_retention_whole_set_by_length_table)
         print("\n" + length_retention_in_query_table)
+        print("\n" + length_retention_in_query_by_length_table)
         (out_dir / "matched_table.txt").write_text(matched_table + "\n", encoding="utf-8")
-        (out_dir / "whole_dataset_f1_table.txt").write_text(ws_table + "\n", encoding="utf-8")
         (out_dir / "length_retention_whole_set_table.txt").write_text(length_retention_whole_set_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_whole_set_by_length_table.txt").write_text(length_retention_whole_set_by_length_table + "\n", encoding="utf-8")
         (out_dir / "length_retention_in_query_table.txt").write_text(length_retention_in_query_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_in_query_by_length_table.txt").write_text(length_retention_in_query_by_length_table + "\n", encoding="utf-8")
         geometric_table = ""
     else:
         table = print_method_comparison_table(results)
@@ -401,11 +446,15 @@ def main() -> None:
         print("\nGeometric-distortion table (lower is better; SED = time-synchronous, PED = perpendicular, in km)")
         print(geometric_table)
         print("\n" + length_retention_whole_set_table)
+        print("\n" + length_retention_whole_set_by_length_table)
         print("\n" + length_retention_in_query_table)
+        print("\n" + length_retention_in_query_by_length_table)
         (out_dir / "matched_table.txt").write_text(table + "\n", encoding="utf-8")
         (out_dir / "geometric_distortion_table.txt").write_text(geometric_table + "\n", encoding="utf-8")
         (out_dir / "length_retention_whole_set_table.txt").write_text(length_retention_whole_set_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_whole_set_by_length_table.txt").write_text(length_retention_whole_set_by_length_table + "\n", encoding="utf-8")
         (out_dir / "length_retention_in_query_table.txt").write_text(length_retention_in_query_table + "\n", encoding="utf-8")
+        (out_dir / "length_retention_in_query_by_length_table.txt").write_text(length_retention_in_query_by_length_table + "\n", encoding="utf-8")
 
     dump = {
         "checkpoint": str(args.checkpoint),

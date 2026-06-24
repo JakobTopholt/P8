@@ -1,0 +1,131 @@
+[load-checkpoint] /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/model/model_similarity_topk50_cr0p05.pt
+[device] inference on cuda
+[device] NVIDIA L4
+  model_type=turn_aware  epochs_trained=50  train_mix={'similarity': 1.0}  eval_mix={'similarity': 1.0}
+[eval-config] eval_mix={'similarity': 1.0}  compression_ratio=0.05
+[load-data] reading CSV: /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/preproessed_AIS_files/preprocessed_2026-02-10.csv
+[load-data] 1713 trajectories in 36.35s
+[dataset] points=7612134  trajectories=1713
+[workload] loading saved queries from /ceph/home/student.aau.dk/hq11zw/P8/AISDATA/Query_border_files/run_topk50_similarity_cr0p05_7day_0202_to_0208_eval_2026-02-10_cov0p30_854882
+[workload] generated 114 queries in 1.15s  coverage=88.56% (6741340/7612134)
+[no-query-model] MLQDS will receive an EMPTY workload — eval queries are unchanged.
+[eval] precomputing query cache ...
+[eval] query cache built in 36.17s
+[eval] MLQDS ...
+/ceph/project/P8-1/venv/lib/python3.10/site-packages/torch/nn/modules/transformer.py:531: UserWarning: The PyTorch API of nested tensors is in prototype stage and will change in the near future. We recommend specifying layout=torch.jagged when constructing a nested tensor, as this layout receives active development, has better operator coverage, and works with torch.compile. (Triggered internally at /pytorch/aten/src/ATen/NestedTensorImpl.cpp:178.)
+  output = torch._nested_tensor_from_mask(
+[eval] MLQDS done in 1316.73s
+[eval] uniform ...
+[eval] uniform done in 30.97s
+[eval] DouglasPeucker ...
+[eval] DouglasPeucker done in 42.14s
+[eval] computing Scope-3 in-query retention ...
+[eval] Scope-3 computed in 26.53s
+
+Matched-workload AnswerF1 table (no-query model; per-type breakdown + Diff vs DP)
+Method                      AnswerF1  CombinedF1 Compression    AvgPtGap   Latency(ms)        Type
+--------------------------------------------------------------------------------------------------
+MLQDS                       0.968214    0.101176      0.0501       20.04    1271930.25         all
+  - range                   0.000000    0.000000                                             range
+  - knn                     0.000000    0.000000                                               knn
+  - similarity              0.968214    0.101176                                        similarity
+  - clustering              0.000000    0.000000                                        clustering
+uniform                     0.987368    0.095229      0.0501       20.04        104.81         all
+  - range                   0.000000    0.000000                                             range
+  - knn                     0.000000    0.000000                                               knn
+  - similarity              0.987368    0.095229                                        similarity
+  - clustering              0.000000    0.000000                                        clustering
+DouglasPeucker              0.936101    0.097523      0.0501       20.04      14097.27         all
+  - range                   0.000000    0.000000                                             range
+  - knn                     0.000000    0.000000                                               knn
+  - similarity              0.936101    0.097523                                        similarity
+  - clustering              0.000000    0.000000                                        clustering
+--------------------------------------------------------------------------------------------------
+Diff vs MLQDS (AnswerF1 / CombinedF1; abs and % vs baseline)
+  vs uniform               -0.019155   +0.005947                                               all
+      (% vs baseline)          -1.9%       +6.2%                                               all
+    - range                +0.000000   +0.000000                                             range
+      (% vs baseline)            n/a         n/a                                             range
+    - knn                  +0.000000   +0.000000                                               knn
+      (% vs baseline)            n/a         n/a                                               knn
+    - similarity           -0.019155   +0.005947                                        similarity
+      (% vs baseline)          -1.9%       +6.2%                                        similarity
+    - clustering           +0.000000   +0.000000                                        clustering
+      (% vs baseline)            n/a         n/a                                        clustering
+  vs DouglasPeucker        +0.032112   +0.003652                                               all
+      (% vs baseline)          +3.4%       +3.7%                                               all
+    - range                +0.000000   +0.000000                                             range
+      (% vs baseline)            n/a         n/a                                             range
+    - knn                  +0.000000   +0.000000                                               knn
+      (% vs baseline)            n/a         n/a                                               knn
+    - similarity           +0.032112   +0.003652                                        similarity
+      (% vs baseline)          +3.4%       +3.7%                                        similarity
+    - clustering           +0.000000   +0.000000                                        clustering
+      (% vs baseline)            n/a         n/a                                        clustering
+
+Length retention — Scope 1: whole eval set (every trajectory ≥2 points)
+Method                    avg_orig_km  avg_simp_km  Retention   NTraj
+---------------------------------------------------------------------
+MLQDS                        117.9284     116.7727     0.9902    1710
+uniform                      117.9284     114.9596     0.9748    1710
+DouglasPeucker               117.9284     116.7077     0.9896    1710
+
+Length retention — Scope 3: in-query segments (first_in-1 to last_in+1)
+Method                    avg_orig_km  avg_simp_km  Retention    NSeg
+---------------------------------------------------------------------
+MLQDS                          2.5888       1.4736     0.5692    5525
+uniform                        2.5888       1.4777     0.5708    5525
+DouglasPeucker                 2.5888       1.8547     0.7164    5525
+
+Length retention — Scope 3 by trajectory length (in-query segments, bucketed by full trajectory km)
+NTraj = trajectories in this length range (dataset); NSeg = in-query segments scored
+
+  [200+ km]  NTraj=372  (NSeg=1265)
+Method                    avg_orig_km  avg_simp_km  Retention    NSeg
+---------------------------------------------------------------------
+MLQDS                          7.7461       4.1705     0.5384    1265
+uniform                        7.7461       4.0977     0.5290    1265
+DouglasPeucker                 7.7461       5.5433     0.7156    1265
+
+  [150-200 km]  NTraj=122  (NSeg=354)
+Method                    avg_orig_km  avg_simp_km  Retention    NSeg
+---------------------------------------------------------------------
+MLQDS                          3.4968       2.3424     0.6699     354
+uniform                        3.4968       2.4838     0.7103     354
+DouglasPeucker                 3.4968       2.6957     0.7709     354
+
+  [100-150 km]  NTraj=189  (NSeg=535)
+Method                    avg_orig_km  avg_simp_km  Retention    NSeg
+---------------------------------------------------------------------
+MLQDS                          2.7058       1.8232     0.6738     535
+uniform                        2.7058       1.9024     0.7031     535
+DouglasPeucker                 2.7058       1.9921     0.7362     535
+
+  [50-100 km]  NTraj=243  (NSeg=699)
+Method                    avg_orig_km  avg_simp_km  Retention    NSeg
+---------------------------------------------------------------------
+MLQDS                          1.6885       1.0657     0.6311     699
+uniform                        1.6885       1.1173     0.6617     699
+DouglasPeucker                 1.6885       1.2234     0.7246     699
+
+  [25-50 km]  NTraj=96  (NSeg=243)
+Method                    avg_orig_km  avg_simp_km  Retention    NSeg
+---------------------------------------------------------------------
+MLQDS                          1.1965       0.7236     0.6048     243
+uniform                        1.1965       0.7901     0.6603     243
+DouglasPeucker                 1.1965       0.8934     0.7467     243
+
+  [15-25 km]  NTraj=50  (NSeg=147)
+Method                    avg_orig_km  avg_simp_km  Retention    NSeg
+---------------------------------------------------------------------
+MLQDS                          0.7692       0.4209     0.5473     147
+uniform                        0.7692       0.3838     0.4990     147
+DouglasPeucker                 0.7692       0.4129     0.5368     147
+
+  [0-15 km]  NTraj=638  (NSeg=2282)
+Method                    avg_orig_km  avg_simp_km  Retention    NSeg
+---------------------------------------------------------------------
+MLQDS                          0.1028       0.0346     0.3366    2282
+uniform                        0.1028       0.0239     0.2323    2282
+DouglasPeucker                 0.1028       0.0359     0.3489    2282
+[write] results -> /ceph/home/student.aau.dk/hq11zw/P8/QDS/qds_v2/results/topk50_queryblind/topk50_similarity_cr0p05_854882
